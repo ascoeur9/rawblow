@@ -93,6 +93,14 @@ cargo run   --release -p rawblow-app
 
 ---
 
+## 감사 (Thanks To)
+
+이슈 제보·테스트로 RawBlow를 함께 다듬어주신 분들께 감사드립니다:
+
+- **Party!!** — Canon EOS 5D Mark II(`.CR2`) 단일뷰 미표시 이슈 제보 (v0.2.7에서 수정)
+
+---
+
 ## 라이선스
 
 저작권 © 2026 Hare. **All rights reserved.**
