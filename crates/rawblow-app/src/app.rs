@@ -1246,92 +1246,157 @@ impl RawBlowApp {
         let mut do_cancel = false;
         let (pick, hold, reject, unrated) = self.counts();
 
-        egui::Window::new("transfer_dialog")
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .fixed_size(Vec2::new(620.0, 0.0))
-            .frame(modal_frame())
+        // 뒤 화면 어둡게(dim) + 클릭 차단. Middle 레이어 → 패널 위, 카드(Foreground) 아래.
+        let screen = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("transfer_dim"))
+            .order(egui::Order::Middle)
+            .fixed_pos(Pos2::ZERO)
             .show(ctx, |ui| {
-                modal_header(ui, "파일 전송", "선택한 라벨의 파일을 복사/이동합니다 · RAW 페어 처리");
+                ui.painter().with_clip_rect(screen).rect_filled(screen, 0.0, Color32::from_black_alpha(180));
+                let _ = ui.allocate_rect(screen, Sense::click_and_drag());
+            });
 
-                ui.label(egui::RichText::new("SOURCE LABELS").font(prop(10.0)).color(theme::INK3));
-                ui.horizontal(|ui| {
-                    for (label, n) in [(Label::Pick, pick), (Label::Hold, hold), (Label::Reject, reject), (Label::Unrated, unrated)] {
-                        let mut on = st.labels.contains(&label);
-                        if ui.checkbox(&mut on, format!("{} {}", label.ko(), n)).changed() {
-                            if on {
-                                if !st.labels.contains(&label) { st.labels.push(label); }
-                            } else {
-                                st.labels.retain(|l| *l != label);
-                            }
-                        }
-                    }
-                });
-                ui.checkbox(&mut st.split_by_label, "라벨별 하위폴더로 분기 (/pick, /hold …)");
-                ui.add_space(8.0);
+        // 미리보기 계획(footer 통계).
+        let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
+        let plan = transfer::plan(&TransferRequest {
+            entries: &entries,
+            labels: st.labels.clone(),
+            action: st.action,
+            companions: st.companions,
+            dest: PathBuf::from(&st.dest),
+            split_by_label: st.split_by_label,
+            conflict: st.conflict,
+        });
+        let raw_n = plan.iter().filter(|(p, _)| rawblow_core::model::kind_of(p) == Some(rawblow_core::model::Kind::Raw)).count();
+        let img_n = plan.len().saturating_sub(raw_n);
 
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("ACTION").font(prop(10.0)).color(theme::INK3));
-                    ui.selectable_value(&mut st.action, Action::Copy, "Copy");
-                    ui.selectable_value(&mut st.action, Action::Move, "Move");
-                    ui.add_space(16.0);
-                    ui.label(egui::RichText::new("COMPANIONS").font(prop(10.0)).color(theme::INK3));
-                    ui.selectable_value(&mut st.companions, Companions::Both, "RAW+이미지");
-                    ui.selectable_value(&mut st.companions, Companions::RawOnly, "RAW만");
-                    ui.selectable_value(&mut st.companions, Companions::ImageOnly, "이미지만");
-                });
-                ui.add_space(8.0);
+        // 중앙 모달 카드. 너비 660 고정이라 left를 화면중앙-330으로 두면 가로 정중앙
+        // (Area::anchor는 이전 프레임 크기 기반이라 수렴이 안 돼 fixed_pos로 직접 배치).
+        let card_pos = egui::Pos2::new(screen.center().x - 330.0, (screen.center().y - 300.0).max(8.0));
+        egui::Area::new(egui::Id::new("transfer_card"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(card_pos)
+            .show(ctx, |ui| {
+                egui::Frame::none()
+                    .fill(theme::BG2)
+                    .stroke(Stroke::new(1.0, theme::LINE2))
+                    .rounding(10.0)
+                    .show(ui, |ui| {
+                        ui.set_min_width(660.0);
+                        ui.set_max_width(660.0);
+                        // ── HEADER ──
+                        egui::Frame::none()
+                            .inner_margin(egui::Margin { left: 22.0, right: 22.0, top: 18.0, bottom: 14.0 })
+                            .show(ui, |ui| {
+                                ui.set_width(616.0);
+                                ui.horizontal(|ui| {
+                                    let (ir, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
+                                    send_icon(ui.painter(), ir.center(), 14.0, theme::ACCENT);
+                                    ui.add_space(9.0);
+                                    ui.vertical(|ui| {
+                                        ui.label(egui::RichText::new("파일 전송").font(prop(15.0)).color(theme::INK));
+                                        ui.label(egui::RichText::new("선택한 라벨의 파일을 복사/이동 · RAW 페어 처리").font(mono(10.5)).color(theme::INK3));
+                                    });
+                                    ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                                        let (xr, xresp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
+                                        let c = xr.center();
+                                        let col = if xresp.hovered() { theme::INK } else { theme::INK3 };
+                                        ui.painter().line_segment([c + Vec2::new(-4.0, -4.0), c + Vec2::new(4.0, 4.0)], Stroke::new(1.5, col));
+                                        ui.painter().line_segment([c + Vec2::new(4.0, -4.0), c + Vec2::new(-4.0, 4.0)], Stroke::new(1.5, col));
+                                        if xresp.clicked() { do_cancel = true; }
+                                        if xresp.hovered() { ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); }
+                                    });
+                                });
+                            });
+                        hline_full(ui);
+                        // ── BODY ──
+                        egui::Frame::none()
+                            .inner_margin(egui::Margin::symmetric(22.0, 18.0))
+                            .show(ui, |ui| {
+                                ui.set_width(616.0);
+                                section_label(ui, "SOURCE LABELS");
+                                ui.horizontal_wrapped(|ui| {
+                                    for (label, n) in [(Label::Pick, pick), (Label::Hold, hold), (Label::Reject, reject), (Label::Unrated, unrated)] {
+                                        let on = st.labels.contains(&label);
+                                        if check_chip(ui, label.ko(), Some(n), theme::label_color(label), on) {
+                                            if on { st.labels.retain(|l| *l != label); } else { st.labels.push(label); }
+                                        }
+                                    }
+                                });
+                                ui.add_space(8.0);
+                                if check_chip(ui, "라벨별 하위폴더로 분기 (/pick, /hold …)", None, theme::ACCENT, st.split_by_label) {
+                                    st.split_by_label = !st.split_by_label;
+                                }
+                                ui.add_space(16.0);
 
-                ui.label(egui::RichText::new("DESTINATION").font(prop(10.0)).color(theme::INK3));
-                ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut st.dest).font(mono(12.0)).desired_width(440.0));
-                    if ui.button("Browse…").clicked() {
-                        if let Some(d) = rfd::FileDialog::new().pick_folder() {
-                            st.dest = d.to_string_lossy().to_string();
-                        }
-                    }
-                });
-                ui.add_space(8.0);
+                                section_label(ui, "ACTION");
+                                let act_sel = if st.action == Action::Copy { 0 } else { 1 };
+                                if let Some(i) = segmented(ui, &[("Copy", "원본 유지"), ("Move", "원본 이동")], act_sel) {
+                                    st.action = if i == 0 { Action::Copy } else { Action::Move };
+                                }
+                                ui.add_space(16.0);
 
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("ON CONFLICT").font(prop(10.0)).color(theme::INK3));
-                    ui.selectable_value(&mut st.conflict, ConflictPolicy::AutoIncrement, "자동 일련번호");
-                    ui.selectable_value(&mut st.conflict, ConflictPolicy::Skip, "건너뛰기");
-                });
-                ui.add_space(12.0);
+                                section_label(ui, "COMPANIONS");
+                                let comp_sel = match st.companions { Companions::Both => 0, Companions::RawOnly => 1, Companions::ImageOnly => 2 };
+                                if let Some(i) = segmented(ui, &[("RAW+이미지", "페어 함께"), ("RAW만", "RAW만"), ("이미지만", "JPG만")], comp_sel) {
+                                    st.companions = [Companions::Both, Companions::RawOnly, Companions::ImageOnly][i];
+                                }
+                                ui.add_space(16.0);
 
-                // 미리보기 카운트.
-                let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
-                let req = TransferRequest {
-                    entries: &entries,
-                    labels: st.labels.clone(),
-                    action: st.action,
-                    companions: st.companions,
-                    dest: PathBuf::from(&st.dest),
-                    split_by_label: st.split_by_label,
-                    conflict: st.conflict,
-                };
-                let plan = transfer::plan(&req);
-                ui.label(egui::RichText::new(format!("전송 예정 · {} 파일", plan.len())).font(mono(12.0)).color(theme::ACCENT));
+                                section_label(ui, "DESTINATION");
+                                ui.horizontal(|ui| {
+                                    let rest = (ui.available_width() - 96.0).max(120.0);
+                                    ui.add(egui::TextEdit::singleline(&mut st.dest).font(mono(12.0)).desired_width(rest));
+                                    if toggle_btn(ui, "Browse…", false).clicked() {
+                                        if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                                            st.dest = d.to_string_lossy().to_string();
+                                        }
+                                    }
+                                });
+                                ui.add_space(16.0);
 
-                ui.add_space(14.0);
-                let r = ui.max_rect();
-                let y = ui.cursor().top();
-                ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0, theme::LINE));
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.add(egui::Button::new(egui::RichText::new("  전송 시작  ⏎  ").color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT)).clicked() {
-                            do_start = true;
-                        }
-                        ui.add_space(8.0);
-                        if toggle_btn(ui, "취소 (Esc)", false).clicked() {
-                            do_cancel = true;
-                        }
+                                section_label(ui, "ON FILENAME CONFLICT");
+                                let conf_sel = if st.conflict == ConflictPolicy::AutoIncrement { 0 } else { 1 };
+                                if let Some(i) = segmented(ui, &[("자동 일련번호", "_001 접미"), ("건너뛰기", "기존 유지")], conf_sel) {
+                                    st.conflict = if i == 0 { ConflictPolicy::AutoIncrement } else { ConflictPolicy::Skip };
+                                }
+                            });
+                        hline_full(ui);
+                        // ── FOOTER ──
+                        egui::Frame::none()
+                            .fill(theme::BG1)
+                            .rounding(egui::Rounding { nw: 0.0, ne: 0.0, sw: 10.0, se: 10.0 })
+                            .inner_margin(egui::Margin::symmetric(22.0, 14.0))
+                            .show(ui, |ui| {
+                                ui.set_width(616.0);
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new("WILL TRANSFER").font(prop(10.0)).color(theme::INK3));
+                                    ui.add_space(8.0);
+                                    ui.label(egui::RichText::new(plan.len().to_string()).font(mono(13.0)).color(theme::ACCENT));
+                                    ui.label(egui::RichText::new("파일").font(mono(10.0)).color(theme::INK3));
+                                    ui.add_space(6.0);
+                                    ui.label(egui::RichText::new(raw_n.to_string()).font(mono(11.0)).color(theme::INK2));
+                                    ui.label(egui::RichText::new("RAW").font(mono(9.5)).color(theme::INK3));
+                                    ui.add_space(4.0);
+                                    ui.label(egui::RichText::new(img_n.to_string()).font(mono(11.0)).color(theme::INK2));
+                                    ui.label(egui::RichText::new("이미지").font(mono(9.5)).color(theme::INK3));
+
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if ui.add(egui::Button::new(egui::RichText::new("  전송 시작  ").color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT)).clicked() {
+                                            do_start = true;
+                                        }
+                                        ui.add_space(5.0);
+                                        kbd(ui, "Enter");
+                                        ui.add_space(14.0);
+                                        if toggle_btn(ui, "취소", false).clicked() {
+                                            do_cancel = true;
+                                        }
+                                        ui.add_space(5.0);
+                                        kbd(ui, "Esc");
+                                    });
+                                });
+                            });
                     });
-                });
             });
 
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -1561,6 +1626,118 @@ fn modal_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
     let y = ui.cursor().top();
     ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0, theme::LINE));
     ui.add_space(14.0);
+}
+
+/// 폼 섹션 캡션(대문자 작은 라벨).
+fn section_label(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(2.0);
+    ui.label(egui::RichText::new(text).font(prop(10.0)).color(theme::INK3));
+    ui.add_space(5.0);
+}
+
+/// 전체 너비 1px 구분선.
+fn hline_full(ui: &mut egui::Ui) {
+    let r = ui.max_rect();
+    let y = ui.cursor().top();
+    ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0, theme::LINE));
+}
+
+/// CheckChip: 라벨색 배경(체크 시 18%)+테두리 알약. 클릭되면 true.
+fn check_chip(ui: &mut egui::Ui, label: &str, count: Option<usize>, color: Color32, checked: bool) -> bool {
+    let fill = if checked { color.linear_multiply(0.18) } else { theme::BG1 };
+    let stroke = Stroke::new(1.0, if checked { color.linear_multiply(0.6) } else { theme::LINE2 });
+    let inner = egui::Frame::none()
+        .fill(fill)
+        .stroke(stroke)
+        .rounding(6.0)
+        .inner_margin(egui::Margin::symmetric(12.0, 7.0))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                ui.painter().rect(
+                    r,
+                    Rounding::same(3.0),
+                    if checked { color } else { Color32::TRANSPARENT },
+                    Stroke::new(1.5, if checked { color } else { theme::LINE3 }),
+                );
+                if checked {
+                    let p = ui.painter();
+                    let dark = Color32::from_rgb(0x0a, 0x14, 0x20);
+                    p.add(egui::Shape::line(
+                        vec![
+                            Pos2::new(r.left() + 3.0, r.center().y + 0.5),
+                            Pos2::new(r.center().x - 0.5, r.bottom() - 3.5),
+                            Pos2::new(r.right() - 2.5, r.top() + 3.5),
+                        ],
+                        Stroke::new(1.7, dark),
+                    ));
+                }
+                ui.add_space(3.0);
+                ui.label(egui::RichText::new(label).font(prop(12.0)).color(if checked { theme::INK } else { theme::INK2 }));
+                if let Some(n) = count {
+                    ui.label(egui::RichText::new(n.to_string()).font(mono(10.5)).color(theme::INK3));
+                }
+            });
+        });
+    let resp = inner.response.interact(Sense::click());
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp.clicked()
+}
+
+/// Segmented: BG1 트랙 + 활성 칸 BG4. 각 칸은 (라벨, 서브라벨) 2줄. 클릭된 인덱스 반환.
+fn segmented(ui: &mut egui::Ui, options: &[(&str, &str)], selected: usize) -> Option<usize> {
+    let mut clicked = None;
+    egui::Frame::none()
+        .fill(theme::BG1)
+        .stroke(Stroke::new(1.0, theme::LINE2))
+        .rounding(6.0)
+        .inner_margin(egui::Margin::same(3.0))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            ui.horizontal(|ui| {
+                for (i, (label, sub)) in options.iter().enumerate() {
+                    let active = i == selected;
+                    let cell = egui::Frame::none()
+                        .fill(if active { theme::BG4 } else { Color32::TRANSPARENT })
+                        .stroke(Stroke::new(1.0, if active { theme::LINE3 } else { Color32::TRANSPARENT }))
+                        .rounding(4.0)
+                        .inner_margin(egui::Margin::symmetric(12.0, 5.0))
+                        .show(ui, |ui| {
+                            ui.vertical(|ui| {
+                                ui.label(egui::RichText::new(*label).font(prop(12.0)).color(if active { theme::INK } else { theme::INK2 }));
+                                if !sub.is_empty() {
+                                    ui.label(egui::RichText::new(*sub).font(mono(9.5)).color(if active { theme::INK3 } else { theme::INK4 }));
+                                }
+                            });
+                        });
+                    let resp = cell.response.interact(Sense::click());
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if resp.clicked() {
+                        clicked = Some(i);
+                    }
+                }
+            });
+        });
+    clicked
+}
+
+/// 보내기 아이콘(오른쪽 삼각형) — accent.
+fn send_icon(painter: &egui::Painter, center: Pos2, size: f32, color: Color32) {
+    let s = size * 0.5;
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            Pos2::new(center.x - s, center.y - s),
+            Pos2::new(center.x + s, center.y),
+            Pos2::new(center.x - s, center.y + s),
+            Pos2::new(center.x - s * 0.4, center.y),
+        ],
+        color,
+        Stroke::NONE,
+    ));
 }
 
 /// 사진 위 HUD용 RGB 히스토그램(채널당 64 bins).
