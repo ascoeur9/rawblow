@@ -746,6 +746,11 @@ impl RawBlowApp {
                     crate::logo::draw_mark(ui.painter(), mr);
                     ui.add_space(6.0);
                     vsep(ui);
+                    // 폴더 열기(이슈 #2: 폴더 연 상태에서 다른 폴더 여는 버튼 없음 — ⌘O를 못 찾음).
+                    if toggle_btn(ui, "폴더 열기 ⌘O", false).clicked() {
+                        self.pick_folder();
+                    }
+                    vsep(ui);
                     let single = self.view == ViewMode::Single;
                     if toggle_btn(ui, "Single", single).clicked() {
                         self.view = ViewMode::Single;
@@ -1241,15 +1246,15 @@ impl RawBlowApp {
         let mut do_cancel = false;
         let (pick, hold, reject, unrated) = self.counts();
 
-        egui::Window::new("Transfer Selected Files")
+        egui::Window::new("transfer_dialog")
+            .title_bar(false)
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .fixed_size(Vec2::new(620.0, 0.0))
-            .frame(egui::Frame::window(&ctx.style()).fill(theme::BG2))
+            .frame(modal_frame())
             .show(ctx, |ui| {
-                ui.label(egui::RichText::new("RawPull 방식 복사/이동 · RAW 페어 처리").font(mono(11.0)).color(theme::INK3));
-                ui.add_space(10.0);
+                modal_header(ui, "파일 전송", "선택한 라벨의 파일을 복사/이동합니다 · RAW 페어 처리");
 
                 ui.label(egui::RichText::new("SOURCE LABELS").font(prop(10.0)).color(theme::INK3));
                 ui.horizontal(|ui| {
@@ -1309,16 +1314,23 @@ impl RawBlowApp {
                     conflict: st.conflict,
                 };
                 let plan = transfer::plan(&req);
-                ui.label(egui::RichText::new(format!("WILL TRANSFER · {} 파일", plan.len())).font(mono(12.0)).color(theme::ACCENT));
+                ui.label(egui::RichText::new(format!("전송 예정 · {} 파일", plan.len())).font(mono(12.0)).color(theme::ACCENT));
 
-                ui.add_space(8.0);
+                ui.add_space(14.0);
+                let r = ui.max_rect();
+                let y = ui.cursor().top();
+                ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0, theme::LINE));
+                ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Cancel (Esc)").clicked() {
-                        do_cancel = true;
-                    }
-                    if ui.add(egui::Button::new(egui::RichText::new(" Start Transfer ⏎ ").color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT)).clicked() {
-                        do_start = true;
-                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.add(egui::Button::new(egui::RichText::new("  전송 시작  ⏎  ").color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT)).clicked() {
+                            do_start = true;
+                        }
+                        ui.add_space(8.0);
+                        if toggle_btn(ui, "취소 (Esc)", false).clicked() {
+                            do_cancel = true;
+                        }
+                    });
                 });
             });
 
@@ -1353,13 +1365,17 @@ impl RawBlowApp {
     fn ui_transfer_result(&mut self, ctx: &egui::Context) {
         let report = self.result.clone().unwrap();
         let mut close = false;
-        egui::Window::new("Transfer complete")
+        let mut open_dest = false;
+        egui::Window::new("transfer_result")
+            .title_bar(false)
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .frame(egui::Frame::window(&ctx.style()).fill(theme::BG2))
+            .fixed_size(Vec2::new(560.0, 0.0))
+            .frame(modal_frame())
             .show(ctx, |ui| {
-                ui.label(egui::RichText::new(format!("✓ {} 파일 전송 · {} 리네임 · {} 실패", report.transferred, report.renamed.len(), report.failed.len())).color(theme::OK));
+                modal_header(ui, "전송 완료", "");
+                ui.label(egui::RichText::new(format!("✓ {} 파일 전송 · {} 리네임 · {} 실패", report.transferred, report.renamed.len(), report.failed.len())).font(prop(13.0)).color(theme::OK));
                 ui.add_space(6.0);
                 ui.label(egui::RichText::new(format!("RAW {} · 이미지 {} · {:.1} MB", report.raw_count, report.image_count, report.bytes as f64 / 1_048_576.0)).font(mono(11.0)).color(theme::INK2));
                 if !report.renamed.is_empty() {
@@ -1376,22 +1392,33 @@ impl RawBlowApp {
                         ui.label(egui::RichText::new(format!("{} — {e}", p.display())).font(mono(10.0)).color(theme::INK3));
                     }
                 }
-                ui.add_space(10.0);
+                ui.add_space(14.0);
+                let r = ui.max_rect();
+                let y = ui.cursor().top();
+                ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0, theme::LINE));
+                ui.add_space(12.0);
+                let has_dest = self.last_dest.as_ref().map(|d| d.is_dir()).unwrap_or(false);
                 ui.horizontal(|ui| {
-                    if ui.button("Close (Esc)").clicked() {
-                        close = true;
-                    }
-                    if let Some(dest) = &self.last_dest {
-                        if ui.button("대상 폴더 열기").clicked() {
-                            let d = dest.clone();
-                            if d.is_dir() {
-                                close = true;
-                                // 폴더 열기는 사용자가 RawBlow로 다시 여는 형태.
-                            }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.add(egui::Button::new(egui::RichText::new("  닫기  ").color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT)).clicked() {
+                            close = true;
                         }
-                    }
+                        ui.add_space(8.0);
+                        if has_dest && toggle_btn(ui, "대상 폴더 열기", false).clicked() {
+                            open_dest = true;
+                        }
+                    });
                 });
             });
+        if open_dest {
+            if let Some(dest) = self.last_dest.clone() {
+                if dest.is_dir() {
+                    self.open_folder(dest);
+                }
+            }
+            self.result = None;
+            return;
+        }
         if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.result = None;
         }
@@ -1400,22 +1427,28 @@ impl RawBlowApp {
     fn ui_jump(&mut self, ctx: &egui::Context) {
         let mut close = false;
         let mut go = false;
-        egui::Window::new("파일번호 점프 (G)")
+        egui::Window::new("jump_dialog")
+            .title_bar(false)
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
-            .frame(egui::Frame::window(&ctx.style()).fill(theme::BG2))
+            .fixed_size(Vec2::new(420.0, 0.0))
+            .frame(modal_frame())
             .show(ctx, |ui| {
-                ui.label(egui::RichText::new("줄바꿈·쉼표·탭으로 구분 (RawPull 방식)").font(mono(10.0)).color(theme::INK3));
-                ui.add(egui::TextEdit::multiline(&mut self.jump_text).font(mono(12.0)).desired_rows(2).desired_width(360.0));
+                modal_header(ui, "파일번호 점프", "줄바꿈·쉼표·탭으로 구분");
+                ui.add(egui::TextEdit::multiline(&mut self.jump_text).font(mono(12.0)).desired_rows(2).desired_width(f32::INFINITY));
+                ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut self.jump_exact, "정확히 일치");
-                    if ui.button("점프 (⏎)").clicked() {
-                        go = true;
-                    }
-                    if ui.button("닫기 (Esc)").clicked() {
-                        close = true;
-                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.add(egui::Button::new(egui::RichText::new("  점프  ⏎  ").color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT)).clicked() {
+                            go = true;
+                        }
+                        ui.add_space(8.0);
+                        if toggle_btn(ui, "닫기 (Esc)", false).clicked() {
+                            close = true;
+                        }
+                    });
                 });
             });
         if go || ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -1504,6 +1537,30 @@ fn vsep(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(1.0, 18.0), Sense::hover());
     ui.painter().rect_filled(rect, Rounding::ZERO, theme::LINE);
     ui.add_space(4.0);
+}
+
+/// 모달 다이얼로그용 공통 프레임(앱 디자인에 맞춘 패널: 어두운 배경 + 테두리 + 둥근 모서리 + 여백).
+/// egui 기본 윈도우 크롬 대신 이걸 쓰고 제목줄은 끈다(title_bar(false)).
+fn modal_frame() -> egui::Frame {
+    egui::Frame::none()
+        .fill(theme::BG2)
+        .stroke(Stroke::new(1.0, theme::LINE2))
+        .rounding(12.0)
+        .inner_margin(egui::Margin::same(22.0))
+}
+
+/// 모달 헤더(제목 + 부제 + 구분선).
+fn modal_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
+    ui.label(egui::RichText::new(title).font(prop(18.0)).color(theme::INK));
+    if !subtitle.is_empty() {
+        ui.add_space(3.0);
+        ui.label(egui::RichText::new(subtitle).font(mono(11.0)).color(theme::INK3));
+    }
+    ui.add_space(12.0);
+    let r = ui.max_rect();
+    let y = ui.cursor().top();
+    ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0, theme::LINE));
+    ui.add_space(14.0);
 }
 
 /// 사진 위 HUD용 RGB 히스토그램(채널당 64 bins).
