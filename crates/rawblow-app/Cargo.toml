@@ -1,0 +1,30 @@
+[package]
+name = "rawblow-app"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "RawBlow: fast photo culling viewer (egui/wgpu GUI)"
+default-run = "rawblow"
+build = "build.rs"
+
+[[bin]]
+name = "rawblow"
+path = "src/main.rs"
+
+# Windows: 로고를 .exe 파일 아이콘(탐색기/작업표시줄)으로 임베드.
+[target.'cfg(windows)'.build-dependencies]
+ico = "0.3"
+winresource = "0.1"
+
+[dependencies]
+rawblow-core = { path = "../rawblow-core" }
+# glow(OpenGL 백엔드)는 빼고 wgpu만. winit 백엔드(x11/wayland)는 반드시 포함해야 함.
+eframe = { version = "0.29", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
+egui = "0.29"
+crossbeam-channel = "0.5"
+# 헤드리스 빌드를 위해 GTK 비의존 xdg-portal 백엔드 사용
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+env_logger = "0.11"

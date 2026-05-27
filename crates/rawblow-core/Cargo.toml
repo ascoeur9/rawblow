@@ -1,0 +1,28 @@
+[package]
+name = "rawblow-core"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "RawBlow core: scan, decode, exif, sidecar, transfer, color — GUI-independent"
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp", "bmp"] }
+# JPEG는 jpeg-decoder로 직접 디코딩(DCT 1/2·1/4·1/8 축소 디코딩 → IDCT 비용 대폭 절감).
+jpeg-decoder = "0.3"
+kamadak-exif = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+walkdir = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+qcms = { version = "0.3", optional = true }
+imagepipe = { version = "0.5", optional = true }
+
+[features]
+default = ["color", "fullraw"]
+# ICC 컬러 매니지먼트(qcms). 빌드 불가 환경에서 끌 수 있음 → sRGB 패스스루로 폴백.
+color = ["dep:qcms"]
+# 풀 RAW 디코딩(imagepipe: rawloader 기반 sRGB 현상). 임베디드 프리뷰만으로 충분하면 끌 수 있음.
+fullraw = ["dep:imagepipe"]
+
+[dev-dependencies]
+tempfile = "3"

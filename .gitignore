@@ -1,0 +1,18 @@
+# 빌드 산출물
+/target
+
+# 개인 테스트 사진 (공유 금지)
+/sample/
+
+# OS / 에디터
+.DS_Store
+*.swp
+
+# 임시 스크린샷 (저장소 루트에 떨어뜨린 캡처)
+/스크린샷*.png
+/Screenshot*.png
+*_shot*.png
+
+# 디자인 핸드오프 · 내부 기획 문서 (로컬 전용, 공개 저장소에서 제외)
+/design/
+/PRD.md

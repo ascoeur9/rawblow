@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["crates/rawblow-core", "crates/rawblow-app"]
+
+[workspace.package]
+version = "0.2.7"
+edition = "2021"
+authors = ["Hare"]
+# 독점(All rights reserved). 표준 OSS 라이선스 아님 — LICENSE 파일 참조. crates.io 미게시.
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# 디코딩 의존성은 dev 빌드에서도 빠르게 돌도록 최적화
+[profile.dev.package."*"]
+opt-level = 2

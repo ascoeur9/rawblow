@@ -1,0 +1,4 @@
+# Windows(MSVC) 네이티브 빌드: CRT를 정적 링크해 단독 실행 exe를 만든다
+# (테스터 PC에 VC++ 재배포 패키지가 없어도 "VCRUNTIME140.dll 없음" 없이 실행됨).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

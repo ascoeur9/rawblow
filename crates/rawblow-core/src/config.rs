@@ -1,0 +1,129 @@
+//! 설정·단축키 영속화 (M5). OS 표준 설정 경로에 JSON으로 저장.
+
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+/// 단축키 맵(핸드오프 기본값). 값은 표시용 키 문자열.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct KeyMap {
+    pub pick: String,
+    pub hold: String,
+    pub reject: String,
+    pub clear: String,
+    pub single_grid: String,
+    pub fit_oneone: String,
+    pub full_raw: String,
+    pub exif: String,
+    pub histogram: String,
+    pub filter: String,
+    pub transfer: String,
+    pub jump: String,
+    pub fullscreen: String,
+}
+
+impl Default for KeyMap {
+    fn default() -> Self {
+        KeyMap {
+            pick: "Q".into(),
+            hold: "W".into(),
+            reject: "E".into(),
+            clear: "R".into(),
+            single_grid: "T".into(),
+            fit_oneone: "Space".into(),
+            full_raw: "D".into(),
+            exif: "I".into(),
+            histogram: "H".into(),
+            filter: "F".into(),
+            transfer: "Ctrl+E".into(),
+            jump: "G".into(),
+            fullscreen: "F11".into(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct Config {
+    pub auto_advance: bool,
+    pub preload: i32,
+    pub grid_cols: usize,
+    pub recursive: bool,
+    pub show_exif: bool,
+    pub show_histogram: bool,
+    pub last_folder: Option<String>,
+    pub recent_folders: Vec<String>,
+    pub keymap: KeyMap,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            auto_advance: true,
+            preload: 3,
+            grid_cols: 8,
+            recursive: false,
+            show_exif: true,
+            show_histogram: true,
+            last_folder: None,
+            recent_folders: Vec::new(),
+            keymap: KeyMap::default(),
+        }
+    }
+}
+
+impl Config {
+    /// 최근 폴더 목록 맨 앞에 추가(중복 제거, 최대 12개).
+    pub fn push_recent(&mut self, folder: &str) {
+        self.recent_folders.retain(|f| f != folder);
+        self.recent_folders.insert(0, folder.to_string());
+        self.recent_folders.truncate(12);
+        self.last_folder = Some(folder.to_string());
+    }
+}
+
+/// OS 표준 설정 디렉토리(`…/rawblow`).
+pub fn config_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            return PathBuf::from(appdata).join("RawBlow");
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home)
+                .join("Library/Application Support/RawBlow");
+        }
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+            return PathBuf::from(xdg).join("rawblow");
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(".config/rawblow");
+        }
+    }
+    PathBuf::from(".rawblow-config")
+}
+
+pub fn config_path() -> PathBuf {
+    config_dir().join("config.json")
+}
+
+/// 설정을 로드(없으면 기본값).
+pub fn load() -> Config {
+    std::fs::read_to_string(config_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// 설정을 저장.
+pub fn save(config: &Config) -> std::io::Result<()> {
+    std::fs::create_dir_all(config_dir())?;
+    let json = serde_json::to_string_pretty(config)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    std::fs::write(config_path(), json)
+}
