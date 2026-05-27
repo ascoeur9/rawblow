@@ -33,6 +33,8 @@ cargo run   --release -p rawblow-app
 ```
 요구: Rust 1.80+, C 링커(MSVC Build Tools / gcc / clang), Linux는 Vulkan 런타임. 한글 폰트는 OS 폰트에서 자동 로드됩니다.
 
+> 📌 **배포용 클린 릴리스 빌드**(단독 실행 + 빌드 경로/사용자명 제거)는 [`BUILD.md`](BUILD.md) 참고.
+
 ---
 
 ## 사용법
