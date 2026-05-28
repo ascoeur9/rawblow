@@ -62,14 +62,31 @@ cargo run   --release -p rawblow-app
 ## 테스트 환경
 
 - **OS**: Windows 11 에서 개발·주 테스트. macOS / Linux 는 코드상 지원하나 아직 광범위 테스트 전입니다(피드백 환영).
-- **카메라 RAW** (지금까지 실파일로 확인):
-  - Panasonic **LUMIX S1R II** (`DC-S1RM2`, `.RW2`)
-  - Panasonic **LUMIX S1 II** (`DC-S1M2`, `.RW2`)
-  - **Nikon Z6III** · **Z8** · **Z30** · **Z50II** (`.NEF`)
-  - **Sony α7C II** (`.ARW`)
-  - **Fujifilm GFX100S** · **GFX100RF** (`.RAF`)
-  - **Canon EOS 5D / 5D Mark II** (`.CR2`)
 - 위 외의 바디·포맷(다른 RAW, JPG/PNG/HEIC 등)도 동작하도록 만들었지만 **검증되지 않은 바디는 임베디드 프리뷰 경로로 표시**됩니다. 새 바디에서 회색/깨짐/오류가 보이면 꼭 알려주세요.
+
+### 테스트된 카메라 RAW (실파일로 확인)
+
+#### Panasonic — `.RW2`
+- LUMIX S1R II (`DC-S1RM2`)
+- LUMIX S1 II (`DC-S1M2`)
+
+#### Nikon — `.NEF`
+- Z6III
+- Z8
+- Z30
+- Z50II
+
+#### Sony — `.ARW`
+- α7R III
+- α7C II
+
+#### Fujifilm — `.RAF`
+- GFX100S
+- GFX100RF
+
+#### Canon — `.CR2`
+- EOS 5D
+- EOS 5D Mark II
 
 ---
 
