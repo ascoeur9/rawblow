@@ -116,6 +116,14 @@ pub struct RawBlowApp {
     jump_text: String,
     jump_exact: bool,
 
+    // 일괄 분류 변경 모달 (#3) — 그리드에서 파일명으로 다수 항목을 한 번에 라벨링.
+    bulk_open: bool,
+    bulk_text: String,
+    bulk_exact: bool,
+    bulk_target: Label,
+    bulk_hits: Vec<usize>,
+    bulk_searched: bool,
+
     toast: Option<(String, Instant)>,
     // 성능 표시
     last_frame: Instant,
@@ -175,6 +183,12 @@ impl RawBlowApp {
             jump_open: false,
             jump_text: String::new(),
             jump_exact: false,
+            bulk_open: false,
+            bulk_text: String::new(),
+            bulk_exact: false,
+            bulk_target: Label::Pick,
+            bulk_hits: Vec::new(),
+            bulk_searched: false,
             toast: None,
             last_frame: Instant::now(),
             frame_ms: 0.0,
@@ -557,6 +571,9 @@ impl eframe::App for RawBlowApp {
         if self.jump_open {
             self.ui_jump(ctx);
         }
+        if self.bulk_open {
+            self.ui_bulk(ctx);
+        }
 
         // 토스트 만료.
         if let Some((_, t)) = &self.toast {
@@ -571,7 +588,7 @@ impl eframe::App for RawBlowApp {
 
 impl RawBlowApp {
     fn has_modal(&self) -> bool {
-        self.transfer.is_some() || self.result.is_some() || self.jump_open
+        self.transfer.is_some() || self.result.is_some() || self.jump_open || self.bulk_open
     }
 
     // ── 입력 ──────────────────────────────────────────────
@@ -629,6 +646,11 @@ impl RawBlowApp {
                         Key::D => self.full_raw = !self.full_raw, // ORIG(원본 보기) 토글
                         Key::F => self.filter = self.filter.next(),
                         Key::G => self.jump_open = true,
+                        Key::B if self.view == ViewMode::Grid => {
+                            self.bulk_open = true;
+                            self.bulk_searched = false;
+                            self.bulk_hits.clear();
+                        }
                         Key::F11 => self.fullscreen = !self.fullscreen,
                         Key::Escape => self.fullscreen = false,
                         Key::Enter => self.open_transfer(),
@@ -803,6 +825,14 @@ impl RawBlowApp {
                         }
                         if toggle_btn(ui, "Jump · G", false).clicked() {
                             self.jump_open = true;
+                        }
+                        // 그리드 모드 한정: 파일명으로 일괄 라벨링(#3).
+                        if self.view == ViewMode::Grid
+                            && toggle_btn(ui, "Bulk · B", false).clicked()
+                        {
+                            self.bulk_open = true;
+                            self.bulk_searched = false;
+                            self.bulk_hits.clear();
                         }
                         if toggle_btn(ui, "⚙", self.show_settings).clicked() {
                             self.show_settings = true;
@@ -1535,6 +1565,183 @@ impl RawBlowApp {
         }
         if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.jump_open = false;
+        }
+    }
+
+    /// 그리드 모드 한정 일괄 분류 변경 모달(#3).
+    ///
+    /// 파일명(또는 일부)으로 검색해 매칭되는 항목을 한꺼번에 Q/W/E/R 라벨로 적용한다.
+    /// 매칭 규칙은 RawPull과 동일(stem 기준 contains/exact, 대소문자 무시) —
+    /// transfer::parse_terms / match_indices를 그대로 재사용한다.
+    fn ui_bulk(&mut self, ctx: &egui::Context) {
+        let mut close = false;
+        let mut search = false;
+        let mut apply = false;
+        egui::Window::new("bulk_dialog")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
+            .fixed_size(Vec2::new(520.0, 0.0))
+            .frame(modal_frame())
+            .show(ctx, |ui| {
+                modal_header(ui, "일괄 분류 변경", "파일명·일부 → 매칭 → 라벨 적용");
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.bulk_text)
+                        .font(mono(12.0))
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("파일명 또는 일부 — 줄바꿈·쉼표·탭으로 구분"),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.bulk_exact, "정확히 일치");
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("  검색  ⏎  ")
+                                        .color(Color32::from_rgb(0x0a, 0x14, 0x20)),
+                                )
+                                .fill(theme::ACCENT),
+                            )
+                            .clicked()
+                        {
+                            search = true;
+                        }
+                    });
+                });
+
+                // 검색이 끝났으면 결과 + 라벨 선택 영역 노출.
+                if self.bulk_searched {
+                    ui.add_space(10.0);
+                    ui.label(
+                        egui::RichText::new(format!("매칭 {}건", self.bulk_hits.len()))
+                            .font(prop(11.0))
+                            .color(theme::INK2),
+                    );
+                    ui.add_space(4.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(200.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            if self.bulk_hits.is_empty() {
+                                ui.label(
+                                    egui::RichText::new("매칭 결과 없음")
+                                        .font(mono(11.0))
+                                        .color(theme::INK3),
+                                );
+                            } else {
+                                for &idx in &self.bulk_hits {
+                                    if let Some(it) = self.items.get(idx) {
+                                        let lbl = it.entry.label;
+                                        let mark = match lbl {
+                                            Label::Pick => "●",
+                                            Label::Hold => "◐",
+                                            Label::Reject => "✕",
+                                            Label::Unrated => "·",
+                                        };
+                                        let [r, g, b] = lbl.color_rgb();
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                egui::RichText::new(mark)
+                                                    .font(mono(11.0))
+                                                    .color(Color32::from_rgb(r, g, b)),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(&it.entry.stem)
+                                                    .font(mono(11.0))
+                                                    .color(theme::INK2),
+                                            );
+                                        });
+                                    }
+                                }
+                            }
+                        });
+                    ui.add_space(10.0);
+                    ui.label(
+                        egui::RichText::new("적용할 라벨")
+                            .font(prop(11.0))
+                            .color(theme::INK3),
+                    );
+                    ui.horizontal(|ui| {
+                        for (lbl, name) in [
+                            (Label::Pick, "Q  선택"),
+                            (Label::Hold, "W  보류"),
+                            (Label::Reject, "E  제외"),
+                            (Label::Unrated, "R  해제"),
+                        ] {
+                            let active = self.bulk_target == lbl;
+                            if toggle_btn(ui, name, active).clicked() {
+                                self.bulk_target = lbl;
+                            }
+                        }
+                    });
+                }
+
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let can_apply = self.bulk_searched && !self.bulk_hits.is_empty();
+                        let btn = egui::Button::new(
+                            egui::RichText::new("  적용  ")
+                                .color(Color32::from_rgb(0x0a, 0x14, 0x20)),
+                        )
+                        .fill(theme::ACCENT);
+                        if ui.add_enabled(can_apply, btn).clicked() {
+                            apply = true;
+                        }
+                        ui.add_space(8.0);
+                        if toggle_btn(ui, "닫기 (Esc)", false).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+
+        // 검색 트리거(버튼 또는 Enter — 입력이 비어있지 않을 때만).
+        if search
+            || (ctx.input(|i| i.key_pressed(egui::Key::Enter))
+                && !self.bulk_text.trim().is_empty())
+        {
+            let terms = transfer::parse_terms(&self.bulk_text);
+            let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
+            let mode = if self.bulk_exact {
+                MatchMode::Exact
+            } else {
+                MatchMode::Contains
+            };
+            self.bulk_hits = transfer::match_indices(&entries, &terms, mode);
+            self.bulk_searched = true;
+        }
+
+        // 적용: 매칭된 모든 항목에 라벨을 일괄 적용하고 사이드카 저장을 앞당긴다.
+        if apply && !self.bulk_hits.is_empty() {
+            let target = self.bulk_target;
+            let mut changed = 0usize;
+            for &idx in &self.bulk_hits {
+                if let Some(it) = self.items.get_mut(idx) {
+                    if it.entry.label != target {
+                        it.entry.label = target;
+                        changed += 1;
+                    }
+                }
+            }
+            if changed > 0 {
+                self.sidecar_dirty = true;
+                // 다음 틱에서 즉시 사이드카가 저장되도록 last_save를 과거로.
+                self.last_save = Instant::now() - Duration::from_millis(400);
+            }
+            self.toast = Some((
+                format!("{}건 → {}", self.bulk_hits.len(), target.ko()),
+                Instant::now(),
+            ));
+            self.bulk_open = false;
+            return;
+        }
+
+        if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.bulk_open = false;
         }
     }
 
