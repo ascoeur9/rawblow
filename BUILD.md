@@ -81,6 +81,12 @@ gh release create vX.Y.Z "RawBlow-vX.Y.Z-<os>.exe" \
 
 ## 변경 이력 (Changelog)
 
+### v0.2.11
+- **macOS 폴더 선택창 한국어화** — `.app` 번들 없는 단독 바이너리에서도 시스템 언어를
+  따르도록 시작 시 `NSUserDefaults["AppleLanguages"]`를 시스템 선호 언어로 설정
+  (이슈 #12). Windows 동작은 변화 없음(cfg 가드).
+- README 테스트 카메라 목록을 제조사별로 재정리, Sony α7R III 추가.
+
 ### v0.2.10
 - **Windows 11 실행 불가 수정** — `RUSTFLAGS` 환경변수가 `.cargo/config.toml`을 덮어써
   v0.2.9 바이너리가 `VCRUNTIME140.dll`에 동적 의존(LoadLibrary error 126). 정적 CRT 복귀
