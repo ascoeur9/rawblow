@@ -16,6 +16,11 @@ path = "src/main.rs"
 ico = "0.3"
 winresource = "0.1"
 
+# macOS: .app 번들 없이 실행되는 단독 바이너리에서도 NSOpenPanel 등 AppKit 다이얼로그가
+# 시스템 언어를 따르도록(이슈 #12) Objective-C 런타임을 통해 NSUserDefaults 조정.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+
 [dependencies]
 rawblow-core = { path = "../rawblow-core" }
 # glow(OpenGL 백엔드)는 빼고 wgpu만. winit 백엔드(x11/wayland)는 반드시 포함해야 함.
