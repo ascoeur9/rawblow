@@ -65,7 +65,9 @@ cargo run   --release -p rawblow-app
 - **카메라 RAW** (지금까지 실파일로 확인):
   - Panasonic **LUMIX S1R II** (`DC-S1RM2`, `.RW2`)
   - Panasonic **LUMIX S1 II** (`DC-S1M2`, `.RW2`)
-  - **Nikon Z6III** (`.NEF`)
+  - **Nikon Z6III** · **Z8** · **Z30** · **Z50II** (`.NEF`)
+  - **Sony α7C II** (`.ARW`)
+  - **Fujifilm GFX100S** · **GFX100RF** (`.RAF`)
   - **Canon EOS 5D / 5D Mark II** (`.CR2`)
 - 위 외의 바디·포맷(다른 RAW, JPG/PNG/HEIC 등)도 동작하도록 만들었지만 **검증되지 않은 바디는 임베디드 프리뷰 경로로 표시**됩니다. 새 바디에서 회색/깨짐/오류가 보이면 꼭 알려주세요.
 
@@ -100,6 +102,10 @@ cargo run   --release -p rawblow-app
 이슈 제보·테스트로 RawBlow를 함께 다듬어주신 분들께 감사드립니다:
 
 - **Party!!** — Canon EOS 5D Mark II(`.CR2`) 단일뷰 미표시 이슈 제보 (v0.2.7에서 수정)
+- **jebber** ([@dcjebber](https://x.com/dcjebber)) — Sony α7C II(`.ARW`) 테스트
+- **@stellar_sound** ([X](https://x.com/stellar_sound)) — Nikon Z8 / Z30 / Z50II(`.NEF`) 테스트, macOS 이미지 로드 확인
+- **doer** — Fujifilm GFX100S / GFX100RF(`.RAF`) 테스트
+- **Laflat** — Nikon Z6III(`.NEF`) 테스트
 
 ---
 
