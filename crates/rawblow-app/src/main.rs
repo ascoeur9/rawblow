@@ -4,6 +4,8 @@
 mod app;
 mod fonts;
 mod logo;
+#[cfg(target_os = "macos")]
+mod macos_locale;
 mod theme;
 mod widgets;
 mod worker;
@@ -14,6 +16,8 @@ use eframe::egui;
 fn main() -> eframe::Result<()> {
     env_logger::init();
     install_panic_log();
+    #[cfg(target_os = "macos")]
+    macos_locale::align_with_system();
     let icon = egui::IconData {
         rgba: logo::icon_rgba(256),
         width: 256,
