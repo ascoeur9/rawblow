@@ -358,10 +358,15 @@ fn downscale(img: DynamicImage, max_edge: u32) -> DynamicImage {
 }
 
 /// 풀 RAW 현상(imagepipe → sRGB RGB8). `fullraw` 피처에서만.
+///
+/// 회전 주의: imagepipe의 transform 옵코드가 rawloader가 읽은
+/// `Orientation`에 따라 이미 회전을 적용한다(소스: imagepipe ops/transform.rs).
+/// 따라서 `finish()`의 `apply_orientation`을 또 적용하면 **이중 회전**이 되어
+/// 세로 사진이 가로로 표시된다(이슈 #11, 소니 A7R3 ARW). orient=1로 넘겨 스킵.
 #[cfg(feature = "fullraw")]
 pub fn decode_full_raw(
     path: &Path,
-    orient: u16,
+    _orient: u16,
     max_edge: Option<u32>,
 ) -> Result<DecodedImage, DecodeError> {
     let mut pipeline = imagepipe::Pipeline::new_from_file(path)
@@ -372,7 +377,7 @@ pub fn decode_full_raw(
     let (w, h) = (out.width as u32, out.height as u32);
     let rgb = image::RgbImage::from_raw(w, h, out.data)
         .ok_or_else(|| DecodeError::Decode("imagepipe: rgb buffer size mismatch".into()))?;
-    Ok(finish(DynamicImage::ImageRgb8(rgb), None, true, orient, max_edge))
+    Ok(finish(DynamicImage::ImageRgb8(rgb), None, true, 1, max_edge))
 }
 
 #[cfg(not(feature = "fullraw"))]
