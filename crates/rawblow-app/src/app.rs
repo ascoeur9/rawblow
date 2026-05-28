@@ -1478,7 +1478,10 @@ impl RawBlowApp {
         if open_dest {
             if let Some(dest) = self.last_dest.clone() {
                 if dest.is_dir() {
-                    self.open_folder(dest);
+                    // 전송 결과의 "대상 폴더 열기"는 OS 파일 탐색기를 띄운다(Finder/Explorer).
+                    // 과거에는 RawBlow가 작업 폴더를 그 경로로 전환했는데, macOS에서 이
+                    // 경로가 강제종료를 일으켰고 UX 의도와도 맞지 않았다(#5).
+                    reveal_in_file_manager(&dest);
                 }
             }
             self.result = None;
@@ -1794,4 +1797,20 @@ fn exif_lines(ex: &ExifInfo) -> Vec<String> {
         lines.push(dt.clone());
     }
     lines
+}
+
+/// OS 파일 탐색기에서 폴더를 띄운다(Finder / Explorer / xdg-open). 실패 시 무음.
+///
+/// spawn()의 반환을 `let _ =`로 버리는 점이 핵심이다. 예전에는 동작 자체를
+/// 앱 내부 `open_folder()`(작업 폴더 전환)에 위임했는데, macOS에서 강제종료를
+/// 일으키는 경로였다(#5). 외부 명령은 부재/오류 시에도 패닉 없이 그냥 무시한다.
+fn reveal_in_file_manager(path: &std::path::Path) {
+    use std::process::Command;
+    let _ = if cfg!(target_os = "macos") {
+        Command::new("open").arg(path).spawn()
+    } else if cfg!(target_os = "windows") {
+        Command::new("explorer").arg(path).spawn()
+    } else {
+        Command::new("xdg-open").arg(path).spawn()
+    };
 }
