@@ -4,7 +4,7 @@
 //! EXIF로 폴백한다.
 
 use crate::model::{kind_of, Kind};
-use exif::{Exif, In, Tag};
+use exif::{Exif, In, Tag, Value};
 use std::path::Path;
 
 #[derive(Clone, Debug, Default)]
@@ -196,14 +196,28 @@ fn read_bytes(bytes: &[u8]) -> Option<ExifInfo> {
 }
 
 fn disp(exif: &Exif, tag: Tag) -> Option<String> {
-    exif.get_field(tag, In::PRIMARY).map(|f| {
-        // kamadak는 ASCII 값을 따옴표로 감싸 표시("DC-S1RM2") → 따옴표 제거.
-        f.display_value()
+    let field = exif.get_field(tag, In::PRIMARY)?;
+    // ASCII 필드는 display_value가 ASCII 배열을 `"a", "b", "c"`로 직렬화하기
+    // 때문에, 니콘처럼 LensModel 뒤에 빈 항목이 붙는 카메라에서 따옴표 꼬리가
+    // 그대로 노출된다. Value::Ascii를 직접 처리해 첫 비어있지 않은 항목만 쓴다.
+    if let Value::Ascii(parts) = &field.value {
+        for raw in parts {
+            let s = String::from_utf8_lossy(raw).trim().trim_end_matches('\0').trim().to_string();
+            if !s.is_empty() {
+                return Some(s);
+            }
+        }
+        return None;
+    }
+    // 그 외 타입은 kamadak 표시값에서 양끝 따옴표만 제거.
+    Some(
+        field
+            .display_value()
             .with_unit(exif)
             .to_string()
             .trim_matches('"')
-            .to_string()
-    })
+            .to_string(),
+    )
 }
 
 fn uint(exif: &Exif, tag: Tag) -> Option<u32> {
