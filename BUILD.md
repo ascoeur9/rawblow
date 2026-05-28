@@ -34,17 +34,31 @@ cargo test  -p rawblow-core              # 코어 로직 단위 테스트
    (의존성 패닉 위치 문자열). 공개 배포 시 정보 노출이므로 홈 경로를 `~`로 리맵합니다.
    *(Cargo의 `profile.trim-paths`가 stable이 되면 그걸로 대체 가능. 현재는 RUSTFLAGS 사용.)*
 
+> ⚠️ **중요**: 환경변수 `RUSTFLAGS`를 설정하면 `.cargo/config.toml`의 `rustflags`가
+> **완전히 덮어써집니다**(append 아님). 따라서 배포용 PowerShell/bash 명령에서는
+> `+crt-static`을 직접 같이 넣어야 합니다 — 빠뜨리면 VCRUNTIME140.dll 의존이 부활해
+> 테스터 PC(VC++ 재배포 미설치)에서 `LoadLibrary failed with error 126`로 실행 불가
+> (이슈 #10, v0.2.9에서 발생).
+
 ### Windows (PowerShell)
 ```powershell
-$env:RUSTFLAGS = "--remap-path-prefix=$env:USERPROFILE=~"
+$env:RUSTFLAGS = "-C target-feature=+crt-static --remap-path-prefix=$env:USERPROFILE=~"
 cargo build --release -p rawblow-app
 # 산출물: target\release\rawblow.exe  (단독 실행, 사용자명 없음)
 ```
 
 ### macOS / Linux (bash/zsh)
 ```bash
+# macOS/Linux는 +crt-static 무관 — remap만 적용
 RUSTFLAGS="--remap-path-prefix=$HOME=~" cargo build --release -p rawblow-app
 # 산출물: target/release/rawblow
+```
+
+### 검증 (Windows 배포 바이너리에 VCRUNTIME 의존이 없어야 함)
+```powershell
+# 결과에 VCRUNTIME140.dll / api-ms-win-crt-*.dll 이 나오면 정적 CRT가 빠진 것
+dumpbin /dependents target\release\rawblow.exe | Select-String -Pattern "vcruntime|api-ms-win-crt"
+# 정상 출력: (없음)
 ```
 
 ### 확인 (사용자명이 안 박혔는지)
