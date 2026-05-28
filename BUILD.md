@@ -81,6 +81,19 @@ gh release create vX.Y.Z "RawBlow-vX.Y.Z-<os>.exe" \
 
 ## 변경 이력 (Changelog)
 
+### v0.2.10
+- **Windows 11 실행 불가 수정** — `RUSTFLAGS` 환경변수가 `.cargo/config.toml`을 덮어써
+  v0.2.9 바이너리가 `VCRUNTIME140.dll`에 동적 의존(LoadLibrary error 126). 정적 CRT 복귀
+  (이슈 #10).
+- **ORIG 세로 사진 가로로 표시 수정** — `imagepipe`가 회전한 결과를 한 번 더 회전해 90°
+  잘못 표시되던 문제. 소니 A7R3 ARW에서 확인, 다른 RAW도 동일 경로 (이슈 #11).
+- **파일명으로 일괄 분류** — 그리드에서 파일명 패턴으로 한 번에 Q/W/E/R 분류 (이슈 #3).
+- **전송 후 폴더 열기 — macOS 강제종료 수정** — OS 탐색기로 위임 (이슈 #5).
+- **니콘 렌즈명 EXIF 꼬리 빈값 제거** (이슈 #6).
+
+### v0.2.9
+- 폴더 열기 버튼(툴바), 전송 다이얼로그 모달 재구현.
+
 ### v0.2.8
 - 배포 바이너리에서 **빌드 머신 사용자명·홈 경로 제거**(`--remap-path-prefix`로 익명화).
 
