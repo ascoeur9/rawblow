@@ -18,6 +18,6 @@ pub fn align_with_system() {
         let key_cstr = b"AppleLanguages\0".as_ptr() as *const std::os::raw::c_char;
         let key: *mut Object = msg_send![class!(NSString), stringWithUTF8String: key_cstr];
         let defaults: *mut Object = msg_send![class!(NSUserDefaults), standardUserDefaults];
-        let _: () = msg_send![defaults, setObject: langs, forKey: key];
+        let _: () = msg_send![defaults, setObject:langs forKey:key];
     }
 }
