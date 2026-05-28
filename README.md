@@ -23,10 +23,15 @@
 
 ## 설치 / 실행
 
-### 받아서 바로 실행 (Windows)
-[Releases](https://github.com/ascoeur9/rawblow/releases)에서 `rawblow.exe`를 받아 실행하세요(별도 설치 불필요, Windows x64).
+### 받아서 바로 실행
+[**Releases**](https://github.com/ascoeur9/rawblow/releases/latest)에서 OS에 맞는 파일을 받아 더블클릭하세요(설치·런타임 불필요).
 
-### 소스에서 빌드 (Win / macOS / Linux)
+- **Windows x64** — `RawBlow-vX.Y.Z-win-x64.exe` (단독 실행)
+- **macOS (Apple Silicon)** — `RawBlow-vX.Y.Z-macos-arm64.zip` (압축 풀면 `RawBlow.app`)
+  - 처음 실행 시 "개발자를 확인할 수 없음" 경고가 뜨면 **우클릭 → 열기**로 한 번 허용하세요(공증 미적용).
+  - 또는 터미널에서 `xattr -dr com.apple.quarantine /Applications/RawBlow.app`
+
+### 소스에서 빌드 (Linux, 그 외)
 ```bash
 cargo build --release -p rawblow-app   # 실행물: target/release/rawblow(.exe)
 cargo run   --release -p rawblow-app
@@ -61,7 +66,7 @@ cargo run   --release -p rawblow-app
 
 ## 테스트 환경
 
-- **OS**: Windows 11 에서 개발·주 테스트. macOS / Linux 는 코드상 지원하나 아직 광범위 테스트 전입니다(피드백 환영).
+- **OS**: Windows 11 · macOS (Apple Silicon) 정식 배포. Linux는 코드상 지원하나 사전 빌드본은 제공하지 않습니다(소스 빌드).
 - 위 외의 바디·포맷(다른 RAW, JPG/PNG/HEIC 등)도 동작하도록 만들었지만 **검증되지 않은 바디는 임베디드 프리뷰 경로로 표시**됩니다. 새 바디에서 회색/깨짐/오류가 보이면 꼭 알려주세요.
 
 ### 테스트된 카메라 RAW (실파일로 확인)
