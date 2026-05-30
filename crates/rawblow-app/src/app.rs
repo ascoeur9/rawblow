@@ -1791,6 +1791,64 @@ impl RawBlowApp {
                     }
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new("단축키 재바인딩 UI는 v1.1 예정 — 현재 기본값 QWER 고정 표시").font(mono(10.0)).color(theme::INK4));
+
+                    // ── ABOUT — 버전·릴리스/이슈 링크·제작자·관련 서비스 (#18) ──
+                    ui.add_space(20.0);
+                    ui.label(egui::RichText::new("ABOUT").font(prop(11.0)).color(theme::INK3));
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(format!("RawBlow v{}", env!("CARGO_PKG_VERSION")))
+                            .font(mono(11.0))
+                            .color(theme::INK),
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if link_btn(ui, "최신 버전 다운로드").clicked() {
+                            open_url("https://github.com/ascoeur9/rawblow/releases/latest");
+                        }
+                        ui.add_space(10.0);
+                        if link_btn(ui, "버그 제보 · 의견 보내기").clicked() {
+                            open_url("https://github.com/ascoeur9/rawblow/issues");
+                        }
+                    });
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("만든이")
+                                .font(prop(11.0))
+                                .color(theme::INK3),
+                        );
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new("하레")
+                                .font(prop(11.0))
+                                .color(theme::INK),
+                        );
+                        ui.add_space(8.0);
+                        if link_btn(ui, "@ascoeur9").clicked() {
+                            open_url("https://x.com/ascoeur9");
+                        }
+                        ui.add_space(4.0);
+                        if link_btn(ui, "@hare_kig").clicked() {
+                            open_url("https://x.com/hare_kig");
+                        }
+                    });
+                    ui.add_space(10.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            egui::RichText::new("RawBlow가 마음에 드시나요? 코스프레 사진은")
+                                .font(prop(11.0))
+                                .color(theme::INK2),
+                        );
+                        if link_btn(ui, "cosly").clicked() {
+                            open_url("https://cosly.link");
+                        }
+                        ui.label(
+                            egui::RichText::new("로 전달해 보세요.")
+                                .font(prop(11.0))
+                                .color(theme::INK2),
+                        );
+                    });
                 });
             });
         self.grid_cols = self.cfg.grid_cols.clamp(4, 12);
@@ -1800,6 +1858,34 @@ impl RawBlowApp {
 }
 
 // ── 보조 위젯 ──────────────────────────────────────────────
+
+/// 설정 화면 등에서 쓰는 인라인 링크 버튼(밑줄 + 액센트 색, 프레임 없음).
+fn link_btn(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(
+            egui::RichText::new(label)
+                .font(prop(11.0))
+                .color(theme::ACCENT)
+                .underline(),
+        )
+        .frame(false),
+    )
+}
+
+/// 기본 브라우저에서 URL을 연다. spawn 실패는 무음(앱이 죽지 않게).
+fn open_url(url: &str) {
+    use std::process::Command;
+    let _ = if cfg!(target_os = "macos") {
+        Command::new("open").arg(url).spawn()
+    } else if cfg!(target_os = "windows") {
+        // `start`는 cmd 빌트인이라 cmd.exe를 거쳐야 한다.
+        // 첫 인자의 빈 따옴표는 창 제목 위치 — URL이 따옴표로 시작할 때의 오해석 방지.
+        Command::new("cmd").args(["/C", "start", "", url]).spawn()
+    } else {
+        Command::new("xdg-open").arg(url).spawn()
+    };
+}
+
 fn toggle_btn(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
     let btn = egui::Button::new(egui::RichText::new(label).font(prop(12.0)).color(if active { theme::INK } else { theme::INK2 }))
         .fill(if active { theme::BG3 } else { Color32::TRANSPARENT })
