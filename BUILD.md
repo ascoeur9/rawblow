@@ -40,7 +40,20 @@ cargo test  -p rawblow-core              # 코어 로직 단위 테스트
 > 테스터 PC(VC++ 재배포 미설치)에서 `LoadLibrary failed with error 126`로 실행 불가
 > (이슈 #10, v0.2.9에서 발생).
 
-### Windows (PowerShell)
+### Windows (PowerShell) — 권장: 빌드 스크립트
+```powershell
+.\scripts\build-release-windows.ps1
+# 산출물: target\release\rawblow.exe  (단독 실행, 사용자명 없음)
+```
+
+스크립트는 매 호출마다 `RUSTFLAGS`를 명시적으로 다시 설정하고, 빌드 직후
+`dumpbin /dependents`로 **VCRUNTIME140.dll / api-ms-win-crt-*.dll 의존이
+남았는지 자동 검증**합니다. 의존이 잡히면 종료 코드 1로 실패해서 그 바이너리는
+배포되지 못합니다 — 이슈 #10이 v0.2.10/v0.2.11에서 재발한 적이 있어(셸 세션에
+다른 `RUSTFLAGS`가 살아있던 케이스) 릴리스 빌드는 반드시 이 스크립트로 돌리는
+걸 권장합니다.
+
+### Windows (PowerShell) — 수동 빌드 (스크립트를 못 쓸 때)
 ```powershell
 $env:RUSTFLAGS = "-C target-feature=+crt-static --remap-path-prefix=$env:USERPROFILE=~"
 cargo build --release -p rawblow-app
