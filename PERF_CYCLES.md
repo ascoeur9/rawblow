@@ -249,6 +249,16 @@ RW2 중심 변경(IFD ORIG·프리뷰)이 다른 카메라를 깨지 않는지 �
 | preview 448–2048 | ~160ms | 2.34MB | StripOffsets JPEG→2048 |
 - 판정: CR2도 thumb/preview 경계 384 동일. ≤384는 EXIF 썸네일(0.13MB), >384는 StripOffsets(2.34MB, C162 strip 적용). THUMB_EDGE 320·PREVIEW 1600 양쪽 카메라 최적. (주의: 코드 변경 후 모든 example 재빌드 필수 — stale 바이너리가 27MB로 오측정한 것을 발견·수정.)
 
+### Cycles 233–284 — 카메라별 디코드 타깃 스윕 (4폴더 × 13값)
+모든 카메라 thumb 경계 384 동일, ≤384는 EXIF 임베디드(0.13MB). preview(>384)는 카메라별:
+| 폴더 | preview bytes | preview 출력 | 경로 |
+|---|---|---|---|
+| 117_PANA JPG | 8.59MB | 타깃 비례(447~2048) | 본 이미지 디코딩 |
+| 미국여행 RW2 | **0.59MB** | 1920 고정 | IFD 0x002e |
+| 5D RAW CR2 | 2.32MB | 2048 | StripOffsets |
+| 미스즈 JPG | 4.41MB | 타깃 비례 | 본 이미지 |
+- 판정: RW2는 IFD로 최소 바이트(0.59MB), CR2는 StripOffsets(2.3MB), JPG는 본 이미지(불가피). thumb는 전 카메라 EXIF 임베디드로 0.13MB. THUMB_EDGE 320·PREVIEW 1600이 전 카메라에서 적정.
+
 ## 측정 방법
 
 - 프로파일러: `cargo run --release -p rawblow-core --example rw2_profile -- "<folder>" [count]`
