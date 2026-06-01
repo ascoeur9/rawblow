@@ -200,6 +200,11 @@ RW2 중심 변경(IFD ORIG·프리뷰)이 다른 카메라를 깨지 않는지 �
 - 166–168: 5D Mark I CR2 검증 — preview **12.9MB→2.0MB(6×)**, ORIG 370→278ms(StripOffsets JPEG 4386, rawloader 제거), thumb 5ms✓. 패닉 0. 두 Canon 모델(5D·5Dm2) 모두 strip 지원으로 최적화.
 - 판정: 사용자 라이브러리 전 카메라(Panasonic RW2/JPG + Canon CR2 2모델) 최적화 완료, 합성 테스트로 RW2·CR2 IFD 경로 영구 가드.
 
+### Cycles 169–177 — 전 폴더 썸네일 progressive prefix 재검증 (다양한 offset)
+- 169–174: 6폴더 @offset700 — 260320/117_PANA/미스즈 모두 **0.13MB·0% 폴백**(progressive 128KB 확인). 미국여행·5D·5Dm2는 <700 파일이라 N/A.
+- 175–177: 미국여행 @offset50 = 0.13MB·0% ✓. 5D/5Dm2 샘플은 <50 파일(이전 offset0 검증됨).
+- 판정: progressive 128KB가 전 폴더에서 0% 폴백·0.13MB로 동작(이전 0.52MB 대비 4× 적게). 라이브러리 전반 확인.
+
 ## 측정 방법
 
 - 프로파일러: `cargo run --release -p rawblow-core --example rw2_profile -- "<folder>" [count]`
