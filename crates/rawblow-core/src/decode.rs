@@ -86,8 +86,13 @@ pub fn decode_file(path: &Path, opts: DecodeOptions) -> Result<DecodedImage, Dec
         }
         Some(Kind::Raw) => {
             if opts.full_raw {
-                // ORIG(원본 보기): 풀 RAW 현상을 원본 크기로 시도. 패닉(미지원 카메라)·실패 시
-                // 임베디드 중 **가장 큰** JPEG를 원본 크기로(2048 상한 없이) 폴백 → 원본 디테일.
+                // ORIG(원본 보기): 먼저 IFD가 가리키는 **풀해상도 임베디드 JPEG**를 그 구간만
+                // 읽어 디코딩한다(예: RW2 0x0127의 8144px). 전체파일(수십 MB) 읽기와 rawloader
+                // 패닉을 모두 피해 가장 빠르고, 카메라 풀해상도 JPEG라 컬링에 충분한 디테일.
+                if let Some(img) = decode_largest_ifd_embedded(path, orient, opts.max_edge, 3000) {
+                    return Ok(img);
+                }
+                // 큰 임베디드가 없을 때만 풀 RAW 현상 시도(미지원 카메라는 패닉 → 폴백).
                 let full = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     decode_full_raw(path, orient, opts.max_edge)
                 }));
@@ -197,6 +202,103 @@ fn read_whole(path: &Path) -> std::io::Result<Vec<u8>> {
     let buf = std::fs::read(path)?;
     count_read(buf.len());
     Ok(buf)
+}
+
+/// 파일의 [offset, offset+len) 구간만 읽는다(seek + read). 임베디드 JPEG를 전체파일 읽기 없이
+/// 정확히 가져오는 데 쓴다. EOF를 넘으면 가능한 만큼만 읽는다.
+fn read_range(path: &Path, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path)?;
+    f.seek(SeekFrom::Start(offset))?;
+    let mut buf = Vec::new();
+    f.take(len as u64).read_to_end(&mut buf)?;
+    count_read(buf.len());
+    Ok(buf)
+}
+
+/// TIFF/RW2 IFD0를 헤더(앞 64KB)만 읽어 파싱하고, 임베디드 JPEG 블롭들의 (offset, len)을
+/// 길이 내림차순으로 반환한다. Panasonic RW2는 0x002e(JpgFromRaw, ~1920 프리뷰)와
+/// 0x0127(풀해상도 8144 JPEG)에 JPEG를 통째로 담는다(type=7 UNDEFINED, count=바이트수).
+/// 표준 TIFF(0x2a)·RW2(0x55) 모두 처리(매직 검사 생략). 못 읽으면 빈 벡터.
+fn tiff_ifd0_jpeg_blobs(path: &Path) -> Vec<(u64, usize)> {
+    use std::io::Read;
+    let mut header = vec![0u8; 64 * 1024];
+    let n = match std::fs::File::open(path).and_then(|mut f| f.read(&mut header)) {
+        Ok(n) => n,
+        Err(_) => return Vec::new(),
+    };
+    header.truncate(n);
+    count_read(n);
+    if header.len() < 16 {
+        return Vec::new();
+    }
+    let le = match &header[0..2] {
+        b"II" => true,
+        b"MM" => false,
+        _ => return Vec::new(),
+    };
+    let r16 = |o: usize| -> Option<u16> {
+        let b = header.get(o..o + 2)?;
+        Some(if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) })
+    };
+    let r32 = |o: usize| -> Option<u32> {
+        let b = header.get(o..o + 4)?;
+        Some(if le {
+            u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+        } else {
+            u32::from_be_bytes([b[0], b[1], b[2], b[3]])
+        })
+    };
+    let ifd0 = match r32(4) {
+        Some(v) => v as usize,
+        None => return Vec::new(),
+    };
+    let count = match r16(ifd0) {
+        Some(v) => v as usize,
+        None => return Vec::new(),
+    };
+    let mut blobs: Vec<(u64, usize)> = Vec::new();
+    for i in 0..count.min(512) {
+        let e = ifd0 + 2 + i * 12;
+        let (typ, cnt, val) = match (r16(e + 2), r32(e + 4), r32(e + 8)) {
+            (Some(t), Some(c), Some(v)) => (t, c as usize, v as u64),
+            _ => break,
+        };
+        // type=7(UNDEFINED, 1바이트) && 4바이트 초과 → val은 오프셋, cnt는 바이트 길이.
+        // JPEG로 보이는 충분히 큰 블롭만(>1KB) 후보로.
+        if typ == 7 && cnt > 1024 {
+            blobs.push((val, cnt));
+        }
+    }
+    blobs.sort_by(|a, b| b.1.cmp(&a.1)); // 길이 내림차순
+    blobs
+}
+
+/// ORIG용: RW2 IFD가 가리키는 **가장 큰** 임베디드 JPEG를 그 구간만 읽어 디코딩한다.
+/// 전체파일(수십 MB) 읽기와 rawloader 패닉을 모두 피한다. JPEG가 충분히 크면(`min_long_edge`
+/// 이상) 원본 디테일로 채택, 작으면 None(풀 RAW 현상으로 폴백 유도).
+fn decode_largest_ifd_embedded(
+    path: &Path,
+    orient: u16,
+    max_edge: Option<u32>,
+    min_long_edge: u32,
+) -> Option<DecodedImage> {
+    for (off, len) in tiff_ifd0_jpeg_blobs(path) {
+        let bytes = match read_range(path, off, len) {
+            Ok(b) if b.len() >= 4 && b[0] == 0xFF && b[1] == 0xD8 => b,
+            _ => continue,
+        };
+        // 디코딩 가능 SOF에서 크기 확인 — 너무 작으면(프리뷰만) 건너뛴다.
+        if let Some((w, h)) = jpeg_dimensions(&bytes) {
+            if (w.max(h) as u32) < min_long_edge {
+                continue;
+            }
+        }
+        if let Ok(img) = decode_jpeg_scaled(&bytes, orient, max_edge) {
+            return Some(img);
+        }
+    }
+    None
 }
 
 /// JPEG 바이트를 디코딩한다. 빠른 경로는 jpeg-decoder의 DCT 축소(`scale`),

@@ -36,4 +36,11 @@
 - 가설: 폴더 열 때 3562개 전부를 bg 큐에 적재 → 느린 디스크 포화 → 보이는 셀(prio)이 굶음.
 - 변경: `request_prefetch_thumbs`(전체) → `request_prefetch_window`(현재 index 주변 BEHIND=16/AHEAD=80만, update에서 매 프레임 슬라이드). open_folder의 전체 enqueue 제거.
 - 측정: 폴더 열 때 enqueue 수 **3562 → ≤96**. 윈도우가 이동을 따라가므로 디스크 부하는 폴더 크기와 무관하게 일정. 보이는 셀의 prio 요청이 더 이상 수천 건 배경 읽기 뒤에 줄서지 않음.
-- 판정: **채택**. (남은 디스크 경합은 Cycle 3에서 bg 동시성 제한으로 추가 완화.)
+- 판정: **채택**. (남은 디스크 경합은 Cycle 4에서 bg 동시성 제한으로 추가 완화.)
+
+### Cycle 3 — ORIG 15초 해결: IFD 기반 풀해상도 임베디드 읽기
+- 발견: `ifd_dump` 프로브로 RW2 IFD0 구조 확인. tag `0x002e`(JpgFromRaw)=offset6144/628KB(1920 프리뷰), tag **`0x0127`=offset649216/8.5MB(풀해상도 8144×5424 JPEG)**.
+- 가설: ORIG는 rawloader가 56MB 읽고 패닉 + 폴백이 56MB 또 읽음(2×56MB). 풀해상도 JPEG가 이미 IFD에 있으니 그 구간만 읽으면 됨.
+- 변경: `tiff_ifd0_jpeg_blobs`(헤더 64KB만 파싱 → type7 블롭 offset/len) + `read_range`(seek+구간 읽기) + `decode_largest_ifd_embedded`. decode_file ORIG가 **IFD 임베디드 우선**, 큰 임베디드(≥3000px) 없을 때만 rawloader.
+- 측정: ORIG **57.3MB → 8.04MB read (7.1× 감소)**, 패닉 **수십 줄 → 0**, 시간 419→370ms(워밍). 콜드 디스크 기준 2×56MB→8MB ≈ **14× 적은 I/O** → 15초의 핵심 해소. 출력 8144×5424 동일(무회귀).
+- 판정: **채택**.
