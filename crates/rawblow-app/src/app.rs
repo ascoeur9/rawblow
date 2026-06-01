@@ -278,27 +278,43 @@ impl RawBlowApp {
         self.folder = Some(folder);
         self.toast = Some((format!("{} 항목 로드", self.items.len()), Instant::now()));
         self.schedule_cache_trim(); // 폴더 열 때 캐시 상한 정리(다른/오래된 폴더 썸네일 회수).
-        self.request_prefetch_thumbs(); // 폴더 전체 썸네일을 백그라운드로 디스크 캐시에 미리 채움.
+        // 프리페치는 폴더 전체가 아니라 현재 위치 주변 윈도우만(update에서 매 프레임 슬라이드).
     }
 
-    /// 폴더의 모든 썸네일을 백그라운드(최저 우선순위)로 디스크 캐시에 미리 디코딩해 둔다(#1).
-    /// GPU 업로드 없이 디코딩→디스크 저장만 하므로 VRAM·메인 스레드 부담이 없고(과거 GPU
-    /// 일괄 프리필이 그리드를 얼린 것과 다르다), 이후 스크롤 시 보이는 셀 요청이 디스크 캐시
-    /// 히트(≈1ms)로 즉시 뜬다. 이미 캐시에 있는 항목은 워커가 디코딩조차 건너뛴다.
-    fn request_prefetch_thumbs(&mut self) {
-        for real in 0..self.items.len() {
-            if self.pending_prefetch.insert(real) {
-                let path = self.items[real].entry.display.clone();
-                self.worker.request_background(DecodeRequest {
-                    id: real,
-                    path,
-                    full_raw: false,
-                    max_edge: Some(THUMB_EDGE),
-                    thumb: true,
-                    prefetch: true,
-                    generation: self.generation,
-                });
+    /// 현재 위치 주변의 **제한된 윈도우**만 백그라운드(최저 우선순위)로 디스크 캐시에 미리
+    /// 디코딩한다(#perf). 폴더 전체(수천 장)를 한꺼번에 큐에 넣으면 느린 디스크가 포화돼
+    /// 보이는 셀(prio)이 진행 중인 배경 읽기 뒤에서 굶어, 썸네일이 수십 초~수 분 지연됐다.
+    /// 진행 방향(전방 편향) 일정 개수만 데우고, 윈도우는 이동에 따라 슬라이드한다. GPU 업로드
+    /// 없이 디스크 저장만 하므로 VRAM·메인 스레드 부담은 없다. 이미 캐시/대기 중인 건 건너뛴다.
+    fn request_prefetch_window(&mut self) {
+        const AHEAD: usize = 80; // 진행 방향으로 데울 개수
+        const BEHIND: usize = 16; // 되돌아가기 대비 소량
+        let f = self.filtered();
+        if f.is_empty() {
+            return;
+        }
+        let cur = self.index.min(f.len() - 1);
+        let lo = cur.saturating_sub(BEHIND);
+        let hi = (cur + AHEAD).min(f.len() - 1);
+        for fi in lo..=hi {
+            let real = f[fi];
+            // 이미 GPU 캐시에 있거나, 곧 prio로 처리되거나, 이미 프리페치 대기면 건너뛴다.
+            if self.thumbs.contains(real)
+                || self.pending_thumb.contains(&real)
+                || !self.pending_prefetch.insert(real)
+            {
+                continue;
             }
+            let path = self.items[real].entry.display.clone();
+            self.worker.request_background(DecodeRequest {
+                id: real,
+                path,
+                full_raw: false,
+                max_edge: Some(THUMB_EDGE),
+                thumb: true,
+                prefetch: true,
+                generation: self.generation,
+            });
         }
     }
 
@@ -675,6 +691,7 @@ impl eframe::App for RawBlowApp {
             self.ensure_exif(real);
         }
         self.request_preload();
+        self.request_prefetch_window(); // 현재 위치 주변만 디스크 캐시 워밍(폴더 전체 플러드 금지).
         self.save_sidecar_if_due();
 
         // 프리뷰(현재 주변)는 즉시 리페인트로 빠르게 채운다.

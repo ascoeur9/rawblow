@@ -31,3 +31,9 @@
 - 변경: `decode::BYTES_READ` 바이트 카운터 추가(`read_prefix`/`read_whole`에 집계), 프로파일러 `rw2_profile` 작성.
 - 결과: 위 베이스라인 확보. ORIG=57MB/419ms가 최대 병목, 배경 프리필 3562 플러드가 썸네일 플러드 원인으로 특정.
 - 판정: 계측 채택. 다음 사이클부터 개선.
+
+### Cycle 2 — 배경 프리필 플러드 제거 (썸네일 3분의 직접 원인)
+- 가설: 폴더 열 때 3562개 전부를 bg 큐에 적재 → 느린 디스크 포화 → 보이는 셀(prio)이 굶음.
+- 변경: `request_prefetch_thumbs`(전체) → `request_prefetch_window`(현재 index 주변 BEHIND=16/AHEAD=80만, update에서 매 프레임 슬라이드). open_folder의 전체 enqueue 제거.
+- 측정: 폴더 열 때 enqueue 수 **3562 → ≤96**. 윈도우가 이동을 따라가므로 디스크 부하는 폴더 크기와 무관하게 일정. 보이는 셀의 prio 요청이 더 이상 수천 건 배경 읽기 뒤에 줄서지 않음.
+- 판정: **채택**. (남은 디스크 경합은 Cycle 3에서 bg 동시성 제한으로 추가 완화.)
