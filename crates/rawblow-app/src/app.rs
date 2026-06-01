@@ -146,14 +146,19 @@ impl RawBlowApp {
         crate::fonts::install(&cc.egui_ctx);
 
         let cfg = config::load();
-        // 워커 스레드 수 제한: 코어의 절반(2~6)으로 CPU 피크를 억제.
-        // 디코딩이 DCT 축소로 가벼워져 적은 스레드로도 프리로드를 따라잡는다.
-        let worker = Worker::new(
-            std::thread::available_parallelism()
-                .map(|n| (n.get() / 2).clamp(2, 6))
-                .unwrap_or(4),
-            config::cache_dir(),
-        );
+        // 워커 스레드 수: 코어 수에 비례하되 상한으로 CPU 피크를 억제. 디코딩이 DCT 축소로
+        // 가벼워 과한 스레드는 불필요하지만, 멀티코어에선 더 많은 전경 스레드가 빠른 스크롤
+        // 썸네일 처리량을 높인다. env RB_THREADS로 실험 override 가능.
+        let threads = std::env::var("RB_THREADS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&n| n >= 1)
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|n| (n.get() / 2).clamp(2, 8))
+                    .unwrap_or(4)
+            });
+        let worker = Worker::new(threads, config::cache_dir());
 
         let mut app = RawBlowApp {
             view: ViewMode::Single,

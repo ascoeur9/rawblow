@@ -59,3 +59,15 @@
 - 변경: `worker.rs`를 채널 FIFO → **Mutex+Condvar 레인 스케줄러**로 재설계. 레인 우선순위 Preview>Thumb>Normal>Bg, 각 레인 **LIFO(최신=현재 화면 우선)** + **상한**(Thumb 256/Bg 192/Preview 4/Normal 32). 상한 초과 시 가장 오래된(지나간) 요청을 버리고 `dropped` 결과로 UI에 통지 → pending 해제 → 아직 보이면 재요청. app.rs는 썸네일→Thumb 레인, 현재 프리뷰→Preview 레인, 이웃→Normal, 프리페치→Bg로 라우팅 + drain에서 dropped 처리.
 - 측정(앱 벤치, 동일 20행/s 풀스피드 44초): **가시 셀 캐시 적중 vis_cached = 72~80/80 (대부분 100%)**, 끝에서만 60/72. pend_thumb/pref **상한 내 안정**(≤260/≤200). frame ~8ms.
 - 판정: **채택(핵심 수정)**. 스크롤 시 현재 화면 썸네일이 즉시 표시됨 = 3분 → 즉시.
+
+### Cycle 6 — 워커 스레드 수 스윕 + env override
+- 가설: 16코어인데 워커 6스레드(clamp 2..6)로 과소활용 → 더 많은 전경 스레드가 처리량↑.
+- 변경: clamp 2..6 → 2..8, `RB_THREADS` env override 추가.
+- 측정: 앱 벤치로 threads 6/8/12 스윕 → **워밍 캐시에선 셋 다 vis_cached 100%**(차이 없음). LIFO 스케줄러가 이미 전경을 보장하므로 스레드가 병목이 아님. 콜드 프리필엔 약간 도움.
+- 판정: (2,8) 소폭 상향 **유지**(고코어 콜드 프리필 이득, 무해). RB_THREADS는 튜닝용으로 둠.
+
+### Cycle 7 — JPG 썸네일도 prefix 임베디드 사용 (전체파일 읽기 제거)
+- 발견: 117_PANA 하위폴더 JPG(6~9MB) 썸네일이 `decode_file`에서 **전체파일을 읽어 104ms**(RW2는 512KB/5ms). 벤치 후반 dip의 원인. 그런데 JPG 앞부분에 EXIF 임베디드 썸네일 존재(embPrefix=2).
+- 변경: JPEG도 **썸네일 크기 요청이면 512KB prefix에서 임베디드 썸네일 디코딩**(RW2와 동일 경로, find_eoi 마커워킹이 본 이미지 가짜 EOI 방지), 없으면 전체 폴백.
+- 측정: JPG 썸네일 **8.19MB/104ms → 0.52MB/2ms** (16× I/O, 50× 빠름). 출력 160×120(EXIF 썸네일, 그리드엔 충분). DCT 회귀 테스트 통과.
+- 판정: **채택**. 이제 RW2·JPG 모두 썸네일이 512KB/≤5ms.

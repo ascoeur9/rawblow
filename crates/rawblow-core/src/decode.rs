@@ -78,6 +78,17 @@ pub fn decode_file(path: &Path, opts: DecodeOptions) -> Result<DecodedImage, Dec
         Some(Kind::Image) => {
             let is_jpeg = matches!(ext_lower(path).as_deref(), Some("jpg") | Some("jpeg"));
             if is_jpeg {
+                // 썸네일 크기 요청이면 전체(수 MB)를 읽지 않고, 앞부분의 임베디드 EXIF 썸네일을
+                // 먼저 시도해 I/O를 크게 줄인다(예: 8MB JPG → 512KB). find_eoi 마커워킹이 본
+                // 이미지의 가짜 EOI에 안 속으므로 완전한 임베디드 썸네일만 잡힌다. 없으면 전체 폴백.
+                let thumb = matches!(opts.max_edge, Some(e) if e <= 384);
+                if thumb {
+                    if let Ok(prefix) = read_prefix(path, 512 * 1024) {
+                        if let Some(img) = decode_best_embedded(&prefix, true, orient, opts.max_edge) {
+                            return Ok(img);
+                        }
+                    }
+                }
                 let bytes = read_whole(path)?;
                 decode_jpeg_scaled(&bytes, orient, opts.max_edge)
             } else {
