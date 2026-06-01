@@ -242,6 +242,13 @@ RW2 중심 변경(IFD ORIG·프리뷰)이 다른 카메라를 깨지 않는지 �
 | 5Dm2 CR2 | 21 | 0% | 0 | 0 |
 - 판정: 사용자 전 라이브러리(~10,000 파일: 260320 7124 + 미스즈 1385 + 미국여행 174 + 하네다 1240 + 샘플)가 **에러·폴백·진짜 회색 0**으로 디코딩. 전 카메라·전 폴더 무손상 확인.
 
+### Cycles 220–232 — CR2 디코드 타깃 스윕 (StripOffsets 경로)
+| 타깃 | time | bytes | 출력 |
+|---|---|---|---|
+| thumb 128–384 | ~8ms | 0.13MB | EXIF 임베디드 썸네일(progressive) |
+| preview 448–2048 | ~160ms | 2.34MB | StripOffsets JPEG→2048 |
+- 판정: CR2도 thumb/preview 경계 384 동일. ≤384는 EXIF 썸네일(0.13MB), >384는 StripOffsets(2.34MB, C162 strip 적용). THUMB_EDGE 320·PREVIEW 1600 양쪽 카메라 최적. (주의: 코드 변경 후 모든 example 재빌드 필수 — stale 바이너리가 27MB로 오측정한 것을 발견·수정.)
+
 ## 측정 방법
 
 - 프로파일러: `cargo run --release -p rawblow-core --example rw2_profile -- "<folder>" [count]`
