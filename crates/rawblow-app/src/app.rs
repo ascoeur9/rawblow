@@ -420,9 +420,9 @@ impl RawBlowApp {
                 generation: self.generation,
             };
             if prio {
-                self.worker.request_priority(req);
+                self.worker.request_preview(req);
             } else {
-                self.worker.request(req);
+                self.worker.request_normal(req);
             }
         }
     }
@@ -455,10 +455,9 @@ impl RawBlowApp {
             };
             if prio {
                 self.pending_thumb_prio.insert(real);
-                self.worker.request_priority(req);
-            } else {
-                self.worker.request(req);
             }
+            // 썸네일은 모두 Thumb 레인(최신 우선)으로 보낸다 — 현재 화면이 먼저 디코딩된다.
+            self.worker.request_thumb(req);
         }
     }
 
@@ -472,6 +471,18 @@ impl RawBlowApp {
                 Ok(res) => res,
                 Err(_) => break,
             };
+            // 큐 상한 초과로 버려진 요청: 해당 pending만 풀어 필요하면(아직 보이면) 재요청되게 한다.
+            if res.dropped {
+                if res.prefetch {
+                    self.pending_prefetch.remove(&res.id);
+                } else if res.thumb {
+                    self.pending_thumb.remove(&res.id);
+                    self.pending_thumb_prio.remove(&res.id);
+                } else {
+                    self.pending_preview.remove(&res.id);
+                }
+                continue;
+            }
             // 디스크 캐시가 새로 채워질 수 있는 결과마다 카운트해, 세션 중에도 상한을
             // 주기적으로 정리한다(trim은 폴더 열 때만 돌아 긴 세션에서 프리뷰 캐시가 상한을
             // 초과할 수 있었음 — #D 회귀). trim은 백그라운드·throttle이라 호출이 가벼움.
@@ -668,6 +679,62 @@ impl RawBlowApp {
             }
         }
     }
+
+    /// [임시] 벤치: 그리드를 실제 "화살표 쭉 누름"처럼 시간당 일정 행 자동 스크롤하며,
+    /// 현재 화면 셀의 썸네일 캐시 적중률·프레임시간을 0.5s마다 temp 로그에 기록한다.
+    /// "썸네일이 따라오는가"를 그라운드 트루스로 측정. env RB_BENCH로만 동작, 끝나면 프로세스 종료.
+    fn bench_step(&mut self, ctx: &egui::Context) {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::OnceLock;
+        static START: OnceLock<Instant> = OnceLock::new();
+        static LAST_LOG_MS: AtomicU64 = AtomicU64::new(u64::MAX);
+        let start = *START.get_or_init(Instant::now);
+        let elapsed = start.elapsed().as_secs_f64();
+        let log = |s: String| {
+            let path = std::env::temp_dir().join("rawblow_bench.log");
+            if let Ok(mut fh) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                let _ = fh.write_all(s.as_bytes());
+            }
+        };
+
+        self.view = ViewMode::Grid;
+        let f = self.filtered();
+        let len = f.len();
+        if len == 0 {
+            ctx.request_repaint();
+            return;
+        }
+        let cols = self.grid_cols.clamp(4, 12);
+
+        // 시간당 20행 이동(빠른 키 반복 수준). index를 시간 기준으로 전진.
+        let target_row = (elapsed * 20.0) as usize;
+        self.index = (target_row * cols).min(len - 1);
+        self.grid_scroll_to = Some(self.index / cols);
+
+        // 실제 그리드 가시 범위(지난 프레임 ui_grid가 채움) 셀의 썸네일 캐시 적중 = "따라오는가".
+        let vis = self.grid_visible_rows.clone();
+        let lo = (vis.start * cols).min(len);
+        let hi = (vis.end * cols).min(len);
+        let vis_n = hi.saturating_sub(lo).max(1);
+        let cached = (lo..hi).filter(|&fi| self.thumbs.contains(f[fi])).count();
+
+        let now_ms = (elapsed * 1000.0) as u64;
+        let last = LAST_LOG_MS.load(Ordering::Relaxed);
+        if last == u64::MAX || now_ms.saturating_sub(last) >= 500 {
+            LAST_LOG_MS.store(now_ms, Ordering::Relaxed);
+            log(format!(
+                "{:6.1}s idx={:5}/{} rows={:?} vis_cached={}/{} thumbs={:5} pend_thumb={:4} pend_pref={:4} frame={:.0}ms\n",
+                elapsed, self.index, len, vis, cached, vis_n,
+                self.thumbs.len(), self.pending_thumb.len(), self.pending_prefetch.len(), self.frame_ms,
+            ));
+        }
+        if (self.index >= len - 1 && elapsed > 2.0) || elapsed > 180.0 {
+            log(format!("DONE elapsed={:.1}s idx={}/{} thumbs={}\n", elapsed, self.index, len, self.thumbs.len()));
+            std::process::exit(0);
+        }
+        ctx.request_repaint();
+    }
 }
 
 impl eframe::App for RawBlowApp {
@@ -676,6 +743,11 @@ impl eframe::App for RawBlowApp {
         let now = Instant::now();
         self.frame_ms = now.duration_since(self.last_frame).as_secs_f32() * 1000.0;
         self.last_frame = now;
+
+        // [임시] 벤치 모드: env RB_BENCH 설정 시 그리드를 자동 스크롤하며 썸네일 채움 진행을 기록.
+        if std::env::var_os("RB_BENCH").is_some() {
+            self.bench_step(ctx);
+        }
 
         // 은퇴 텍스처의 TTL을 깎아 in-flight 참조가 끝난 핸들만 드롭(GPU 파괴)한다.
         self.cache.tick();

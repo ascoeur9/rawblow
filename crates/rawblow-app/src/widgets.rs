@@ -275,6 +275,11 @@ impl TexCache {
         self.map.contains_key(&id)
     }
 
+    /// 현재 캐시된 텍스처 수(계측·벤치용).
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
     pub fn insert(&mut self, id: usize, handle: egui::TextureHandle, full: bool) {
         let size = handle.size();
         // 같은 id 교체 시 반환되는 이전 핸들을 **즉시 드롭하지 말고** 유예한다.
