@@ -218,6 +218,11 @@ RW2 중심 변경(IFD ORIG·프리뷰)이 다른 카메라를 깨지 않는지 �
 - 혼합 RW2+JPG @X:(~4MB/s). thumb 0.13MB✓(progressive). RW2: preview **0.75-0.89MB(IFD)**·ORIG 8MB(8144) → 슬로우 드라이브서도 빠름(콜드 ~0.2s). JPG: preview/ORIG 8-11MB(본 이미지, 불가피) → 콜드 ~2.5s지만 앱이 썸네일 즉시 표시 후 프리뷰로 업그레이드(점진 표시)라 체감 즉시.
 - 판정: 슬로우 드라이브서 RW2 로딩 최소 바이트. JPG는 본 이미지 읽기가 하한이나 점진 표시로 UX 양호. (사용자 불만 폴더 260320은 RW2·빠른 SSD.)
 
+### Cycles 190–201 — CR2 게이트·최소변 스윕 (StripOffsets 경계, RW2와 다름)
+- 190–195: CR2 ORIG 게이트 (StripOffsets ~5616): gate ≤5616 → **5616×3744 StripOffsets JPEG 96ms**; gate >5616(6000/7000) → rawloader 5634×3753 **480ms(4× 느림)**. 현재 3000은 StripOffsets 경로(빠르고 거의 풀해상도) → 최적.
+- 196–201: CR2 preview_min (1000~2400): 전부 2048/1.38MB(StripOffsets 단일 blob이라 min 무관). 현재 1600 적정.
+- 판정: 게이트 3000은 RW2(8144)·CR2(5616) 양쪽에서 임베디드 풀해상도를 쓰는 안전값. preview_min 1600도 양쪽 최적.
+
 ## 측정 방법
 
 - 프로파일러: `cargo run --release -p rawblow-core --example rw2_profile -- "<folder>" [count]`
