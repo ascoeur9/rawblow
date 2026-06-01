@@ -52,18 +52,21 @@ fn main() {
         let name = p.file_name().unwrap().to_string_lossy();
         let fsize = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
 
-        // 0) 디스크 속도(전체 읽기). OS 캐시 영향 있음 — 콜드/웜 모두 참고로.
-        let t = Instant::now();
-        let whole = std::fs::read(p).unwrap_or_default();
-        let dread = ms(t);
-        let mbps = (whole.len() as f64 / 1e6) / (dread / 1000.0).max(1e-6);
-        disk_mbps.push(mbps);
-
-        // 임베디드 맵(앞 1MB vs 전체).
-        let n1m = (1 << 20).min(whole.len());
-        let emb_prefix = map_embedded(&whole[..n1m]);
-        let emb_whole = map_embedded(&whole);
-        let biggest = emb_whole.iter().map(|c| c.1).max().unwrap_or(0);
+        // 0) 디스크 속도(전체 읽기). RB_NOSTEP0=1이면 건너뛴다(RW2 전체파일 읽기가 느림).
+        let (mbps, emb_prefix, emb_whole, biggest) = if std::env::var("RB_NOSTEP0").is_ok() {
+            (0.0, Vec::new(), Vec::new(), 0usize)
+        } else {
+            let t = Instant::now();
+            let whole = std::fs::read(p).unwrap_or_default();
+            let dread = ms(t);
+            let mbps = (whole.len() as f64 / 1e6) / (dread / 1000.0).max(1e-6);
+            disk_mbps.push(mbps);
+            let n1m = (1 << 20).min(whole.len());
+            let ep = map_embedded(&whole[..n1m]);
+            let ew = map_embedded(&whole);
+            let bg = ew.iter().map(|c| c.1).max().unwrap_or(0);
+            (mbps, ep, ew, bg)
+        };
 
         // 1) orientation 비용(decode_file 내부에서 매번 호출됨).
         let _ = decode::take_bytes_read();

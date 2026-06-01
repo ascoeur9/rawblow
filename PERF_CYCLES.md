@@ -205,6 +205,15 @@ RW2 중심 변경(IFD ORIG·프리뷰)이 다른 카메라를 깨지 않는지 �
 - 175–177: 미국여행 @offset50 = 0.13MB·0% ✓. 5D/5Dm2 샘플은 <50 파일(이전 offset0 검증됨).
 - 판정: progressive 128KB가 전 폴더에서 0% 폴백·0.13MB로 동작(이전 0.52MB 대비 4× 적게). 라이브러리 전반 확인.
 
+### Cycles 178–185 — 폴더별 preview/ORIG I/O 검증 (3개 최적화 종합 확인)
+| 폴더 | preview | ORIG | 최적화 경로 |
+|---|---|---|---|
+| 260320 RW2 | 0.56MB | 8.04MB(8144) | IFD type-7 |
+| 미국여행 RW2 | 0.57MB | **1.13MB**(1920) | IFD + **ORIG 폴백**(C158, 구 36MB) |
+| 5D RAW CR2 | **2.20MB**(구 12.9MB) | 2.20MB(4386) | **StripOffsets**(C162) |
+| 5Dm2 CR2 | **2.40MB**(구 26.5MB) | 2.40MB(5616) | **StripOffsets**(C162) |
+- 판정: 전 폴더 preview ≤2.4MB·ORIG ≤8MB. 3개 실개선(progressive·ORIG폴백·CR2 strip)이 라이브러리 전반에서 동작. 구 방식(CR2 preview 30MB·RW2 ORIG 56MB·미국여행 ORIG 36MB) 대비 대폭 감소.
+
 ## 측정 방법
 
 - 프로파일러: `cargo run --release -p rawblow-core --example rw2_profile -- "<folder>" [count]`
