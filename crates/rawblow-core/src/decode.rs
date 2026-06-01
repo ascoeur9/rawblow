@@ -100,7 +100,7 @@ pub fn decode_file(path: &Path, opts: DecodeOptions) -> Result<DecodedImage, Dec
                 // ORIG(원본 보기): 먼저 IFD가 가리키는 **풀해상도 임베디드 JPEG**를 그 구간만
                 // 읽어 디코딩한다(예: RW2 0x0127의 8144px). 전체파일(수십 MB) 읽기와 rawloader
                 // 패닉을 모두 피해 가장 빠르고, 카메라 풀해상도 JPEG라 컬링에 충분한 디테일.
-                if let Some(img) = decode_largest_ifd_embedded(path, orient, opts.max_edge, 3000) {
+                if let Some(img) = decode_ifd_embedded(path, orient, opts.max_edge, 3000, false) {
                     return Ok(img);
                 }
                 // 큰 임베디드가 없을 때만 풀 RAW 현상 시도(미지원 카메라는 패닉 → 폴백).
@@ -133,6 +133,15 @@ fn decode_raw_embedded(
     // 썸네일: 320으로 축소. 프리뷰: 1920급 임베디드를 줄이지 않고(≤2048 → 그대로) 선명하게,
     // 단 드물게 거대한 임베디드는 2048로 상한.
     let decode_edge = if thumb { max_edge } else { Some(2048) };
+
+    // 프리뷰: IFD가 가리키는 **가장 작은 ≥1600 임베디드**(RW2 0x002e ~1920)를 그 구간만 읽어
+    // 디코딩한다(blind 1MB prefix·전체파일 폴백 회피, 1920이 1MB 밖이어도 안전). IFD가 없거나
+    // ≥1600 임베디드가 없으면(비RW2 등) 아래 prefix 경로로 폴백.
+    if !thumb {
+        if let Some(img) = decode_ifd_embedded(path, orient, decode_edge, 1600, true) {
+            return Ok(img);
+        }
+    }
 
     // 프리픽스 크기: 썸네일은 512KB. 너무 작으면(예: 64KB) 작은 썸네일의 완전한 SOI..EOI가
     // 안 들어오고, 더 큰 임베디드가 가짜(이른) EOI로 "완전"해 보여 잘린 채 디코딩 → 회색.
@@ -291,18 +300,26 @@ fn tiff_ifd0_jpeg_blobs(path: &Path) -> Vec<(u64, usize)> {
 /// ORIG용: RW2 IFD가 가리키는 **가장 큰** 임베디드 JPEG를 그 구간만 읽어 디코딩한다.
 /// 전체파일(수십 MB) 읽기와 rawloader 패닉을 모두 피한다. JPEG가 충분히 크면(`min_long_edge`
 /// 이상) 원본 디테일로 채택, 작으면 None(풀 RAW 현상으로 폴백 유도).
-fn decode_largest_ifd_embedded(
+/// IFD가 가리키는 임베디드 JPEG 중 `min_long_edge` 이상인 것을 그 구간만 읽어 디코딩한다.
+/// `prefer_smallest=false`(ORIG): 큰 것부터 → 가장 큰 풀해상도. `true`(프리뷰): 작은 것부터
+/// → 화면에 충분한 **가장 작은** 임베디드(거대 임베디드 디코딩 회피, 전체파일·blind prefix 회피).
+fn decode_ifd_embedded(
     path: &Path,
     orient: u16,
     max_edge: Option<u32>,
     min_long_edge: u32,
+    prefer_smallest: bool,
 ) -> Option<DecodedImage> {
-    for (off, len) in tiff_ifd0_jpeg_blobs(path) {
+    let mut blobs = tiff_ifd0_jpeg_blobs(path); // 길이 내림차순
+    if prefer_smallest {
+        blobs.reverse(); // 길이 오름차순
+    }
+    for (off, len) in blobs {
         let bytes = match read_range(path, off, len) {
             Ok(b) if b.len() >= 4 && b[0] == 0xFF && b[1] == 0xD8 => b,
             _ => continue,
         };
-        // 디코딩 가능 SOF에서 크기 확인 — 너무 작으면(프리뷰만) 건너뛴다.
+        // 디코딩 가능 SOF에서 크기 확인 — 작으면 건너뛴다(프리뷰는 ≥화면, ORIG는 ≥3000).
         if let Some((w, h)) = jpeg_dimensions(&bytes) {
             if (w.max(h) as u32) < min_long_edge {
                 continue;

@@ -18,6 +18,11 @@
 
 **핵심 교훈:** "썸네일 3분"은 디코드(5ms로 빠름)가 아니라 **FIFO 무한 요청 큐**(지나온 위치 수천 건이 현재 화면을 막음)였다. 뷰포트 기반 **최신 우선(LIFO)+상한** 스케줄링이 정답.
 
+### Cycle 12 — RW2 프리뷰도 IFD 정확 읽기 (blind prefix 제거)
+- 변경: `decode_largest_ifd_embedded` → `decode_ifd_embedded(prefer_smallest)`. 프리뷰는 IFD에서 **가장 작은 ≥1600 임베디드**(0x002e ~1920)를 그 구간만 읽음. IFD 없으면 기존 prefix 폴백.
+- 측정: 프리뷰 **1.05MB → 0.56MB read (47% 감소)**, dims·시간 동일(1920급), 회전 정상. 1920이 1MB 밖이어도 전체파일 폴백 없이 안전(robustness).
+- 판정: **채택**(저위험 — IFD 합성 테스트가 커버).
+
 ## 측정 방법
 
 - 프로파일러: `cargo run --release -p rawblow-core --example rw2_profile -- "<folder>" [count]`
