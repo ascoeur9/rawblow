@@ -71,3 +71,9 @@
 - 변경: JPEG도 **썸네일 크기 요청이면 512KB prefix에서 임베디드 썸네일 디코딩**(RW2와 동일 경로, find_eoi 마커워킹이 본 이미지 가짜 EOI 방지), 없으면 전체 폴백.
 - 측정: JPG 썸네일 **8.19MB/104ms → 0.52MB/2ms** (16× I/O, 50× 빠름). 출력 160×120(EXIF 썸네일, 그리드엔 충분). DCT 회귀 테스트 통과.
 - 판정: **채택**. 이제 RW2·JPG 모두 썸네일이 512KB/≤5ms.
+
+### Cycle 8 — 캐시 trim을 결과당 → 시간 기반으로 (전경 I/O 경합 제거)
+- 발견: Cycle3 리뷰에서 추가했던 `note_cache_write`가 **드레인 결과마다** 호출돼, 스크롤 중 256개마다 `schedule_cache_trim` → trim이 **캐시 디렉토리 전체를 read_dir+stat 스캔**. 스크롤 1회에 수십 회 trim이 back-to-back으로 돌며 전경 썸네일 읽기와 디스크 경합.
+- 변경: per-result `note_cache_write` 제거 → update()에서 **120초마다 한 번** `trim_cache_if_due`. 프리뷰 누적 상한(#D)은 그대로 지키되 디렉토리 반복 스캔 churn 제거.
+- 측정: 빌드 OK. 스크롤 중 백그라운드 trim 스캔 횟수 수십 회 → ~0(120s에 1회). 전경 I/O 비경합.
+- 판정: **채택**.

@@ -119,8 +119,8 @@ pub struct RawBlowApp {
     last_dest: Option<PathBuf>,
     // 설정 화면에 표시할 썸네일 캐시 사용량(#22). 설정을 열 때 한 번 계산해 캐싱.
     cache_size: Option<u64>,
-    // 마지막 trim 이후 드레인한 결과 수(디스크 캐시 쓰기 근사). 임계 도달 시 세션 중에도 trim.
-    results_since_trim: u32,
+    // 마지막 캐시 trim 시각. 세션 중에도 주기적으로(시간 기반) 상한을 정리한다.
+    last_trim: Instant,
 
     jump_open: bool,
     jump_text: String,
@@ -199,7 +199,7 @@ impl RawBlowApp {
             show_settings: false,
             last_dest: None,
             cache_size: None,
-            results_since_trim: 0,
+            last_trim: Instant::now(),
             jump_open: false,
             jump_text: String::new(),
             jump_exact: false,
@@ -488,10 +488,6 @@ impl RawBlowApp {
                 }
                 continue;
             }
-            // 디스크 캐시가 새로 채워질 수 있는 결과마다 카운트해, 세션 중에도 상한을
-            // 주기적으로 정리한다(trim은 폴더 열 때만 돌아 긴 세션에서 프리뷰 캐시가 상한을
-            // 초과할 수 있었음 — #D 회귀). trim은 백그라운드·throttle이라 호출이 가벼움.
-            self.note_cache_write();
             // 프리페치 완료 통지: 디스크 캐시만 채웠으므로 GPU 업로드 없이 pending만 정리한다.
             // (업로드 상한 uploads를 소비하지 않아 보이는 셀 업로드를 막지 않는다.)
             if res.prefetch {
@@ -662,14 +658,12 @@ impl RawBlowApp {
         std::thread::spawn(move || cache::trim(&dir, max));
     }
 
-    /// 워커 결과 하나를 드레인할 때마다 호출. 일정 수(=디스크 캐시 쓰기 근사)마다 백그라운드
-    /// trim을 돌려, 폴더를 안 바꾸는 긴 세션에서도 캐시 상한을 대략 지킨다(#D 프리뷰 캐시 누적).
-    /// trim 자체가 throttle(동시 1개)·best-effort라 자주 불러도 부담이 적다.
-    fn note_cache_write(&mut self) {
-        const TRIM_EVERY: u32 = 256; // 프리뷰 256장 ≈ 75MB → 상한 초과 폭을 그 이하로 묶는다.
-        self.results_since_trim += 1;
-        if self.results_since_trim >= TRIM_EVERY {
-            self.results_since_trim = 0;
+    /// 세션 중 주기적으로(시간 기반) 디스크 캐시 상한을 정리한다. 폴더를 안 바꾸고 오래
+    /// 보는 동안 프리뷰 캐시가 상한을 넘는 것을 막되(#D 회귀), 결과마다 trim을 돌려 캐시
+    /// 디렉토리를 반복 스캔(전경 I/O와 경합)하지 않도록 충분히 드물게만 호출한다.
+    fn trim_cache_if_due(&mut self) {
+        if self.last_trim.elapsed() > Duration::from_secs(120) {
+            self.last_trim = Instant::now();
             self.schedule_cache_trim();
         }
     }
@@ -770,6 +764,7 @@ impl eframe::App for RawBlowApp {
         self.request_preload();
         self.request_prefetch_window(); // 현재 위치 주변만 디스크 캐시 워밍(폴더 전체 플러드 금지).
         self.save_sidecar_if_due();
+        self.trim_cache_if_due(); // 세션 중 주기적 캐시 상한 정리(드물게 — 전경 I/O 비경합).
 
         // 프리뷰(현재 주변)는 즉시 리페인트로 빠르게 채운다.
         // 썸네일 채우기는 이 100ms 타이머만으로 구동한다(워커는 egui를 건드리지 않음).
