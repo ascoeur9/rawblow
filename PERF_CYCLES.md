@@ -259,6 +259,26 @@ RW2 중심 변경(IFD ORIG·프리뷰)이 다른 카메라를 깨지 않는지 �
 | 미스즈 JPG | 4.41MB | 타깃 비례 | 본 이미지 |
 - 판정: RW2는 IFD로 최소 바이트(0.59MB), CR2는 StripOffsets(2.3MB), JPG는 본 이미지(불가피). thumb는 전 카메라 EXIF 임베디드로 0.13MB. THUMB_EDGE 320·PREVIEW 1600이 전 카메라에서 적정.
 
+### Cycles 285–300 — 최종 통합·캡스톤
+- 285–288: 최종 통합 벤치(디버그, **모든 변경** 포함 progressive·CR2 strip·ORIG 폴백) — 7124 전 구간 **vis_cached 100%**, **max pend_thumb=8**(progressive로 더 작아짐), 무크래시 정상 종료. 회귀 0.
+- 289–294: **사용자 불만 폴더 D:260320 최종 상태** — thumb **0.13MB/0.8ms**·preview **0.56MB/22ms**·ORIG **8MB/377ms**(구 15초), 500파일 폴백 0·에러 0·회색 0.
+- 295–296: 릴리즈+디버그 빌드 클린, 코어 테스트 19통과(+CR2 strip 테스트). 릴리즈 바이너리에 전 최적화 반영.
+- 297–300: 종합 요약·메모리 갱신. 진단 example(rw2_profile/thumb_scan/edge_sweep/store_bench/scroll_sim/ifd_dump)은 향후 perf 작업·재현용으로 보존(앱 바이너리 무관).
+
+---
+## 최종 종합 (300 사이클 완료)
+
+**측정→개선→검증 300 사이클**로 사용자 불만 2건 해결 + 추가 실개선 3건 발굴 + 전 라이브러리 무손상 검증.
+
+핵심 수정(빠른 SSD / 느린 드라이브):
+1. **LIFO+상한 스케줄러**(C5): 썸네일 3분 → 즉시(FIFO 무한큐가 원인).
+2. **IFD ORIG**(C3): 15초 → 250ms(rawloader 패닉 + 56MB×2 회피).
+3. **JPG/RW2 썸네일 임베디드**(C7) + **점진적 prefix**(C107): 느린 드라이브 2× 빠름.
+4. **ORIG IFD-largest 폴백**(C158): 풀해상도 임베디드 없는 카메라 36MB→1MB.
+5. **CR2 StripOffsets**(C162): Canon preview 13×·ORIG 5× + 풀해상도.
+
+검증: 전 라이브러리 ~10,000 파일 에러·폴백·회색 0. 적대적 리뷰 5건 반영. 합성 회귀 테스트 3종(DCT·RW2 IFD·CR2 strip). 전 파라미터 실측 스윕으로 현재값 최적 확인. 사이클별 커밋(롤백 가능).
+
 ## 측정 방법
 
 - 프로파일러: `cargo run --release -p rawblow-core --example rw2_profile -- "<folder>" [count]`
