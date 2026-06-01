@@ -133,6 +133,85 @@ fn dct_scaled_decode_is_correct_size_and_not_corrupt() {
     assert_eq!((full.width, full.height), (w, h), "None이면 원본 크기 유지");
 }
 
+/// ORIG(full_raw)의 IFD 기반 임베디드 읽기를 **합성 RW2**로 검증한다(#perf Cycle3 회귀 가드).
+/// RW2 IFD0의 type-7 JPEG blob(tag 0x0127/0x002e)을 그 구간만 읽어 디코딩하는 경로가
+/// 정상·회전·가비지스킵·EOF안전하게 동작하는지 실제 카메라 파일 없이 결정적으로 확인한다.
+#[test]
+fn orig_ifd_embedded_synthetic_rw2() {
+    use image::{ImageBuffer, Rgb};
+    fn make_jpeg(w: u32, h: u32) -> Vec<u8> {
+        let buf = ImageBuffer::from_fn(w, h, |x, y| {
+            Rgb([(x * 255 / (w - 1)) as u8, (y * 255 / (h - 1)) as u8, 64u8])
+        });
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(buf)
+            .write_to(&mut out, image::ImageFormat::Jpeg)
+            .unwrap();
+        out.into_inner()
+    }
+    // LE RW2(매직 0x55) + IFD0: 첫 엔트리 = 큰 JPEG(tag 0x0127, type7, count=len, val=offset),
+    // 이어서 extra 엔트리들. JPEG 바이트는 IFD 뒤에 덧붙인다. claim_len으로 len 과대선언(EOF 초과) 모의.
+    fn build_rw2(jpeg: &[u8], extra: &[(u16, u16, u32, u32)], claim_len: Option<u32>) -> Vec<u8> {
+        let entry_count = extra.len() as u16 + 1;
+        let ifd_size = 2 + (entry_count as usize) * 12 + 4;
+        let blob_offset = 8 + ifd_size;
+        let mut f = Vec::new();
+        f.extend_from_slice(b"II");
+        f.extend_from_slice(&0x0055u16.to_le_bytes());
+        f.extend_from_slice(&8u32.to_le_bytes());
+        f.extend_from_slice(&entry_count.to_le_bytes());
+        let len = claim_len.unwrap_or(jpeg.len() as u32);
+        f.extend_from_slice(&0x0127u16.to_le_bytes());
+        f.extend_from_slice(&7u16.to_le_bytes());
+        f.extend_from_slice(&len.to_le_bytes());
+        f.extend_from_slice(&(blob_offset as u32).to_le_bytes());
+        for &(tag, typ, cnt, val) in extra {
+            f.extend_from_slice(&tag.to_le_bytes());
+            f.extend_from_slice(&typ.to_le_bytes());
+            f.extend_from_slice(&cnt.to_le_bytes());
+            f.extend_from_slice(&val.to_le_bytes());
+        }
+        f.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(f.len(), blob_offset);
+        f.extend_from_slice(jpeg);
+        f
+    }
+    fn write(name: &str, data: &[u8]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("rb_ifd_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join(name);
+        std::fs::write(&p, data).unwrap();
+        p
+    }
+    let orig = |p: &std::path::Path| {
+        decode::decode_file(p, decode::DecodeOptions { full_raw: true, max_edge: Some(8192) })
+    };
+
+    // 1) 정상: 3200px 임베디드를 IFD 구간만 읽어 원본 크기로 반환.
+    let p = write("happy.rw2", &build_rw2(&make_jpeg(3200, 2000), &[], None));
+    let img = orig(&p).expect("happy decode");
+    assert_eq!((img.width, img.height), (3200, 2000), "IFD 임베디드 원본 크기");
+
+    // 2) 회전(Orientation=6, rotate90): 3200×2000 가로 → 2000×3200 세로.
+    let p = write("orient.rw2", &build_rw2(&make_jpeg(3200, 2000), &[(0x0112, 3, 1, 6)], None));
+    let img = orig(&p).expect("orient decode");
+    assert_eq!((img.width, img.height), (2000, 3200), "Orientation=6 회전 적용(이중회전 아님)");
+
+    // 3) 잘못된 오프셋(EOF 초과): read_range가 EOF로 안전 → 패닉 없이 폴백으로 복구.
+    let mut bogus = build_rw2(&make_jpeg(3200, 2000), &[], None);
+    let off_pos = 8 + 2 + 2 + 2 + 4; // 첫 엔트리 value(offset) 필드
+    bogus[off_pos..off_pos + 4].copy_from_slice(&0xF000_0000u32.to_le_bytes());
+    let p = write("bogus.rw2", &bogus);
+    let _ = orig(&p); // 크래시하지 않으면 통과(패닉 시 테스트 실패).
+
+    // 4) 절단: count(len)을 실제보다 5MB 크게 선언 → read_range가 가능한 만큼만 읽어 정상 디코딩.
+    let jpeg = make_jpeg(3200, 2000);
+    let claim = jpeg.len() as u32 + 5_000_000;
+    let p = write("trunc.rw2", &build_rw2(&jpeg, &[], Some(claim)));
+    let img = orig(&p).expect("trunc decode");
+    assert_eq!((img.width, img.height), (3200, 2000), "과대선언 len에도 EOF까지만 읽어 정상");
+}
+
 #[test]
 fn sidecar_roundtrip_restores_labels() {
     let tmp = tempfile::tempdir().unwrap();
