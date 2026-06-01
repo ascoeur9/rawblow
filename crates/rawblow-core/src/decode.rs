@@ -351,10 +351,12 @@ fn tiff_ifd0_jpeg_blobs(path: &Path) -> Vec<(u64, usize)> {
     // 오프셋이 파일 범위를 벗어난 손상 IFD 엔트리를 거르기 위한 파일 크기(못 읽으면 무제한).
     let file_len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(u64::MAX);
     let mut blobs: Vec<(u64, usize)> = Vec::new();
+    // CR2(Canon) 등은 IFD0 StripOffsets(0x0111)+StripByteCounts(0x0117)에 임베디드 JPEG를 둔다.
+    let (mut strip_off, mut strip_len): (Option<u64>, Option<usize>) = (None, None);
     for i in 0..count.min(512) {
         let e = ifd0 + 2 + i * 12;
-        let (typ, cnt, val) = match (r16(e + 2), r32(e + 4), r32(e + 8)) {
-            (Some(t), Some(c), Some(v)) => (t, c as usize, v as u64),
+        let (tag, typ, cnt, val) = match (r16(e), r16(e + 2), r32(e + 4), r32(e + 8)) {
+            (Some(tg), Some(t), Some(c), Some(v)) => (tg, t, c as usize, v as u64),
             _ => break,
         };
         // type=7(UNDEFINED, 1바이트) && 4바이트 초과 → val은 오프셋, cnt는 바이트 길이.
@@ -362,6 +364,28 @@ fn tiff_ifd0_jpeg_blobs(path: &Path) -> Vec<(u64, usize)> {
         // 방어). 길이 과대선언은 read_range가 EOF까지만 읽어 안전하므로 허용.
         if typ == 7 && cnt > 1024 && val < file_len {
             blobs.push((val, cnt));
+        }
+        if tag == 0x0111 {
+            strip_off = Some(val); // StripOffsets
+        }
+        if tag == 0x0117 {
+            strip_len = Some(val as usize); // StripByteCounts (count=1 → val이 길이)
+        }
+    }
+    // StripOffsets가 가리키는 곳이 실제 JPEG(FF D8)면 후보로(CR2 프리뷰). 거대한 비-JPEG 스트립
+    // (압축 안 된 TIFF의 본 데이터)을 헛읽지 않게 3바이트만 확인.
+    if let (Some(off), Some(len)) = (strip_off, strip_len) {
+        if len > 1024 && off.saturating_add(len as u64) <= file_len {
+            let is_jpeg = if (off as usize) + 2 < header.len() {
+                header[off as usize] == 0xFF && header[off as usize + 1] == 0xD8
+            } else {
+                read_range(path, off, 3)
+                    .map(|b| b.len() >= 2 && b[0] == 0xFF && b[1] == 0xD8)
+                    .unwrap_or(false)
+            };
+            if is_jpeg {
+                blobs.push((off, len));
+            }
         }
     }
     blobs.sort_by(|a, b| b.1.cmp(&a.1)); // 길이 내림차순

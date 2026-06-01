@@ -188,6 +188,13 @@ RW2 중심 변경(IFD ORIG·프리뷰)이 다른 카메라를 깨지 않는지 �
 - 160: D: 260320 RW2(8144 보유) ORIG **8144/8MB 유지**(gate=3000 경로 우선) — 회귀 없음. IFD 합성 테스트 통과.
 - 판정: **채택(실개선).** 풀해상도 임베디드 없는 카메라(미국여행 등)의 ORIG가 전체파일 대신 IFD 임베디드만 읽어 36× 빠름, 풀해상도 있는 카메라는 불변.
 
+### Cycles 161–164 — 【실개선】 CR2(Canon) StripOffsets JPEG 지원
+- 161: `ifd_dump`로 CR2 구조 확인 — 임베디드 JPEG가 **StripOffsets(0x0111)=off / StripByteCounts(0x0117)=len**(type-4)에 있음(RW2의 type-7과 다름). 그래서 IFD 미적용→전체파일 읽던 것.
+- 162: 구현 — `tiff_ifd0_jpeg_blobs`가 StripOffsets/ByteCounts 쌍도 후보로(그 위치 FF D8 3바이트 확인해 거대 비-JPEG 스트립 회피).
+- 163: 측정 — CR2 preview **26.5MB→1.95MB(13×)** 동일 2048; ORIG **497ms→104ms(5×)** + **4386→5616×3744 풀해상도**(카메라 JPEG가 rawloader 현상보다 고해상도 + rawloader 의존·패닉 제거).
+- 164: RW2 무영향 확인 — D:260320 ORIG 8144/6.4MB·미국여행 ORIG 1920/0.7MB 불변(RW2엔 StripOffsets 없음). IFD 합성 테스트 통과.
+- 판정: **채택(실개선).** Canon CR2 preview 13×·ORIG 5× 빠르고 풀해상도, Panasonic 불변. (크로스카메라 검증이 발굴한 3번째 실개선 — 슬로우드라이브 progressive·ORIG IFD폴백·CR2 strip.)
+
 ## 측정 방법
 
 - 프로파일러: `cargo run --release -p rawblow-core --example rw2_profile -- "<folder>" [count]`
