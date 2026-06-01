@@ -5,6 +5,7 @@ use crate::widgets::{self, draw_thumb, hud_text, kbd, mono, prop, section_head, 
 use crate::worker::{DecodeRequest, Worker};
 use eframe::egui;
 use egui::{Align, Align2, Color32, Layout, Pos2, Rect, Rounding, Sense, Stroke, Vec2};
+use rawblow_core::cache;
 use rawblow_core::config::{self, Config};
 use rawblow_core::meta::{read_exif, ExifInfo};
 use rawblow_core::transfer::{self, Action, Companions, ConflictPolicy, TransferReport, TransferRequest};
@@ -46,6 +47,8 @@ struct Item {
 #[derive(Clone)]
 struct TransferDialogState {
     labels: Vec<Label>,
+    /// 전송 대상 별점 집합(1~5). 라벨과 합집합(OR)으로 묶인다(#23).
+    stars: Vec<u8>,
     action: Action,
     companions: Companions,
     split_by_label: bool,
@@ -57,6 +60,7 @@ impl Default for TransferDialogState {
     fn default() -> Self {
         TransferDialogState {
             labels: vec![Label::Pick],
+            stars: Vec::new(),
             action: Action::Copy,
             companions: Companions::Both,
             split_by_label: false,
@@ -111,6 +115,8 @@ pub struct RawBlowApp {
     result: Option<TransferReport>,
     show_settings: bool,
     last_dest: Option<PathBuf>,
+    // 설정 화면에 표시할 썸네일 캐시 사용량(#22). 설정을 열 때 한 번 계산해 캐싱.
+    cache_size: Option<u64>,
 
     jump_open: bool,
     jump_text: String,
@@ -142,6 +148,7 @@ impl RawBlowApp {
             std::thread::available_parallelism()
                 .map(|n| (n.get() / 2).clamp(2, 6))
                 .unwrap_or(4),
+            config::cache_dir(),
         );
 
         let mut app = RawBlowApp {
@@ -180,6 +187,7 @@ impl RawBlowApp {
             result: None,
             show_settings: false,
             last_dest: None,
+            cache_size: None,
             jump_open: false,
             jump_text: String::new(),
             jump_exact: false,
@@ -202,10 +210,21 @@ impl RawBlowApp {
                 app.open_folder(p);
             }
         }
+        // 시작 시 한 번 캐시 상한 정리(폴더를 안 열어도 지난 세션 누적분을 회수).
+        app.schedule_cache_trim();
         app
     }
 
     fn open_folder(&mut self, folder: PathBuf) {
+        // 폴더를 바꾸기 전, 디바운스 대기 중인 분류/별점 변경을 현재 폴더 사이드카에 먼저 확정한다.
+        // (Move 후 재스캔(#24)이나 폴더 전환 시 미저장 변경이 옛 사이드카로 롤백·유실되지 않게.)
+        if self.sidecar_dirty {
+            if let Some(cur) = &self.folder {
+                let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
+                let _ = sidecar::save(cur, &entries);
+            }
+            self.sidecar_dirty = false;
+        }
         let entries = scan::scan_folder(&folder, self.cfg.recursive, self.sort);
         let mut items: Vec<Item> = entries
             .into_iter()
@@ -222,6 +241,7 @@ impl RawBlowApp {
             sidecar::apply(&session, &mut tmp);
             for (it, e) in items.iter_mut().zip(tmp) {
                 it.entry.label = e.label;
+                it.entry.stars = e.stars;
             }
         }
 
@@ -244,6 +264,7 @@ impl RawBlowApp {
         let _ = config::save(&self.cfg);
         self.folder = Some(folder);
         self.toast = Some((format!("{} 항목 로드", self.items.len()), Instant::now()));
+        self.schedule_cache_trim(); // 폴더 열 때 캐시 상한 정리(다른/오래된 폴더 썸네일 회수).
     }
 
     /// 현재 필터를 통과하는 항목 인덱스(원본 items 기준).
@@ -478,6 +499,42 @@ impl RawBlowApp {
         }
     }
 
+    /// 별점(0~5) 설정. 라벨과 독립이며(#23), 그리드 다중 선택 중이면 선택 전부에 일괄 적용한다.
+    /// 0은 별점 해제(Backtick). 같은 별점 재입력 시 0으로 토글(라벨 토글과 동일한 감각).
+    /// `allow_advance`: 키보드 입력은 auto_advance를 따르고(true), 레일 마우스 클릭은 넘기지 않는다(false).
+    fn set_stars(&mut self, stars: u8, allow_advance: bool) {
+        let stars = stars.min(5);
+        // 그리드 다중 선택 → 선택 전부에 그대로 적용(토글·자동진행 없음).
+        if self.view == ViewMode::Grid && !self.selected.is_empty() {
+            let targets: Vec<usize> = self.selected.iter().copied().collect();
+            for real in targets {
+                if let Some(it) = self.items.get_mut(real) {
+                    it.entry.stars = stars;
+                }
+            }
+            self.sidecar_dirty = true;
+            return;
+        }
+        if let Some(real) = self.current_real() {
+            if let Some(it) = self.items.get_mut(real) {
+                it.entry.stars = if stars != 0 && it.entry.stars == stars { 0 } else { stars };
+                self.sidecar_dirty = true;
+                if allow_advance && self.cfg.auto_advance && it.entry.stars != 0 {
+                    self.advance(1);
+                }
+            }
+        }
+    }
+
+    /// 별점별 항목 수 `[무별점, 1★, 2★, 3★, 4★, 5★]`(전체 items 기준).
+    fn star_counts(&self) -> [usize; 6] {
+        let mut c = [0usize; 6];
+        for it in &self.items {
+            c[it.entry.stars.min(5) as usize] += 1;
+        }
+        c
+    }
+
     fn advance(&mut self, delta: i64) {
         let len = self.filtered().len();
         if len == 0 {
@@ -507,6 +564,17 @@ impl RawBlowApp {
             let cols = self.grid_cols.clamp(4, 12);
             self.grid_scroll_to = Some(self.index / cols);
         }
+    }
+
+    /// 썸네일 캐시 자동 상한 정리를 백그라운드 스레드로 예약한다(#22). UI를 멈추지 않으며,
+    /// 동시 호출은 cache::trim 내부에서 1개로 합쳐진다. 상한 0(무제한)이면 아무 것도 안 한다.
+    fn schedule_cache_trim(&self) {
+        let max = self.cfg.cache_limit_mb.saturating_mul(1024 * 1024);
+        if max == 0 {
+            return;
+        }
+        let dir = config::cache_dir();
+        std::thread::spawn(move || cache::trim(&dir, max));
     }
 
     fn save_sidecar_if_due(&mut self) {
@@ -588,7 +656,13 @@ impl eframe::App for RawBlowApp {
 
 impl RawBlowApp {
     fn has_modal(&self) -> bool {
-        self.transfer.is_some() || self.result.is_some() || self.jump_open || self.bulk_open
+        // show_settings 포함: 설정 화면이 떠 있을 때 1~5/QWER/백틱 등 단축키가 뒤의 '현재 항목'을
+        // 몰래 바꾸거나 설정의 DragValue 입력과 충돌하지 않게 키 처리를 막는다.
+        self.transfer.is_some()
+            || self.result.is_some()
+            || self.jump_open
+            || self.bulk_open
+            || self.show_settings
     }
 
     // ── 입력 ──────────────────────────────────────────────
@@ -624,6 +698,14 @@ impl RawBlowApp {
                         Key::E if cmd => self.open_transfer(), // Ctrl/⌘E 전송
                         Key::E => self.set_label(Label::Reject),
                         Key::R => self.set_label(Label::Unrated),
+                        // 별점(#23): 1~5로 지정, `(백틱)으로 해제. 라벨(QWER)과 독립·중복 사용 가능.
+                        // !cmd 가드: ⌘/Ctrl+숫자(타 앱 탭 전환 습관 등)가 실수로 별점을 매기지 않게.
+                        Key::Num1 if !cmd => self.set_stars(1, true),
+                        Key::Num2 if !cmd => self.set_stars(2, true),
+                        Key::Num3 if !cmd => self.set_stars(3, true),
+                        Key::Num4 if !cmd => self.set_stars(4, true),
+                        Key::Num5 if !cmd => self.set_stars(5, true),
+                        Key::Backtick if !cmd => self.set_stars(0, true),
                         Key::T => {
                             self.view = match self.view {
                                 ViewMode::Single => ViewMode::Grid,
@@ -836,6 +918,7 @@ impl RawBlowApp {
                         }
                         if toggle_btn(ui, "⚙", self.show_settings).clicked() {
                             self.show_settings = true;
+                            self.cache_size = None; // 설정 열 때 캐시 용량 새로 계산.
                         }
                     });
                 });
@@ -873,6 +956,55 @@ impl RawBlowApp {
                     if resp.clicked() {
                         self.set_label(label);
                     }
+                }
+
+                // ── Rating (별점, #23) ── 라벨과 독립. 현재 항목 별점을 1~5로 지정/해제.
+                section_head(ui, "Rating", Some("1–5 · `"));
+                let cur_stars = self
+                    .current_real()
+                    .and_then(|r| self.items.get(r))
+                    .map(|i| i.entry.stars)
+                    .unwrap_or(0);
+                let mut clicked_star: Option<u8> = None;
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
+                    ui.spacing_mut().item_spacing.x = 1.0;
+                    for n in 1..=5u8 {
+                        let (r, resp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
+                        let filled = n <= cur_stars;
+                        ui.painter().text(
+                            r.center(),
+                            Align2::CENTER_CENTER,
+                            if filled { "★" } else { "☆" },
+                            prop(16.0),
+                            if filled { theme::HOLD } else { theme::INK4 },
+                        );
+                        if resp.clicked() {
+                            clicked_star = Some(n);
+                        }
+                        if resp.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                    }
+                    ui.add_space(8.0);
+                    let (cr, cresp) = ui.allocate_exact_size(Vec2::new(28.0, 22.0), Sense::click());
+                    ui.painter().text(
+                        cr.center(),
+                        Align2::CENTER_CENTER,
+                        "해제",
+                        prop(10.5),
+                        if cresp.hovered() { theme::INK } else { theme::INK3 },
+                    );
+                    if cresp.clicked() {
+                        clicked_star = Some(0);
+                    }
+                    if cresp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                });
+                if let Some(n) = clicked_star {
+                    // 레일에서 마우스로 별을 클릭할 땐 사진을 넘기지 않는다(방금 매긴 컷을 계속 보게).
+                    self.set_stars(n, false);
                 }
 
                 section_head(ui, "Progress", None);
@@ -976,6 +1108,7 @@ impl RawBlowApp {
                             active: fi == cur,
                             focused: false,
                             selected: false,
+                            stars: it.entry.stars,
                         };
                         draw_thumb(ui, rect, tex, tsize, &info);
                         if resp.clicked() {
@@ -1123,6 +1256,11 @@ impl RawBlowApp {
         tl.x += 64.0;
         let badge = if it.entry.shows_raw_badge() { "  +RAW" } else { "" };
         hud_text(ui, tl, Align2::LEFT_TOP, &format!("{name}{badge}"), mono(12.0), theme::INK);
+        // 별점(#23): 라벨/파일명 아래 줄에 채워진 별로 표시.
+        if it.entry.stars > 0 {
+            let stars_str = "★".repeat(it.entry.stars.min(5) as usize);
+            hud_text(ui, area.left_top() + Vec2::new(20.0, 42.0), Align2::LEFT_TOP, &stars_str, mono(13.0), theme::HOLD);
+        }
 
         // TR: 카운터.
         let tr = area.right_top() + Vec2::new(-18.0, 14.0);
@@ -1223,6 +1361,7 @@ impl RawBlowApp {
                             active: fi == cur,
                             focused: false,
                             selected: self.selected.contains(&real),
+                            stars: it.entry.stars,
                         };
                         draw_thumb(ui, rect, tex, tsize, &info);
                         if resp.clicked() {
@@ -1275,6 +1414,7 @@ impl RawBlowApp {
         let mut do_start = false;
         let mut do_cancel = false;
         let (pick, hold, reject, unrated) = self.counts();
+        let star_cnt = self.star_counts();
 
         // 뒤 화면 어둡게(dim) + 클릭 차단. Middle 레이어 → 패널 위, 카드(Foreground) 아래.
         let screen = ctx.screen_rect();
@@ -1291,13 +1431,14 @@ impl RawBlowApp {
         let plan = transfer::plan(&TransferRequest {
             entries: &entries,
             labels: st.labels.clone(),
+            stars: st.stars.clone(),
             action: st.action,
             companions: st.companions,
             dest: PathBuf::from(&st.dest),
             split_by_label: st.split_by_label,
             conflict: st.conflict,
         });
-        let raw_n = plan.iter().filter(|(p, _)| rawblow_core::model::kind_of(p) == Some(rawblow_core::model::Kind::Raw)).count();
+        let raw_n = plan.iter().filter(|(p, _, _)| rawblow_core::model::kind_of(p) == Some(rawblow_core::model::Kind::Raw)).count();
         let img_n = plan.len().saturating_sub(raw_n);
 
         // 중앙 모달 카드. 너비 660 고정이라 left를 화면중앙-330으로 두면 가로 정중앙
@@ -1325,7 +1466,7 @@ impl RawBlowApp {
                                     ui.add_space(9.0);
                                     ui.vertical(|ui| {
                                         ui.label(egui::RichText::new("파일 전송").font(prop(15.0)).color(theme::INK));
-                                        ui.label(egui::RichText::new("선택한 라벨의 파일을 복사/이동 · RAW 페어 처리").font(mono(10.5)).color(theme::INK3));
+                                        ui.label(egui::RichText::new("선택한 라벨·별점의 파일을 복사/이동 · RAW 페어 처리").font(mono(10.5)).color(theme::INK3));
                                     });
                                     ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                                         let (xr, xresp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
@@ -1357,6 +1498,25 @@ impl RawBlowApp {
                                 if check_chip(ui, "라벨별 하위폴더로 분기 (/pick, /hold …)", None, theme::ACCENT, st.split_by_label) {
                                     st.split_by_label = !st.split_by_label;
                                 }
+                                ui.add_space(16.0);
+
+                                // 별점 기준(#23): 라벨과 합집합(OR). 각 별점 칸은 독립 체크.
+                                section_label(ui, "STAR RATING");
+                                ui.horizontal_wrapped(|ui| {
+                                    for n in 1..=5u8 {
+                                        let on = st.stars.contains(&n);
+                                        let glyph = "★".repeat(n as usize);
+                                        if check_chip(ui, &glyph, Some(star_cnt[n as usize]), theme::HOLD, on) {
+                                            if on {
+                                                st.stars.retain(|s| *s != n);
+                                            } else {
+                                                st.stars.push(n);
+                                            }
+                                        }
+                                    }
+                                });
+                                ui.add_space(6.0);
+                                ui.label(egui::RichText::new("라벨 또는 별점 중 하나라도 해당하면 전송됩니다(합집합).").font(mono(10.0)).color(theme::INK4));
                                 ui.add_space(16.0);
 
                                 section_label(ui, "ACTION");
@@ -1412,7 +1572,9 @@ impl RawBlowApp {
                                     ui.label(egui::RichText::new("이미지").font(mono(9.5)).color(theme::INK3));
 
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        if ui.add(egui::Button::new(egui::RichText::new("  전송 시작  ").color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT)).clicked() {
+                                        // 라벨·별점 둘 다 비어 대상이 0건이면 시작 버튼 비활성(빈 전송 방지).
+                                        let can_start = !plan.is_empty();
+                                        if ui.add_enabled(can_start, egui::Button::new(egui::RichText::new("  전송 시작  ").color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT)).clicked() {
                                             do_start = true;
                                         }
                                         ui.add_space(5.0);
@@ -1442,6 +1604,7 @@ impl RawBlowApp {
             let req = TransferRequest {
                 entries: &entries,
                 labels: st.labels.clone(),
+                stars: st.stars.clone(),
                 action: st.action,
                 companions: st.companions,
                 dest: PathBuf::from(&st.dest),
@@ -1449,8 +1612,17 @@ impl RawBlowApp {
                 conflict: st.conflict,
             };
             let report = transfer::execute(&req);
-            self.last_dest = Some(PathBuf::from(&st.dest));
+            let dest = PathBuf::from(&st.dest);
+            // 이동(Move)으로 원본이 사라진 경우, 폴더를 다시 스캔해 옮겨진 항목을 목록에서
+            // 제거한다(#24). 그러지 않으면 사라진 파일이 깨진 썸네일로 남는다. 복사는 불필요.
+            let was_move = matches!(st.action, Action::Move) && report.transferred > 0;
             self.transfer = None;
+            if was_move {
+                if let Some(folder) = self.folder.clone() {
+                    self.open_folder(folder);
+                }
+            }
+            self.last_dest = Some(dest);
             self.result = Some(report);
         } else {
             self.transfer = Some(st);
@@ -1757,6 +1929,7 @@ impl RawBlowApp {
                     if ui.button("← 돌아가기").clicked() {
                         self.show_settings = false;
                         let _ = config::save(&self.cfg);
+                        self.schedule_cache_trim(); // 변경된 상한으로 캐시 정리.
                     }
                     ui.label(egui::RichText::new("Settings — Keyboard & General").font(prop(14.0)).color(theme::INK));
                 });
@@ -1791,6 +1964,53 @@ impl RawBlowApp {
                     }
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new("단축키 재바인딩 UI는 v1.1 예정 — 현재 기본값 QWER 고정 표시").font(mono(10.0)).color(theme::INK4));
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("별점 1~5 지정 · ` (백틱)으로 해제 — 라벨(QWER)과 독립으로 동시에 매겨집니다").font(mono(10.0)).color(theme::INK4));
+
+                    // ── CACHE (#22): 썸네일 디스크 캐시 사용량 + 비우기 ──
+                    ui.add_space(18.0);
+                    ui.label(egui::RichText::new("CACHE").font(prop(11.0)).color(theme::INK3));
+                    if self.cache_size.is_none() {
+                        self.cache_size = Some(cache::dir_size(&config::cache_dir()));
+                    }
+                    let size = self.cache_size.unwrap_or(0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("썸네일 캐시 사용량 · {}", fmt_bytes(size))).font(mono(11.0)).color(theme::INK2));
+                        if toggle_btn(ui, "캐시 비우기", false).clicked() {
+                            let _ = cache::clear(&config::cache_dir());
+                            self.cache_size = Some(cache::dir_size(&config::cache_dir()));
+                            self.toast = Some(("썸네일 캐시를 비웠습니다".into(), Instant::now()));
+                        }
+                        if toggle_btn(ui, "새로고침", false).clicked() {
+                            self.cache_size = Some(cache::dir_size(&config::cache_dir()));
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("자동 상한").font(mono(11.0)).color(theme::INK2));
+                        ui.add(egui::DragValue::new(&mut self.cfg.cache_limit_mb).speed(64.0).range(0..=1_048_576).suffix(" MB"));
+                        ui.label(egui::RichText::new("(0 = 무제한)").font(mono(10.0)).color(theme::INK4));
+                    });
+                    ui.label(egui::RichText::new("상한을 넘으면 오래된 썸네일부터 자동 삭제 — 폴더 열 때·설정 변경 시 정리됩니다.").font(mono(10.0)).color(theme::INK4));
+                    ui.label(egui::RichText::new("폴더를 다시 열어도 재디코딩 없이 즉시 표시됩니다.").font(mono(10.0)).color(theme::INK4));
+                    ui.label(egui::RichText::new(config::cache_dir().to_string_lossy().to_string()).font(mono(9.5)).color(theme::INK4));
+
+                    // ── ABOUT / LINKS (#18): 버전·릴리즈·이슈·제작자·cosly ──
+                    ui.add_space(18.0);
+                    ui.label(egui::RichText::new("ABOUT").font(prop(11.0)).color(theme::INK3));
+                    ui.label(egui::RichText::new(format!("RawBlow v{}", env!("CARGO_PKG_VERSION"))).font(mono(11.0)).color(theme::INK2));
+                    ui.add_space(6.0);
+                    link_label(ui, "최신 버전 받기 · GitHub Releases", "https://github.com/ascoeur9/rawblow/releases");
+                    link_label(ui, "버그 제보 · GitHub Issues", "https://github.com/ascoeur9/rawblow/issues");
+                    ui.add_space(10.0);
+                    ui.label(egui::RichText::new("만든 사람 · 하레 (Hare)").font(prop(11.5)).color(theme::INK2));
+                    ui.horizontal(|ui| {
+                        link_label(ui, "X · @ascoeur9", "https://x.com/ascoeur9");
+                        ui.label(egui::RichText::new("·").font(mono(10.0)).color(theme::INK4));
+                        link_label(ui, "X · @hare_kig", "https://x.com/hare_kig");
+                    });
+                    ui.add_space(10.0);
+                    ui.label(egui::RichText::new("마음에 드시나요? 그럼 cosly도 이용해보세요.").font(prop(11.5)).color(theme::INK2));
+                    link_label(ui, "https://cosly.link", "https://cosly.link");
                 });
             });
         self.grid_cols = self.cfg.grid_cols.clamp(4, 12);
@@ -2004,6 +2224,52 @@ fn exif_lines(ex: &ExifInfo) -> Vec<String> {
         lines.push(dt.clone());
     }
     lines
+}
+
+/// 외부 URL을 기본 브라우저로 연다(#18). reveal_in_file_manager와 같은 무음 spawn 패턴.
+fn open_url(url: &str) {
+    use std::process::Command;
+    let _ = if cfg!(target_os = "macos") {
+        Command::new("open").arg(url).spawn()
+    } else if cfg!(target_os = "windows") {
+        // explorer로 http(s) URL을 열면 기본 브라우저가 뜬다(콘솔 창 깜빡임 없음).
+        Command::new("explorer").arg(url).spawn()
+    } else {
+        Command::new("xdg-open").arg(url).spawn()
+    };
+}
+
+/// 설정 화면용 클릭 가능한 링크(accent 밑줄). 클릭하면 브라우저로 이동(#18).
+fn link_label(ui: &mut egui::Ui, text: &str, url: &str) {
+    let resp = ui.add(
+        egui::Label::new(
+            egui::RichText::new(text)
+                .font(prop(11.5))
+                .color(theme::ACCENT)
+                .underline(),
+        )
+        .sense(Sense::click()),
+    );
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if resp.clicked() {
+        open_url(url);
+    }
+}
+
+/// 바이트 수를 사람이 읽는 단위로(설정의 캐시 사용량 표시용, #22).
+fn fmt_bytes(n: u64) -> String {
+    let f = n as f64;
+    if f >= 1_073_741_824.0 {
+        format!("{:.2} GB", f / 1_073_741_824.0)
+    } else if f >= 1_048_576.0 {
+        format!("{:.1} MB", f / 1_048_576.0)
+    } else if f >= 1024.0 {
+        format!("{:.0} KB", f / 1024.0)
+    } else {
+        format!("{n} B")
+    }
 }
 
 /// OS 파일 탐색기에서 폴더를 띄운다(Finder / Explorer / xdg-open). 실패 시 무음.

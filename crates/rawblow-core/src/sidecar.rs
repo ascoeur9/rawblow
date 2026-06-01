@@ -22,6 +22,9 @@ pub struct Session {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ItemRec {
     pub label: Label,
+    /// 별점(0~5). 구버전 세션(필드 없음)은 0으로 로드된다(#23).
+    #[serde(default)]
+    pub stars: u8,
     pub members: Vec<String>,
 }
 
@@ -55,14 +58,15 @@ fn rel(folder: &Path, p: &Path) -> String {
 pub fn save(folder: &Path, entries: &[Entry]) -> std::io::Result<()> {
     let mut items = BTreeMap::new();
     for e in entries {
-        if e.label == Label::Unrated {
-            continue; // 미선택은 키 생략(스펙).
+        if e.label == Label::Unrated && e.stars == 0 {
+            continue; // 미선택 + 무별점은 키 생략(스펙). 별점만 있어도 보존.
         }
         let members = e.members.iter().map(|p| rel(folder, p)).collect();
         items.insert(
             e.stem.clone(),
             ItemRec {
                 label: e.label,
+                stars: e.stars,
                 members,
             },
         );
@@ -101,19 +105,38 @@ pub fn render_txt(session: &Session) -> String {
         }
         out.push('\n');
     }
+    // 별점 섹션(있는 것만, 높은 별점부터). 라벨과 독립이므로 별도로 나열.
+    for stars in (1..=5u8).rev() {
+        let stems: Vec<&String> = session
+            .items
+            .iter()
+            .filter(|(_, v)| v.stars == stars)
+            .map(|(k, _)| k)
+            .collect();
+        if stems.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("# {}★ ({})\n", stars, stems.len()));
+        for s in stems {
+            out.push_str(s);
+            out.push('\n');
+        }
+        out.push('\n');
+    }
     out
 }
 
 /// 로드한 세션의 라벨을 현재 항목에 복원한다(stem 대소문자 무시 매칭).
 pub fn apply(session: &Session, entries: &mut [Entry]) {
-    let map: BTreeMap<String, Label> = session
+    let map: BTreeMap<String, (Label, u8)> = session
         .items
         .iter()
-        .map(|(k, v)| (k.to_ascii_lowercase(), v.label))
+        .map(|(k, v)| (k.to_ascii_lowercase(), (v.label, v.stars)))
         .collect();
     for e in entries.iter_mut() {
-        if let Some(l) = map.get(&e.stem.to_ascii_lowercase()) {
+        if let Some((l, s)) = map.get(&e.stem.to_ascii_lowercase()) {
             e.label = *l;
+            e.stars = (*s).min(5); // 손편집/구포맷의 비정상 값 방어(표시 깨짐 방지).
         }
     }
 }

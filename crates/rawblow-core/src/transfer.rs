@@ -31,6 +31,9 @@ pub enum ConflictPolicy {
 pub struct TransferRequest<'a> {
     pub entries: &'a [Entry],
     pub labels: Vec<Label>,
+    /// 전송 대상 별점 집합(1~5). 라벨과 **합집합(OR)**으로 묶인다(#23):
+    /// 항목의 라벨이 선택됐거나 별점이 이 집합에 들면 전송 대상.
+    pub stars: Vec<u8>,
     pub action: Action,
     pub companions: Companions,
     pub dest: PathBuf,
@@ -59,15 +62,19 @@ pub fn select_members<'a>(entry: &'a Entry, companions: Companions) -> Vec<&'a P
     }
 }
 
-/// 전송 대상 (소스 파일, 소속 라벨) 목록을 만든다(실행 전 미리보기에도 사용).
-pub fn plan(req: &TransferRequest) -> Vec<(PathBuf, Label)> {
+/// 전송 대상 (소스 파일, 소속 라벨, 별점) 목록을 만든다(실행 전 미리보기에도 사용).
+/// 별점은 split_by_label 시 라벨 없는(별점만 매긴) 항목의 분기 폴더 결정에 쓰인다.
+pub fn plan(req: &TransferRequest) -> Vec<(PathBuf, Label, u8)> {
     let mut out = Vec::new();
     for e in req.entries {
-        if !req.labels.contains(&e.label) {
+        // 라벨 OR 별점(합집합). 무별점(0)은 별점 매칭 대상이 아니다.
+        let label_hit = req.labels.contains(&e.label);
+        let star_hit = e.stars >= 1 && req.stars.contains(&e.stars);
+        if !(label_hit || star_hit) {
             continue;
         }
         for m in select_members(e, req.companions) {
-            out.push((m.clone(), e.label));
+            out.push((m.clone(), e.label, e.stars));
         }
     }
     out
@@ -104,9 +111,9 @@ fn unique_path(dir: &Path, file_name: &str, policy: ConflictPolicy) -> Option<(P
 pub fn execute(req: &TransferRequest) -> TransferReport {
     let mut report = TransferReport::default();
 
-    for (src, label) in plan(req) {
+    for (src, label, stars) in plan(req) {
         let target_dir = if req.split_by_label {
-            req.dest.join(label_folder(label))
+            req.dest.join(split_folder(label, stars))
         } else {
             req.dest.clone()
         };
@@ -174,6 +181,18 @@ fn label_folder(label: Label) -> &'static str {
         Label::Hold => "hold",
         Label::Reject => "reject",
         Label::Unrated => "unrated",
+    }
+}
+
+/// split_by_label 시 분기 폴더명. 라벨이 있으면 라벨 폴더, 라벨 없이 별점만 매긴 항목은
+/// `5star` 같은 별점 폴더로 보낸다(#23/#24 함정 방지: 별점-only 베스트컷이 `unrated/`로 가지 않게).
+fn split_folder(label: Label, stars: u8) -> String {
+    if label != Label::Unrated {
+        label_folder(label).to_string()
+    } else if stars >= 1 {
+        format!("{}star", stars.min(5))
+    } else {
+        "unrated".to_string()
     }
 }
 

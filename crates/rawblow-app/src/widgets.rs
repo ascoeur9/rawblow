@@ -115,6 +115,7 @@ pub struct ThumbInfo {
     pub active: bool,
     pub focused: bool,
     pub selected: bool, // 다중 선택됨
+    pub stars: u8,      // 별점(0~5, #23)
 }
 
 /// 주어진 rect에 썸네일을 그린다. 텍스처가 있으면 이미지를, 없으면 플레이스홀더.
@@ -176,6 +177,19 @@ pub fn draw_thumb(ui: &Ui, rect: Rect, tex: Option<egui::TextureId>, size: Vec2,
         };
         p.rect_filled(badge, Rounding::same(2.0), bg);
         p.text(badge.center(), Align2::CENTER_CENTER, txt, font, fg);
+    }
+    // 별점 배지(BL, #23): ★N. 라벨 점(TL)·RAW 배지(TR)와 위치가 겹치지 않는다.
+    if info.stars > 0 {
+        let txt = format!("★{}", info.stars);
+        let font = mono(8.5);
+        let g = p.layout_no_wrap(txt.clone(), font.clone(), theme::HOLD);
+        let bw = g.size().x + 6.0;
+        let badge = Rect::from_min_size(
+            Pos2::new(rect.left() + 4.0, rect.bottom() - 14.0),
+            Vec2::new(bw, 11.0),
+        );
+        p.rect_filled(badge, Rounding::same(2.0), Color32::from_black_alpha(170));
+        p.text(badge.center(), Align2::CENTER_CENTER, &txt, font, theme::HOLD);
     }
 }
 

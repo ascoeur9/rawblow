@@ -139,6 +139,7 @@ fn transfer_copies_selected_with_conflict_rename() {
     let req = transfer::TransferRequest {
         entries: &entries,
         labels: vec![Label::Pick],
+        stars: vec![],
         action: transfer::Action::Copy,
         companions: transfer::Companions::Both,
         dest: dst.clone(),
@@ -172,6 +173,7 @@ fn transfer_split_by_label_subfolders() {
     let req = transfer::TransferRequest {
         entries: &entries,
         labels: vec![Label::Pick, Label::Hold],
+        stars: vec![],
         action: transfer::Action::Copy,
         companions: transfer::Companions::Both,
         dest: dst.clone(),
@@ -203,6 +205,157 @@ fn rawpull_jump_matching() {
 
     let contains = transfer::match_indices(&entries, &["0123".into()], MatchMode::Contains);
     assert_eq!(contains, vec![2], "contains 매칭");
+}
+
+#[test]
+fn transfer_by_stars_union_with_labels() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("A.JPG"), b"a").unwrap(); // pick 라벨
+    std::fs::write(src.join("B.JPG"), b"b").unwrap(); // 무라벨 + 5★
+    std::fs::write(src.join("C.JPG"), b"c").unwrap(); // 무라벨 + 2★ (대상 아님)
+
+    let mut entries = scan::scan_folder(&src, false, rawblow_core::SortOrder::Name);
+    for e in entries.iter_mut() {
+        match e.stem.as_str() {
+            "A" => e.label = Label::Pick,
+            "B" => e.stars = 5,
+            "C" => e.stars = 2,
+            _ => {}
+        }
+    }
+
+    // 라벨=Pick OR 별점∈{5} → A(라벨), B(별점)만. C(2★)는 제외.
+    let req = transfer::TransferRequest {
+        entries: &entries,
+        labels: vec![Label::Pick],
+        stars: vec![5],
+        action: transfer::Action::Copy,
+        companions: transfer::Companions::Both,
+        dest: dst.clone(),
+        split_by_label: false,
+        conflict: transfer::ConflictPolicy::AutoIncrement,
+    };
+    let report = transfer::execute(&req);
+    assert_eq!(report.transferred, 2, "Pick(A) + 5★(B)만 전송");
+    assert!(dst.join("A.JPG").exists());
+    assert!(dst.join("B.JPG").exists());
+    assert!(!dst.join("C.JPG").exists(), "2★는 대상 아님");
+}
+
+#[test]
+fn transfer_star_only_split_goes_to_star_folder_not_unrated() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("A.JPG"), b"a").unwrap(); // Pick 라벨
+    std::fs::write(src.join("B.JPG"), b"b").unwrap(); // 무라벨 + 5★
+
+    let mut entries = scan::scan_folder(&src, false, rawblow_core::SortOrder::Name);
+    for e in entries.iter_mut() {
+        match e.stem.as_str() {
+            "A" => e.label = Label::Pick,
+            "B" => e.stars = 5,
+            _ => {}
+        }
+    }
+    let req = transfer::TransferRequest {
+        entries: &entries,
+        labels: vec![Label::Pick],
+        stars: vec![5],
+        action: transfer::Action::Copy,
+        companions: transfer::Companions::Both,
+        dest: dst.clone(),
+        split_by_label: true,
+        conflict: transfer::ConflictPolicy::AutoIncrement,
+    };
+    let report = transfer::execute(&req);
+    assert_eq!(report.transferred, 2);
+    assert!(dst.join("pick").join("A.JPG").exists(), "라벨 항목은 pick 폴더로");
+    assert!(dst.join("5star").join("B.JPG").exists(), "별점-only 항목은 5star 폴더로");
+    assert!(!dst.join("unrated").join("B.JPG").exists(), "unrated 폴더로 가면 안 됨");
+}
+
+#[test]
+fn sidecar_roundtrip_restores_stars() {
+    let tmp = tempfile::tempdir().unwrap();
+    let folder = tmp.path();
+    std::fs::write(folder.join("IMG_1.JPG"), b"x").unwrap();
+    std::fs::write(folder.join("IMG_2.JPG"), b"x").unwrap();
+
+    let mut entries = scan::scan_folder(folder, false, rawblow_core::SortOrder::Name);
+    // 무라벨 + 별점만 — 별점 단독으로도 보존돼야 한다.
+    entries[0].stars = 4;
+    entries[1].label = Label::Pick;
+    entries[1].stars = 5;
+
+    sidecar::save(folder, &entries).unwrap();
+    let mut reloaded = scan::scan_folder(folder, false, rawblow_core::SortOrder::Name);
+    let session = sidecar::load(folder).expect("사이드카 로드");
+    sidecar::apply(&session, &mut reloaded);
+
+    let s1 = reloaded.iter().find(|e| e.stem.eq_ignore_ascii_case("IMG_1")).unwrap();
+    let s2 = reloaded.iter().find(|e| e.stem.eq_ignore_ascii_case("IMG_2")).unwrap();
+    assert_eq!(s1.stars, 4, "무라벨이어도 별점 보존");
+    assert_eq!(s1.label, Label::Unrated);
+    assert_eq!(s2.stars, 5);
+    assert_eq!(s2.label, Label::Pick);
+}
+
+#[test]
+fn thumb_cache_roundtrip() {
+    use rawblow_core::cache;
+    use rawblow_core::decode::DecodedImage;
+    let tmp = tempfile::tempdir().unwrap();
+    let cdir = tmp.path().join("cache");
+    // 2x2 빨강 이미지.
+    let img = DecodedImage {
+        width: 2,
+        height: 2,
+        rgba: vec![255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255],
+        color_managed: true,
+        full_raw: false,
+    };
+    let key = "deadbeef";
+    assert!(cache::load(&cdir, key).is_none(), "처음엔 미스");
+    cache::store(&cdir, key, &img);
+    let got = cache::load(&cdir, key).expect("저장 후 히트");
+    assert_eq!((got.width, got.height), (2, 2));
+    assert!(cache::dir_size(&cdir) > 0);
+    cache::clear(&cdir).unwrap();
+    assert_eq!(cache::dir_size(&cdir), 0, "비우면 0");
+    assert!(cache::load(&cdir, key).is_none(), "비운 뒤 미스");
+}
+
+#[test]
+fn thumb_cache_trim_enforces_limit() {
+    use rawblow_core::cache;
+    use rawblow_core::decode::DecodedImage;
+    let tmp = tempfile::tempdir().unwrap();
+    let cdir = tmp.path().join("cache");
+    let img = DecodedImage {
+        width: 8,
+        height: 8,
+        rgba: vec![128u8; 8 * 8 * 4],
+        color_managed: true,
+        full_raw: false,
+    };
+    for i in 0..6 {
+        cache::store(&cdir, &format!("key{i:02}"), &img);
+    }
+    let before = cache::dir_size(&cdir);
+    assert!(before > 0);
+    let max = before / 2;
+    cache::trim(&cdir, max);
+    let after = cache::dir_size(&cdir);
+    assert!(after <= max, "정리 후 상한 이하여야 함: {after} <= {max}");
+    assert!(after < before, "일부는 삭제돼야 함");
+    // 0(무제한)이면 아무 것도 안 지운다.
+    cache::trim(&cdir, 0);
+    assert_eq!(cache::dir_size(&cdir), after, "무제한은 그대로 유지");
 }
 
 #[test]

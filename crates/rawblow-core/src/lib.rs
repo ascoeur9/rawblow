@@ -4,6 +4,7 @@
 //! 사이드카 저장/복원, 파일 전송, 설정을 담당한다. eframe/egui를 일절
 //! 참조하지 않으므로 헤드리스 환경에서도 전 범위 단위테스트가 가능하다.
 
+pub mod cache;
 pub mod color;
 pub mod config;
 pub mod decode;

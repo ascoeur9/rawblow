@@ -103,6 +103,8 @@ pub struct Entry {
     pub has_image: bool,
     /// 현재 분류 라벨.
     pub label: Label,
+    /// 별점(0=무별점, 1~5). 라벨(pick/hold/reject)과 **독립**으로 동시에 매겨진다(#23).
+    pub stars: u8,
 }
 
 impl Entry {
@@ -124,6 +126,7 @@ impl Entry {
             has_raw,
             has_image,
             label: Label::Unrated,
+            stars: 0,
         }
     }
 
