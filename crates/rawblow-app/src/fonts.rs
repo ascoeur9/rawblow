@@ -25,6 +25,10 @@ fn cjk_candidates() -> Vec<&'static str> {
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         vec![
+            // 변수폰트(VF) 패키지: 최신 Fedora/RHEL 기본 구성에 흔함(고정 Regular .ttc가 없을 수 있음).
+            "/usr/share/fonts/google-noto-sans-cjk-vf-fonts/NotoSansCJK-VF.ttc",
+            "/usr/share/fonts/google-noto-sans-cjk-vf-fonts/NotoSansCJKkr-VF.ttf",
+            "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",

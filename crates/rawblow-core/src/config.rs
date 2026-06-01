@@ -53,6 +53,8 @@ pub struct Config {
     pub last_folder: Option<String>,
     pub recent_folders: Vec<String>,
     pub keymap: KeyMap,
+    /// 썸네일 디스크 캐시 상한(MB). 초과 시 오래된 것부터 자동 삭제. 0 = 무제한(#22).
+    pub cache_limit_mb: u64,
 }
 
 impl Default for Config {
@@ -67,6 +69,7 @@ impl Default for Config {
             last_folder: None,
             recent_folders: Vec::new(),
             keymap: KeyMap::default(),
+            cache_limit_mb: 1024, // 기본 1GB. 0이면 무제한.
         }
     }
 }
@@ -110,6 +113,37 @@ pub fn config_dir() -> PathBuf {
 
 pub fn config_path() -> PathBuf {
     config_dir().join("config.json")
+}
+
+/// OS 표준 **캐시** 디렉토리(`…/RawBlow/thumb-cache` 등). 썸네일 디스크 캐시(#22)에 쓴다.
+/// 설정(config_dir)과 달리 OS가 정리해도 무방한 캐시 위치를 쓴다(Windows는 LOCALAPPDATA).
+pub fn cache_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            return PathBuf::from(local).join("RawBlow").join("thumb-cache");
+        }
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            return PathBuf::from(appdata).join("RawBlow").join("thumb-cache");
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join("Library/Caches/RawBlow/thumb-cache");
+        }
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        // Windows/macOS와 동일하게 thumb-cache 하위폴더로 통일(향후 캐시 종류 분리·정리 안전).
+        if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
+            return PathBuf::from(xdg).join("rawblow").join("thumb-cache");
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(".cache/rawblow/thumb-cache");
+        }
+    }
+    std::env::temp_dir().join("rawblow").join("thumb-cache")
 }
 
 /// 설정을 로드(없으면 기본값).

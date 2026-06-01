@@ -103,6 +103,8 @@ pub struct Entry {
     pub has_image: bool,
     /// 현재 분류 라벨.
     pub label: Label,
+    /// 별점(0=무별점, 1~5). 라벨(pick/hold/reject)과 **독립**으로 동시에 매겨진다(#23).
+    pub stars: u8,
 }
 
 impl Entry {
@@ -124,6 +126,7 @@ impl Entry {
             has_raw,
             has_image,
             label: Label::Unrated,
+            stars: 0,
         }
     }
 
@@ -210,6 +213,23 @@ impl Filter {
             Filter::Hold => "보류",
             Filter::Reject => "제외",
             Filter::Unrated => "미선택",
+        }
+    }
+}
+
+/// 별점 필터. 라벨 필터(`Filter`)와 **독립**으로 AND 결합한다(예: 선택 AND 정확히 ★3).
+/// `Any`=별점 무시, `Exact(n)`=정확히 n점(0=미부여).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StarFilter {
+    Any,
+    Exact(u8),
+}
+
+impl StarFilter {
+    pub fn accepts(self, stars: u8) -> bool {
+        match self {
+            StarFilter::Any => true,
+            StarFilter::Exact(n) => stars == n,
         }
     }
 }
