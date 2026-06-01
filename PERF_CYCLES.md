@@ -23,6 +23,12 @@
 - 측정: 프리뷰 **1.05MB → 0.56MB read (47% 감소)**, dims·시간 동일(1920급), 회전 정상. 1920이 1MB 밖이어도 전체파일 폴백 없이 안전(robustness).
 - 판정: **채택**(저위험 — IFD 합성 테스트가 커버).
 
+### Cycle 13 — 벤치 하니스를 디버그 빌드 전용으로 (릴리즈 바이너리 정리)
+- 변경: `bench_step` + RB_BENCH 게이트에 `#[cfg(debug_assertions)]` → 사용자가 돌리는 **릴리즈 바이너리에는 벤치 스캐폴딩이 들어가지 않음**(매 프레임 env 체크·자동스크롤·process::exit 없음). 개발(디버그) 빌드엔 도구 보존. `TexCache::len()`은 `#[allow(dead_code)]`.
+- 측정: 릴리즈·디버그 둘 다 경고 0으로 빌드.
+- 판정: **채택**.
+- 보류(검토 후 미적용, 리스크>이득): filtered() 매프레임 메모이즈(~0.2ms, frame 9ms라 무의미), TexCache `touch()` O(n)→O(1)(~0.5ms이나 wgpu 텍스처 retire 로직과 얽혀 "destroyed" 크래시 회귀 위험), 썸네일 prefix 512KB→축소(일부 파일 56MB 폴백 위험), JPG 프리뷰 임베디드(≥1600 스크리닐 없으면 메인이미지라 전체파일 필요).
+
 ## 측정 방법
 
 - 프로파일러: `cargo run --release -p rawblow-core --example rw2_profile -- "<folder>" [count]`

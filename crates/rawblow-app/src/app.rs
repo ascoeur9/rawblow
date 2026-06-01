@@ -684,9 +684,11 @@ impl RawBlowApp {
         }
     }
 
-    /// [임시] 벤치: 그리드를 실제 "화살표 쭉 누름"처럼 시간당 일정 행 자동 스크롤하며,
+    /// [개발 전용] 벤치: 그리드를 실제 "화살표 쭉 누름"처럼 시간당 일정 행 자동 스크롤하며,
     /// 현재 화면 셀의 썸네일 캐시 적중률·프레임시간을 0.5s마다 temp 로그에 기록한다.
     /// "썸네일이 따라오는가"를 그라운드 트루스로 측정. env RB_BENCH로만 동작, 끝나면 프로세스 종료.
+    /// 디버그 빌드에만 컴파일(릴리즈 제외).
+    #[cfg(debug_assertions)]
     fn bench_step(&mut self, ctx: &egui::Context) {
         use std::io::Write;
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -748,7 +750,9 @@ impl eframe::App for RawBlowApp {
         self.frame_ms = now.duration_since(self.last_frame).as_secs_f32() * 1000.0;
         self.last_frame = now;
 
-        // [임시] 벤치 모드: env RB_BENCH 설정 시 그리드를 자동 스크롤하며 썸네일 채움 진행을 기록.
+        // [개발 전용] 벤치 모드: env RB_BENCH 설정 시 그리드를 자동 스크롤하며 썸네일 채움을 기록.
+        // 디버그 빌드에만 포함(릴리즈 바이너리에는 들어가지 않음).
+        #[cfg(debug_assertions)]
         if std::env::var_os("RB_BENCH").is_some() {
             self.bench_step(ctx);
         }

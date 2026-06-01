@@ -275,7 +275,8 @@ impl TexCache {
         self.map.contains_key(&id)
     }
 
-    /// 현재 캐시된 텍스처 수(계측·벤치용).
+    /// 현재 캐시된 텍스처 수(계측·벤치용). 릴리즈에선 벤치가 제외돼 미사용일 수 있다.
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.map.len()
     }
