@@ -24,9 +24,7 @@ const PREVIEW_EDGE: u32 = 1600;
 const ORIG_EDGE: u32 = 8192;
 /// 그리드·필름스트립 썸네일 최대 변(px). 작게 → 빠른 디코딩·작은 메모리.
 const THUMB_EDGE: u32 = 320;
-/// 선디코딩 윈도우: 컬링은 전방 진행이므로 앞쪽을 더 많이.
-const PRELOAD_AHEAD: usize = 8;
-const PRELOAD_BEHIND: usize = 3;
+/// 프리뷰 선디코딩 윈도우는 사용자 설정 `cfg.preload`(전방)를 따른다(request_preload).
 /// 프리뷰 텍스처 캐시 용량(윈도우+여유 — 현재 장이 절대 eviction되지 않게).
 const PREVIEW_CAP: usize = 24;
 /// 썸네일 텍스처 캐시 용량. 보이는 셀 + 최근 스크롤 이력을 넉넉히 담되 VRAM은 묶는다
@@ -386,9 +384,12 @@ impl RawBlowApp {
             let want_full = self.full_raw;
             let cur_edge = if self.full_raw { Some(ORIG_EDGE) } else { Some(PREVIEW_EDGE) };
             self.request_preview(real, cur_edge, want_full, true);
-            // 전방 편향 윈도우 프리뷰(일반 레인).
-            let lo = cur.saturating_sub(PRELOAD_BEHIND);
-            let hi = (cur + PRELOAD_AHEAD).min(f.len() - 1);
+            // 전방 편향 윈도우 프리뷰(일반 레인). 윈도우 폭은 사용자 설정(cfg.preload)을 따른다
+            // — 이전엔 상수(8)를 써서 설정값이 표시·저장만 되고 실제로 무시됐다(연결 누락 수정).
+            let ahead = (self.cfg.preload.max(0) as usize).min(64);
+            let behind = if ahead == 0 { 0 } else { (ahead / 3).max(1) };
+            let lo = cur.saturating_sub(behind);
+            let hi = (cur + ahead).min(f.len() - 1);
             for fi in lo..=hi {
                 if fi != cur {
                     self.request_preview(f[fi], Some(PREVIEW_EDGE), false, false);
