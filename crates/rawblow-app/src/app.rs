@@ -477,14 +477,18 @@ impl RawBlowApp {
                 Err(_) => break,
             };
             // 큐 상한 초과로 버려진 요청: 해당 pending만 풀어 필요하면(아직 보이면) 재요청되게 한다.
+            // **현재 세대일 때만** 푼다: 폴더 전환 직후 도착한 옛 세대 dropped가 새 폴더의 동일 id
+            // pending(라이브)을 잘못 지워 중복 디코딩시키지 않게(프리페치·정상 결과 경로와 대칭).
             if res.dropped {
-                if res.prefetch {
-                    self.pending_prefetch.remove(&res.id);
-                } else if res.thumb {
-                    self.pending_thumb.remove(&res.id);
-                    self.pending_thumb_prio.remove(&res.id);
-                } else {
-                    self.pending_preview.remove(&res.id);
+                if res.generation == self.generation {
+                    if res.prefetch {
+                        self.pending_prefetch.remove(&res.id);
+                    } else if res.thumb {
+                        self.pending_thumb.remove(&res.id);
+                        self.pending_thumb_prio.remove(&res.id);
+                    } else {
+                        self.pending_preview.remove(&res.id);
+                    }
                 }
                 continue;
             }

@@ -268,6 +268,8 @@ fn tiff_ifd0_jpeg_blobs(path: &Path) -> Vec<(u64, usize)> {
         Some(v) => v as usize,
         None => return Vec::new(),
     };
+    // 오프셋이 파일 범위를 벗어난 손상 IFD 엔트리를 거르기 위한 파일 크기(못 읽으면 무제한).
+    let file_len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(u64::MAX);
     let mut blobs: Vec<(u64, usize)> = Vec::new();
     for i in 0..count.min(512) {
         let e = ifd0 + 2 + i * 12;
@@ -276,8 +278,9 @@ fn tiff_ifd0_jpeg_blobs(path: &Path) -> Vec<(u64, usize)> {
             _ => break,
         };
         // type=7(UNDEFINED, 1바이트) && 4바이트 초과 → val은 오프셋, cnt는 바이트 길이.
-        // JPEG로 보이는 충분히 큰 블롭만(>1KB) 후보로.
-        if typ == 7 && cnt > 1024 {
+        // JPEG로 보이는 충분히 큰 블롭만(>1KB), 오프셋이 파일 내부인 것만 후보로(잘못된 오프셋
+        // 방어). 길이 과대선언은 read_range가 EOF까지만 읽어 안전하므로 허용.
+        if typ == 7 && cnt > 1024 && val < file_len {
             blobs.push((val, cnt));
         }
     }
