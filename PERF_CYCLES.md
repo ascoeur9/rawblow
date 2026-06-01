@@ -29,6 +29,10 @@
 - 판정: **채택**.
 - 보류(검토 후 미적용, 리스크>이득): filtered() 매프레임 메모이즈(~0.2ms, frame 9ms라 무의미), TexCache `touch()` O(n)→O(1)(~0.5ms이나 wgpu 텍스처 retire 로직과 얽혀 "destroyed" 크래시 회귀 위험), 썸네일 prefix 512KB→축소(일부 파일 56MB 폴백 위험), JPG 프리뷰 임베디드(≥1600 스크리닐 없으면 메인이미지라 전체파일 필요).
 
+### Cycle 14 — 폴더 열기 비용 검증 (병목 아님 확인)
+- 측정(`open_time` 프로브, 7124항목 recursive): scan_folder **32ms** + sidecar::load **0ms** + apply **0ms** = **33ms**. 즉각 — 폴더 열기는 사용자가 겪는 "로딩" 지연의 원인이 아님.
+- 판정: 변경 불필요. 이로써 로딩 흐름 전체(열기 33ms · 썸네일 512KB/즉시 · 프리뷰 0.56MB/22ms · ORIG 8MB/250ms)에 남은 병목 없음 확인.
+
 ## 측정 방법
 
 - 프로파일러: `cargo run --release -p rawblow-core --example rw2_profile -- "<folder>" [count]`
