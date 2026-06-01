@@ -157,6 +157,10 @@ RW2 중심 변경(IFD ORIG·프리뷰)이 다른 카메라를 깨지 않는지 �
 - 110: X: JPG preview/ORIG = 본 이미지 8MB(불가피, RW2 아님) → 콜드 ~2초. 썸네일은 progressive 128KB로 빠름(C108). 활성 불만 폴더는 D:(SSD)·RW2라 영향 미미.
 - 판정: 느린 드라이브에서도 RW2 로딩(썸네일 128KB·프리뷰 0.56MB·ORIG 8MB) 모두 최소 바이트. JPG는 본 이미지 읽기가 하한.
 
+### Cycle 111 — 최종 통합 벤치 (모든 변경 포함, 무크래시 + 개선 확인)
+- 디버그 빌드 앱 자동스크롤(7124, 점진적 prefix 등 전 변경 포함): **vis_cached 100% 전 구간**, **pend_thumb 최대 8**(이전 260 → 점진적 prefix로 썸네일이 더 빨라져 큐가 거의 안 쌓임), pend_pref≤94, frame 8-9ms, 44초 무크래시 정상 종료.
+- 판정: 모든 최적화가 통합 환경에서 정상 작동·무회귀. 그리드 스크롤이 이전보다 더 매끄러움(점진적 prefix 효과).
+
 ## 측정 방법
 
 - 프로파일러: `cargo run --release -p rawblow-core --example rw2_profile -- "<folder>" [count]`
