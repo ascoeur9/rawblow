@@ -224,11 +224,20 @@ pub struct TexCache {
     // egui/wgpu는 핸들이 드롭되면 프레임 경계에서 GPU 텍스처를 파괴하는데, 빠른 스크롤 중
     // 방금 그린 셀이 곧바로 eviction되면 제출(submit) 중인 프레임이 파괴된 텍스처를 참조해
     // "Texture ... has been destroyed" 크래시가 난다. 유예 보관으로 in-flight 참조를 안전하게.
-    // 한 프레임에 참조되는 텍스처 수에 맞춰 크기를 정한다(썸네일은 화면에 수십 장 → 크게,
-    // 프리뷰는 1~2장 + 텍스처가 거대 → 작게: 큰 텍스처를 과다 보관하면 VRAM 낭비).
-    retired: VecDeque<egui::TextureHandle>,
+    //
+    // 해제 시점은 **프레임 수(TTL)** 기준이다. 개수 기준만으로는 빠른 스크롤 한 프레임에
+    // 수십 장이 은퇴하면 방금 그린 핸들이 같은 프레임 안에서 밀려나 드롭→크래시할 수 있다.
+    // 각 핸들은 RETIRE_TTL_FRAMES 프레임 동안 보존되어 in-flight GPU 제출이 끝날 때까지 산다.
+    // retire_keep은 병적인 churn에 대비한 VRAM 안전 상한일 뿐이며, 가장 최근(=현재 프레임에
+    // 그려졌을 가능성이 큰) 핸들이 남도록 오래된 것부터 버린다.
+    retired: VecDeque<(egui::TextureHandle, u8)>,
     retire_keep: usize,
 }
+
+/// 은퇴한 텍스처 핸들을 드롭하기 전 살려두는 프레임 수.
+/// eframe/wgpu의 in-flight 프레임(스왑체인 + 명령버퍼)이 파괴된 텍스처를 참조하지 않도록,
+/// 최대 프레임 지연보다 넉넉히 잡는다.
+const RETIRE_TTL_FRAMES: u8 = 3;
 
 impl TexCache {
     pub fn new(cap: usize, retire_keep: usize) -> Self {
@@ -289,11 +298,40 @@ impl TexCache {
         }
     }
 
-    /// 밀려난/교체된 핸들을 유예 큐에 넣고, 충분히 오래된 것만 실제로 드롭한다.
-    /// egui/wgpu는 핸들 드롭 시 프레임 경계에서 GPU 텍스처를 파괴하므로, in-flight
+    /// 밀려난/교체된 핸들을 유예 큐에 넣는다(TTL 부여). 실제 드롭은 tick()이 프레임 경계에서
+    /// 한다. egui/wgpu는 핸들 드롭 시 프레임 경계에서 GPU 텍스처를 파괴하므로, in-flight
     /// 프레임이 참조할 수 있는 동안은 살려둬야 "Texture has been destroyed" 크래시를 막는다.
     fn retire(&mut self, handle: egui::TextureHandle) {
-        self.retired.push_back(handle);
+        self.retired.push_back((handle, RETIRE_TTL_FRAMES));
+        // VRAM 안전 상한(오래된 것부터). 정상 동작에선 TTL이 먼저 비우므로 거의 닿지 않는다.
+        while self.retired.len() > self.retire_keep {
+            self.retired.pop_front();
+        }
+    }
+
+    /// 매 프레임 호출. 은퇴 핸들의 TTL을 깎고 0이 된 것만 실제로 드롭(=GPU 텍스처 파괴)한다.
+    /// 프레임 단위로 살리므로 churn 양과 무관하게 in-flight 참조가 끝난 뒤에만 파괴된다.
+    pub fn tick(&mut self) {
+        self.retired.retain_mut(|(_, ttl)| {
+            *ttl = ttl.saturating_sub(1);
+            *ttl > 0
+        });
+    }
+
+    /// 폴더 전환 등으로 캐시를 통째로 비울 때 사용. 핸들을 **즉시 드롭하지 않고** 유예 큐로
+    /// 옮겨 TTL 동안 살려둔다(통째 교체 시 in-flight 프레임이 참조 중인 텍스처가 파괴되는
+    /// 크래시 방지). order(LRU) 앞쪽=오래된 것부터 넣어, 상한에 걸리면 현재 프레임에 그려졌을
+    /// 가능성이 큰 최신 핸들이 남도록 한다.
+    pub fn retire_all(&mut self) {
+        while let Some(id) = self.order.pop_front() {
+            if let Some((handle, _, _)) = self.map.remove(&id) {
+                self.retired.push_back((handle, RETIRE_TTL_FRAMES));
+            }
+        }
+        // order에 없던 잔여 핸들도 안전하게 유예.
+        for (_, (handle, _, _)) in self.map.drain() {
+            self.retired.push_back((handle, RETIRE_TTL_FRAMES));
+        }
         while self.retired.len() > self.retire_keep {
             self.retired.pop_front();
         }

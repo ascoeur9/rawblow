@@ -217,6 +217,23 @@ impl Filter {
     }
 }
 
+/// 별점 필터. 라벨 필터(`Filter`)와 **독립**으로 AND 결합한다(예: 선택 AND 정확히 ★3).
+/// `Any`=별점 무시, `Exact(n)`=정확히 n점(0=미부여).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StarFilter {
+    Any,
+    Exact(u8),
+}
+
+impl StarFilter {
+    pub fn accepts(self, stars: u8) -> bool {
+        match self {
+            StarFilter::Any => true,
+            StarFilter::Exact(n) => stars == n,
+        }
+    }
+}
+
 /// 정렬 기준(F1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortOrder {

@@ -359,6 +359,41 @@ fn thumb_cache_trim_enforces_limit() {
 }
 
 #[test]
+fn star_filter_exact_and_any() {
+    use rawblow_core::StarFilter;
+    // Any는 별점 무시.
+    for s in 0..=5u8 {
+        assert!(StarFilter::Any.accepts(s));
+    }
+    // Exact(n)은 정확히 n점만(0=미부여 포함).
+    assert!(StarFilter::Exact(3).accepts(3));
+    assert!(!StarFilter::Exact(3).accepts(2));
+    assert!(!StarFilter::Exact(3).accepts(4));
+    assert!(StarFilter::Exact(0).accepts(0));
+    assert!(!StarFilter::Exact(0).accepts(1));
+}
+
+#[test]
+fn label_and_star_filters_are_independent() {
+    use rawblow_core::{Filter, StarFilter};
+    // 라벨=Pick AND 별점=정확히5 인 항목만 통과해야 한다(AND 결합, filtered()와 동일 규칙).
+    let items: [(Label, u8); 4] = [
+        (Label::Pick, 5),
+        (Label::Pick, 3),
+        (Label::Hold, 5),
+        (Label::Unrated, 0),
+    ];
+    let (f, sf) = (Filter::Pick, StarFilter::Exact(5));
+    let pass: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, (l, s))| f.accepts(*l) && sf.accepts(*s))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(pass, vec![0], "Pick AND ★5는 첫 항목만 통과");
+}
+
+#[test]
 fn kind_classification() {
     assert_eq!(rawblow_core::model::kind_of(Path::new("a.RW2")), Some(Kind::Raw));
     assert_eq!(rawblow_core::model::kind_of(Path::new("a.jpg")), Some(Kind::Image));

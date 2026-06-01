@@ -9,7 +9,7 @@ use rawblow_core::cache;
 use rawblow_core::config::{self, Config};
 use rawblow_core::meta::{read_exif, ExifInfo};
 use rawblow_core::transfer::{self, Action, Companions, ConflictPolicy, TransferReport, TransferRequest};
-use rawblow_core::{scan, sidecar, Entry, Filter, Label, MatchMode, SortOrder, ViewMode};
+use rawblow_core::{scan, sidecar, Entry, Filter, Label, MatchMode, SortOrder, StarFilter, ViewMode};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -78,6 +78,7 @@ pub struct RawBlowApp {
     view: ViewMode,
     fullscreen: bool,
     filter: Filter,
+    star_filter: StarFilter, // 별점 필터(라벨 필터와 독립 AND).
     show_exif: bool,
     show_hist: bool,
     full_raw: bool, // ORIG(원본 보기): 풀 RAW/최대 임베디드를 원본 크기로 디코딩
@@ -155,6 +156,7 @@ impl RawBlowApp {
             view: ViewMode::Single,
             fullscreen: false,
             filter: Filter::All,
+            star_filter: StarFilter::Any,
             show_exif: cfg.show_exif,
             show_hist: cfg.show_histogram,
             full_raw: false,
@@ -172,7 +174,7 @@ impl RawBlowApp {
             items: Vec::new(),
             index: 0,
             worker,
-            cache: TexCache::new(PREVIEW_CAP, 16),
+            cache: TexCache::new(PREVIEW_CAP, 32),
             thumbs: TexCache::new(THUMB_CAP, 256),
             pending_preview: std::collections::HashSet::new(),
             pending_thumb: std::collections::HashSet::new(),
@@ -248,8 +250,11 @@ impl RawBlowApp {
         self.items = items;
         self.index = 0;
         self.generation += 1;
-        self.cache = TexCache::new(PREVIEW_CAP, 16);
-        self.thumbs = TexCache::new(THUMB_CAP, 256);
+        // 캐시를 통째로 새로 만들지 **않는다**: 그러면 옛 핸들이 즉시 드롭→GPU 텍스처가
+        // 파괴되어, 직전 프레임을 제출(submit) 중인 wgpu가 이를 참조하면 크래시한다.
+        // 대신 retire_all로 활성 맵만 비우고 핸들은 TTL 동안 살려 in-flight 참조를 보호한다.
+        self.cache.retire_all();
+        self.thumbs.retire_all();
         self.pending_preview.clear();
         self.pending_thumb.clear();
         self.pending_thumb_prio.clear();
@@ -272,7 +277,9 @@ impl RawBlowApp {
         self.items
             .iter()
             .enumerate()
-            .filter(|(_, it)| self.filter.accepts(it.entry.label))
+            .filter(|(_, it)| {
+                self.filter.accepts(it.entry.label) && self.star_filter.accepts(it.entry.stars)
+            })
             .map(|(i, _)| i)
             .collect()
     }
@@ -595,6 +602,10 @@ impl eframe::App for RawBlowApp {
         let now = Instant::now();
         self.frame_ms = now.duration_since(self.last_frame).as_secs_f32() * 1000.0;
         self.last_frame = now;
+
+        // 은퇴 텍스처의 TTL을 깎아 in-flight 참조가 끝난 핸들만 드롭(GPU 파괴)한다.
+        self.cache.tick();
+        self.thumbs.tick();
 
         self.drain_results(ctx);
 
@@ -1033,6 +1044,57 @@ impl RawBlowApp {
                         self.filter = filt;
                         self.index = 0;
                     }
+                }
+
+                // 별점 필터(#23 후속): 라벨 필터와 독립 AND. 정확히 N점만 표시. `전체`=별점 무시.
+                section_head(ui, "Filter Stars", None);
+                let star_sel = self.star_filter;
+                let star_cnt = self.star_counts(); // [미부여, 1★ .. 5★]
+                let mut new_star: Option<StarFilter> = None;
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    // 전체(Any)
+                    let active = star_sel == StarFilter::Any;
+                    let (r, resp) = ui.allocate_exact_size(Vec2::new(30.0, 22.0), Sense::click());
+                    if active {
+                        ui.painter().rect_filled(r, Rounding::same(4.0), theme::BG3);
+                    }
+                    ui.painter().text(r.center(), Align2::CENTER_CENTER, "전체", prop(11.0), if active { theme::INK } else { theme::INK2 });
+                    if resp.clicked() {
+                        new_star = Some(StarFilter::Any);
+                    }
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    // ★1 ~ ★5 (정확히 n점). 해당 점수 항목이 없으면 흐리게.
+                    for n in 1..=5u8 {
+                        let active = star_sel == StarFilter::Exact(n);
+                        let empty = star_cnt[n as usize] == 0;
+                        let (r, resp) = ui.allocate_exact_size(Vec2::new(22.0, 22.0), Sense::click());
+                        if active {
+                            ui.painter().rect_filled(r, Rounding::same(4.0), theme::BG3);
+                        }
+                        let col = if active {
+                            theme::HOLD
+                        } else if empty {
+                            theme::INK4
+                        } else {
+                            theme::INK2
+                        };
+                        ui.painter().text(r.center(), Align2::CENTER_CENTER, &format!("★{n}"), prop(10.5), col);
+                        if resp.clicked() {
+                            new_star = Some(StarFilter::Exact(n));
+                        }
+                        if resp.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                    }
+                });
+                if let Some(sf) = new_star {
+                    // 같은 별점 칩 재클릭 = 토글 해제(전체로). 그 외엔 해당 별점만.
+                    self.star_filter = if sf == self.star_filter { StarFilter::Any } else { sf };
+                    self.index = 0;
                 }
 
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {

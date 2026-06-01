@@ -3,6 +3,8 @@
 
 # 개인 테스트 사진 (공유 금지)
 /sample/
+# 전송(복사/이동) 테스트 산출물 (개인 사진)
+/sample_selected/
 
 # OS / 에디터
 .DS_Store
