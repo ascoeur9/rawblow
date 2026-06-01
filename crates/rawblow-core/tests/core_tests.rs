@@ -212,6 +212,56 @@ fn orig_ifd_embedded_synthetic_rw2() {
     assert_eq!((img.width, img.height), (3200, 2000), "과대선언 len에도 EOF까지만 읽어 정상");
 }
 
+/// CR2(Canon)식 StripOffsets(0x0111)+StripByteCounts(0x0117) 임베디드 JPEG를 합성 TIFF로
+/// 검증한다(#perf C162 회귀 가드). RW2의 type-7과 달리 strip 태그로 JPEG를 가리키는 경로.
+#[test]
+fn orig_ifd_strip_embedded_synthetic_cr2() {
+    use image::{ImageBuffer, Rgb};
+    fn make_jpeg(w: u32, h: u32) -> Vec<u8> {
+        let buf = ImageBuffer::from_fn(w, h, |x, y| {
+            Rgb([(x * 255 / (w - 1)) as u8, (y * 255 / (h - 1)) as u8, 64u8])
+        });
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(buf)
+            .write_to(&mut out, image::ImageFormat::Jpeg)
+            .unwrap();
+        out.into_inner()
+    }
+    // LE TIFF(매직 0x2a) + IFD0: StripOffsets·StripByteCounts(둘 다 type-4 LONG, count1)가
+    // 뒤에 덧붙인 JPEG를 가리킨다 + Orientation. JPEG는 5000px(풀해상도급).
+    let jpeg = make_jpeg(5000, 3333);
+    let n_entries = 3u16;
+    let ifd_size = 2 + (n_entries as usize) * 12 + 4;
+    let blob_off = 8 + ifd_size;
+    let mut f = Vec::new();
+    f.extend_from_slice(b"II");
+    f.extend_from_slice(&0x002au16.to_le_bytes());
+    f.extend_from_slice(&8u32.to_le_bytes());
+    f.extend_from_slice(&n_entries.to_le_bytes());
+    let mut entry = |tag: u16, typ: u16, cnt: u32, val: u32, f: &mut Vec<u8>| {
+        f.extend_from_slice(&tag.to_le_bytes());
+        f.extend_from_slice(&typ.to_le_bytes());
+        f.extend_from_slice(&cnt.to_le_bytes());
+        f.extend_from_slice(&val.to_le_bytes());
+    };
+    entry(0x0111, 4, 1, blob_off as u32, &mut f); // StripOffsets
+    entry(0x0117, 4, 1, jpeg.len() as u32, &mut f); // StripByteCounts
+    entry(0x0112, 3, 1, 1, &mut f); // Orientation=1
+    f.extend_from_slice(&0u32.to_le_bytes());
+    assert_eq!(f.len(), blob_off);
+    f.extend_from_slice(&jpeg);
+
+    let dir = std::env::temp_dir().join("rb_cr2_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("strip.cr2");
+    std::fs::write(&p, &f).unwrap();
+
+    // ORIG: StripOffsets JPEG(5000px)를 그 구간만 읽어 풀해상도로.
+    let img = decode::decode_file(&p, decode::DecodeOptions { full_raw: true, max_edge: Some(8192) })
+        .expect("CR2 strip ORIG");
+    assert_eq!((img.width, img.height), (5000, 3333), "StripOffsets 임베디드 풀해상도");
+}
+
 #[test]
 fn sidecar_roundtrip_restores_labels() {
     let tmp = tempfile::tempdir().unwrap();

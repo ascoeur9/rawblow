@@ -195,6 +195,11 @@ RW2 중심 변경(IFD ORIG·프리뷰)이 다른 카메라를 깨지 않는지 �
 - 164: RW2 무영향 확인 — D:260320 ORIG 8144/6.4MB·미국여행 ORIG 1920/0.7MB 불변(RW2엔 StripOffsets 없음). IFD 합성 테스트 통과.
 - 판정: **채택(실개선).** Canon CR2 preview 13×·ORIG 5× 빠르고 풀해상도, Panasonic 불변. (크로스카메라 검증이 발굴한 3번째 실개선 — 슬로우드라이브 progressive·ORIG IFD폴백·CR2 strip.)
 
+### Cycles 165–168 — CR2 합성 회귀 테스트 + 5D Mark I 검증
+- 165: `orig_ifd_strip_embedded_synthetic_cr2` 추가 — 합성 CR2(StripOffsets/ByteCounts→5000px JPEG)로 strip 경로 영구 가드(RW2 type-7 테스트와 짝). 통과.
+- 166–168: 5D Mark I CR2 검증 — preview **12.9MB→2.0MB(6×)**, ORIG 370→278ms(StripOffsets JPEG 4386, rawloader 제거), thumb 5ms✓. 패닉 0. 두 Canon 모델(5D·5Dm2) 모두 strip 지원으로 최적화.
+- 판정: 사용자 라이브러리 전 카메라(Panasonic RW2/JPG + Canon CR2 2모델) 최적화 완료, 합성 테스트로 RW2·CR2 IFD 경로 영구 가드.
+
 ## 측정 방법
 
 - 프로파일러: `cargo run --release -p rawblow-core --example rw2_profile -- "<folder>" [count]`
