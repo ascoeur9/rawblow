@@ -174,6 +174,20 @@ RW2 중심 변경(IFD ORIG·프리뷰)이 다른 카메라를 깨지 않는지 �
 - 139–145: bg 0/1/2/3/4/5/6 (threads=8) → bg=1-2 최적(8ms), 3+ 점진 악화(10-13ms, 전경 굶음). **bg_threads=2 재확인**.
 - (참고: scroll_sim은 catch_unwind 없이 decode 호출 → 콜드 offset의 패닉 파일서 행. 워밍 offset 사용. 실제 워커는 catch_unwind 있어 무관.)
 
+### Cycles 146–157 — 추가 폴더 디코드 검증 (개선 기회 2건 발굴)
+| 폴더 | thumb | preview | ORIG | 비고 |
+|---|---|---|---|---|
+| 미스즈 JPG | 1ms/0.13MB✓ | 본이미지 9MB | 8144 | 패닉0 |
+| 5Dm2 CR2 | 7ms/0.13MB✓ | **24-30MB 전체파일** | rawloader | CR2 임베디드 미파싱(복잡, 비활성, 보류) |
+| 미국여행 RW2 | 1ms/0.13MB✓ | **0.5MB IFD✓** | **36MB→1920(전체파일 낭비)** | 풀해상도 임베디드 없음+rawloader 실패 → decode_largest_embedded가 전체파일 읽음 |
+- 발굴: ① 미국여행 RW2 ORIG가 IFD에 1920(0.5MB) 있는데 전체파일(36MB) 읽어 같은 1920 반환 → **IFD 최대 임베디드 폴백으로 개선 가능**(C158). ② CR2 preview 전체파일(복잡·비활성 보류). 패닉 0 전부.
+
+### Cycles 158–160 — 【실개선】 ORIG 폴백: IFD 최대 임베디드 (전체파일 회피)
+- 158: 구현 — ORIG에서 rawloader 실패 시 `decode_largest_embedded`(전체파일) 전에 `decode_ifd_embedded(gate=0)`(IFD 최대 임베디드, 크기 무관)를 그 구간만 읽어 사용. IFD 비면 전체파일(최후).
+- 159: 미국여행 RW2(풀해상도 임베디드 없음) ORIG **36MB→1.01MB (36× 적은 I/O)**, 출력 동일 1920×1280. 느린 드라이브선 9초→0.25초.
+- 160: D: 260320 RW2(8144 보유) ORIG **8144/8MB 유지**(gate=3000 경로 우선) — 회귀 없음. IFD 합성 테스트 통과.
+- 판정: **채택(실개선).** 풀해상도 임베디드 없는 카메라(미국여행 등)의 ORIG가 전체파일 대신 IFD 임베디드만 읽어 36× 빠름, 풀해상도 있는 카메라는 불변.
+
 ## 측정 방법
 
 - 프로파일러: `cargo run --release -p rawblow-core --example rw2_profile -- "<folder>" [count]`

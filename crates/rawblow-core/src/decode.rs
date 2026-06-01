@@ -158,10 +158,17 @@ pub fn decode_file(path: &Path, opts: DecodeOptions) -> Result<DecodedImage, Dec
                 let full = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     decode_full_raw(path, orient, opts.max_edge)
                 }));
-                match full {
-                    Ok(Ok(img)) => Ok(img),
-                    _ => decode_largest_embedded(path, orient, opts.max_edge),
+                if let Ok(Ok(img)) = full {
+                    return Ok(img);
                 }
+                // rawloader 실패(이 RW2서 패닉/에러) + 풀해상도 임베디드 없는 카메라: IFD가 가리키는
+                // **가장 큰** 임베디드(크기 무관, 보통 1920)를 그 구간만 읽어 쓴다 — 전체파일(수십 MB)
+                // 읽기를 피한다. 출력은 decode_largest_embedded와 동일(가용 최대)하면서 I/O만
+                // 36MB→0.5MB로 줄인다(느린 드라이브서 결정적). IFD가 비면 전체파일 폴백(최후).
+                if let Some(img) = decode_ifd_embedded(path, orient, opts.max_edge, 0, false) {
+                    return Ok(img);
+                }
+                decode_largest_embedded(path, orient, opts.max_edge)
             } else {
                 decode_raw_embedded(path, orient, opts.max_edge)
             }
