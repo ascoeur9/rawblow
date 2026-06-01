@@ -120,9 +120,18 @@ pub fn decode_file(path: &Path, opts: DecodeOptions) -> Result<DecodedImage, Dec
                 //  prefix 시도가 헛읽기만 더해 손해라, 본 이미지 전체 디코딩이 정답. Cycle93 측정.)
                 let thumb = matches!(opts.max_edge, Some(e) if e <= 384);
                 if thumb {
-                    if let Ok(prefix) = read_prefix(path, thumb_prefix_size()) {
-                        if let Some(img) = decode_best_embedded(&prefix, true, orient, opts.max_edge) {
-                            return Ok(img);
+                    // 점진적 prefix(128KB→512KB): EXIF 썸네일이 보통 맨 앞이라 느린 드라이브서도
+                    // 적게 읽어 빠르다. 못 찾으면 늘리고, 그래도 없으면 본 이미지 전체 디코딩.
+                    let mut tried = 0usize;
+                    for &sz in &[128 * 1024, thumb_prefix_size()] {
+                        if sz <= tried {
+                            continue;
+                        }
+                        tried = sz;
+                        if let Ok(prefix) = read_prefix(path, sz) {
+                            if let Some(img) = decode_best_embedded(&prefix, true, orient, opts.max_edge) {
+                                return Ok(img);
+                            }
                         }
                     }
                 }
@@ -180,15 +189,28 @@ fn decode_raw_embedded(
         }
     }
 
-    // 프리픽스 크기: 썸네일은 512KB. 너무 작으면(예: 64KB) 작은 썸네일의 완전한 SOI..EOI가
-    // 안 들어오고, 더 큰 임베디드가 가짜(이른) EOI로 "완전"해 보여 잘린 채 디코딩 → 회색.
-    // 512KB면 완전한 작은 썸네일을 거의 항상 포함. 프리뷰는 1MB(완전한 1920급 확보).
-    let prefix_size = if thumb { thumb_prefix_size() } else { preview_prefix_size() };
-    let prefix = read_prefix(path, prefix_size)?;
-    if let Some(img) = decode_best_embedded(&prefix, thumb, orient, decode_edge) {
-        // 프리뷰가 충분히 크면 채택. 너무 작으면(1920을 못 찾음) 전체를 읽어 재시도.
-        if thumb || img.width.max(img.height) >= 1200 {
-            return Ok(img);
+    // **점진적 prefix**: 썸네일은 작은 것(128KB)부터 시도한다. EXIF 썸네일은 보통 맨 앞
+    // ~50KB에 있어, 느린 드라이브(외장 HDD/USB/네트워크)에서도 적게 읽어 빠르게 뜬다(X: 드라이브
+    // 실측: 512KB 37ms → 128KB 18ms). 안 들어오면 512KB로 늘려 안전 마진을 지키고, 그래도
+    // 없으면 전체를 읽는다(최후). find_eoi 마커워킹이 잘린 임베디드를 후보에서 제외하므로
+    // 작은 prefix에서도 회색 위험이 없다. 프리뷰는 IFD가 처리하므로 1MB 단일(폴백용).
+    let sizes: &[usize] = if thumb {
+        &[128 * 1024, thumb_prefix_size()]
+    } else {
+        &[preview_prefix_size()]
+    };
+    let mut tried = 0usize;
+    for &sz in sizes {
+        if sz <= tried {
+            continue; // 같은/작은 크기 중복 회피(예: thumb_prefix_size()==128KB로 튜닝된 경우)
+        }
+        tried = sz;
+        let prefix = read_prefix(path, sz)?;
+        if let Some(img) = decode_best_embedded(&prefix, thumb, orient, decode_edge) {
+            // 프리뷰가 충분히 크면 채택. 너무 작으면(1920을 못 찾음) 다음 단계/전체로 재시도.
+            if thumb || img.width.max(img.height) >= 1200 {
+                return Ok(img);
+            }
         }
     }
     // 폴백: 전체 읽기.
