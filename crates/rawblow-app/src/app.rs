@@ -104,6 +104,7 @@ pub struct RawBlowApp {
     pending_preview: std::collections::HashSet<usize>,
     pending_thumb: std::collections::HashSet<usize>,
     pending_thumb_prio: std::collections::HashSet<usize>, // 우선 레인으로 승격된 썸네일
+    pending_prefetch: std::collections::HashSet<usize>,   // 백그라운드 디스크 캐시 프리페치 중
     failed_preview: std::collections::HashSet<usize>,
     failed_thumb: std::collections::HashSet<usize>,
     histo: std::collections::HashMap<usize, Histo>,
@@ -118,6 +119,8 @@ pub struct RawBlowApp {
     last_dest: Option<PathBuf>,
     // 설정 화면에 표시할 썸네일 캐시 사용량(#22). 설정을 열 때 한 번 계산해 캐싱.
     cache_size: Option<u64>,
+    // 마지막 trim 이후 드레인한 결과 수(디스크 캐시 쓰기 근사). 임계 도달 시 세션 중에도 trim.
+    results_since_trim: u32,
 
     jump_open: bool,
     jump_text: String,
@@ -179,6 +182,7 @@ impl RawBlowApp {
             pending_preview: std::collections::HashSet::new(),
             pending_thumb: std::collections::HashSet::new(),
             pending_thumb_prio: std::collections::HashSet::new(),
+            pending_prefetch: std::collections::HashSet::new(),
             failed_preview: std::collections::HashSet::new(),
             failed_thumb: std::collections::HashSet::new(),
             histo: std::collections::HashMap::new(),
@@ -190,6 +194,7 @@ impl RawBlowApp {
             show_settings: false,
             last_dest: None,
             cache_size: None,
+            results_since_trim: 0,
             jump_open: false,
             jump_text: String::new(),
             jump_exact: false,
@@ -250,6 +255,8 @@ impl RawBlowApp {
         self.items = items;
         self.index = 0;
         self.generation += 1;
+        // 워커가 이전 폴더의 프리페치 큐(수천 건)를 헛디코딩하지 않도록 세대를 먼저 올린다.
+        self.worker.set_generation(self.generation);
         // 캐시를 통째로 새로 만들지 **않는다**: 그러면 옛 핸들이 즉시 드롭→GPU 텍스처가
         // 파괴되어, 직전 프레임을 제출(submit) 중인 wgpu가 이를 참조하면 크래시한다.
         // 대신 retire_all로 활성 맵만 비우고 핸들은 TTL 동안 살려 in-flight 참조를 보호한다.
@@ -258,6 +265,7 @@ impl RawBlowApp {
         self.pending_preview.clear();
         self.pending_thumb.clear();
         self.pending_thumb_prio.clear();
+        self.pending_prefetch.clear();
         self.failed_preview.clear();
         self.failed_thumb.clear();
         self.histo.clear();
@@ -270,6 +278,28 @@ impl RawBlowApp {
         self.folder = Some(folder);
         self.toast = Some((format!("{} 항목 로드", self.items.len()), Instant::now()));
         self.schedule_cache_trim(); // 폴더 열 때 캐시 상한 정리(다른/오래된 폴더 썸네일 회수).
+        self.request_prefetch_thumbs(); // 폴더 전체 썸네일을 백그라운드로 디스크 캐시에 미리 채움.
+    }
+
+    /// 폴더의 모든 썸네일을 백그라운드(최저 우선순위)로 디스크 캐시에 미리 디코딩해 둔다(#1).
+    /// GPU 업로드 없이 디코딩→디스크 저장만 하므로 VRAM·메인 스레드 부담이 없고(과거 GPU
+    /// 일괄 프리필이 그리드를 얼린 것과 다르다), 이후 스크롤 시 보이는 셀 요청이 디스크 캐시
+    /// 히트(≈1ms)로 즉시 뜬다. 이미 캐시에 있는 항목은 워커가 디코딩조차 건너뛴다.
+    fn request_prefetch_thumbs(&mut self) {
+        for real in 0..self.items.len() {
+            if self.pending_prefetch.insert(real) {
+                let path = self.items[real].entry.display.clone();
+                self.worker.request_background(DecodeRequest {
+                    id: real,
+                    path,
+                    full_raw: false,
+                    max_edge: Some(THUMB_EDGE),
+                    thumb: true,
+                    prefetch: true,
+                    generation: self.generation,
+                });
+            }
+        }
     }
 
     /// 현재 필터를 통과하는 항목 인덱스(원본 items 기준).
@@ -370,6 +400,7 @@ impl RawBlowApp {
                 full_raw: full,
                 max_edge,
                 thumb: false,
+                prefetch: false,
                 generation: self.generation,
             };
             if prio {
@@ -403,6 +434,7 @@ impl RawBlowApp {
                 full_raw: false,
                 max_edge: Some(THUMB_EDGE),
                 thumb: true,
+                prefetch: false,
                 generation: self.generation,
             };
             if prio {
@@ -424,6 +456,20 @@ impl RawBlowApp {
                 Ok(res) => res,
                 Err(_) => break,
             };
+            // 디스크 캐시가 새로 채워질 수 있는 결과마다 카운트해, 세션 중에도 상한을
+            // 주기적으로 정리한다(trim은 폴더 열 때만 돌아 긴 세션에서 프리뷰 캐시가 상한을
+            // 초과할 수 있었음 — #D 회귀). trim은 백그라운드·throttle이라 호출이 가벼움.
+            self.note_cache_write();
+            // 프리페치 완료 통지: 디스크 캐시만 채웠으므로 GPU 업로드 없이 pending만 정리한다.
+            // (업로드 상한 uploads를 소비하지 않아 보이는 셀 업로드를 막지 않는다.)
+            if res.prefetch {
+                // 현재 세대일 때만 제거: 폴더 전환 직후 도착한 옛 세대 프리페치 결과가
+                // 새 폴더의 동일 id pending을 잘못 지우지 않게 한다(그 항목 프리페치 누락 방지).
+                if res.generation == self.generation {
+                    self.pending_prefetch.remove(&res.id);
+                }
+                continue;
+            }
             if res.thumb {
                 self.pending_thumb.remove(&res.id);
                 self.pending_thumb_prio.remove(&res.id);
@@ -584,6 +630,18 @@ impl RawBlowApp {
         std::thread::spawn(move || cache::trim(&dir, max));
     }
 
+    /// 워커 결과 하나를 드레인할 때마다 호출. 일정 수(=디스크 캐시 쓰기 근사)마다 백그라운드
+    /// trim을 돌려, 폴더를 안 바꾸는 긴 세션에서도 캐시 상한을 대략 지킨다(#D 프리뷰 캐시 누적).
+    /// trim 자체가 throttle(동시 1개)·best-effort라 자주 불러도 부담이 적다.
+    fn note_cache_write(&mut self) {
+        const TRIM_EVERY: u32 = 256; // 프리뷰 256장 ≈ 75MB → 상한 초과 폭을 그 이하로 묶는다.
+        self.results_since_trim += 1;
+        if self.results_since_trim >= TRIM_EVERY {
+            self.results_since_trim = 0;
+            self.schedule_cache_trim();
+        }
+    }
+
     fn save_sidecar_if_due(&mut self) {
         if self.sidecar_dirty && self.last_save.elapsed() > Duration::from_millis(300) {
             if let Some(folder) = &self.folder {
@@ -627,6 +685,11 @@ impl eframe::App for RawBlowApp {
             ctx.request_repaint();
         } else if !self.pending_thumb.is_empty() {
             ctx.request_repaint_after(Duration::from_millis(100));
+        } else if !self.pending_prefetch.is_empty() {
+            // 배경 프리페치 진행 중에는 느린 keep-alive로 drain_results 펌프를 돌려 결과
+            // 채널·pending 집합이 무한정 쌓이지 않게 한다(워커는 egui를 못 깨우므로 필요).
+            // 우선순위가 가장 낮고(200ms), 프리페치가 끝나면 꺼져 0% CPU로 유휴.
+            ctx.request_repaint_after(Duration::from_millis(200));
         }
 
         // 화면 분기.

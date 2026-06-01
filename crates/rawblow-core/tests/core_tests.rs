@@ -92,6 +92,47 @@ fn decode_real_jpg() {
     assert!(img.width > 0 && img.height > 0);
 }
 
+/// DCT 축소 디코딩(jpeg-decoder `scale`)이 **정확한 크기·종횡비·방향**으로, 손상(회색/균일/
+/// 전치) 없이 동작하는지 합성 그라디언트 JPEG로 검증한다(#1 성능 개선 회귀 가드).
+/// 샘플 사진이 없어도 결정적으로 돌아간다.
+#[test]
+fn dct_scaled_decode_is_correct_size_and_not_corrupt() {
+    use image::{ImageBuffer, Rgb};
+    // 좌→우로 빨강이, 위→아래로 초록이 증가하는 1600×1000 그라디언트(EXIF 없음 → 무회전).
+    let (w, h) = (1600u32, 1000u32);
+    let buf = ImageBuffer::from_fn(w, h, |x, y| {
+        let r = (x * 255 / (w - 1)) as u8;
+        let g = (y * 255 / (h - 1)) as u8;
+        Rgb([r, g, 64])
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("grad.jpg");
+    buf.save_with_format(&path, image::ImageFormat::Jpeg).unwrap();
+
+    // 썸네일(320: 1/4 DCT 경유), 중간(1200: 풀 DCT 후 축소), 원본변(1600)을 각각 검증.
+    for edge in [320u32, 1200, 1600] {
+        let d = decode::decode_file(&path, decode::DecodeOptions { full_raw: false, max_edge: Some(edge) })
+            .expect("그라디언트 JPEG 디코딩");
+        let long = d.width.max(d.height);
+        assert_eq!(long, edge.min(w), "긴 변이 정확히 max_edge로 축소되어야: edge={edge} got {}x{}", d.width, d.height);
+        let ratio = d.width as f32 / d.height as f32;
+        assert!((ratio - 1.6).abs() < 0.05, "종횡비(1.6) 유지: edge={edge} ratio={ratio}");
+        assert_eq!(d.rgba.len(), (d.width * d.height * 4) as usize, "RGBA 버퍼 크기 일치");
+        // 그라디언트 방향 보존(회색·균일·전치 아님). JPEG 손실 감안 +40 여유.
+        let at = |px: u32, py: u32, ch: usize| -> i32 {
+            d.rgba[(((py * d.width + px) * 4) as usize) + ch] as i32
+        };
+        let (rx, by) = (d.width - 1, d.height - 1);
+        assert!(at(0, 0, 0) + 40 < at(rx, 0, 0), "빨강 좌→우 증가 보존: edge={edge}");
+        assert!(at(0, 0, 1) + 40 < at(0, by, 1), "초록 위→아래 증가 보존: edge={edge}");
+    }
+
+    // max_edge=None: 원본 크기 그대로(축소·DCT scale 모두 스킵).
+    let full = decode::decode_file(&path, decode::DecodeOptions { full_raw: false, max_edge: None })
+        .expect("원본 디코딩");
+    assert_eq!((full.width, full.height), (w, h), "None이면 원본 크기 유지");
+}
+
 #[test]
 fn sidecar_roundtrip_restores_labels() {
     let tmp = tempfile::tempdir().unwrap();

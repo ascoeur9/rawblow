@@ -14,6 +14,19 @@ use crate::model::{ext_lower, kind_of, Kind};
 use image::{DynamicImage, GenericImageView, ImageDecoder};
 use std::io::Cursor;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// 디코드 경로가 디스크에서 읽은 누적 바이트 수(프로파일링·회귀 가드용). 느린 드라이브에서
+/// 핵심 비용은 "읽은 바이트"이므로, 전체파일(수십 MB) 폴백을 정량 추적한다. 거의 0비용.
+pub static BYTES_READ: AtomicU64 = AtomicU64::new(0);
+#[inline]
+fn count_read(n: usize) {
+    BYTES_READ.fetch_add(n as u64, Ordering::Relaxed);
+}
+/// 카운터를 0으로 리셋하고 이전 값을 반환(프로파일러가 디코드 단위로 측정).
+pub fn take_bytes_read() -> u64 {
+    BYTES_READ.swap(0, Ordering::Relaxed)
+}
 
 #[derive(Clone)]
 pub struct DecodedImage {
@@ -65,7 +78,7 @@ pub fn decode_file(path: &Path, opts: DecodeOptions) -> Result<DecodedImage, Dec
         Some(Kind::Image) => {
             let is_jpeg = matches!(ext_lower(path).as_deref(), Some("jpg") | Some("jpeg"));
             if is_jpeg {
-                let bytes = std::fs::read(path)?;
+                let bytes = read_whole(path)?;
                 decode_jpeg_scaled(&bytes, orient, opts.max_edge)
             } else {
                 decode_other_image(path, orient, opts.max_edge)
@@ -117,7 +130,7 @@ fn decode_raw_embedded(
         }
     }
     // 폴백: 전체 읽기.
-    let full = std::fs::read(path)?;
+    let full = read_whole(path)?;
     decode_best_embedded(&full, thumb, orient, decode_edge).ok_or(DecodeError::NoEmbeddedPreview)
 }
 
@@ -129,7 +142,7 @@ fn decode_largest_embedded(
     orient: u16,
     max_edge: Option<u32>,
 ) -> Result<DecodedImage, DecodeError> {
-    let bytes = std::fs::read(path)?;
+    let bytes = read_whole(path)?;
     let jpeg = extract_embedded_jpeg(&bytes).ok_or(DecodeError::NoEmbeddedPreview)?;
     decode_jpeg_scaled(jpeg, orient, max_edge)
 }
@@ -175,6 +188,14 @@ fn read_prefix(path: &Path, max: usize) -> std::io::Result<Vec<u8>> {
     std::fs::File::open(path)?
         .take(max as u64)
         .read_to_end(&mut buf)?;
+    count_read(buf.len());
+    Ok(buf)
+}
+
+/// 전체 파일 읽기(폴백). BYTES_READ에 집계해 느린 드라이브에서의 전체파일 폴백을 추적한다.
+fn read_whole(path: &Path) -> std::io::Result<Vec<u8>> {
+    let buf = std::fs::read(path)?;
+    count_read(buf.len());
     Ok(buf)
 }
 
@@ -196,16 +217,29 @@ fn decode_jpeg_scaled(
     Ok(finish(img, icc, false, orient, max_edge))
 }
 
-/// jpeg-decoder로 (가능하면 축소) 디코딩 시도. 실패·이상값이면 None → 폴백 유도.
+/// jpeg-decoder로 (가능하면 DCT 축소) 디코딩 시도. 실패·이상값이면 None → 폴백 유도.
 /// `scale()`를 `decode()` 전에만 호출하고 `read_info()`는 별도로 부르지 않는다
 /// (중복 헤더 읽기로 인한 깨진 출력 회피).
 fn try_jpeg_decoder_scaled(
     bytes: &[u8],
-    _max_edge: Option<u32>,
+    max_edge: Option<u32>,
 ) -> Option<(DynamicImage, Option<Vec<u8>>)> {
-    // DCT 축소(scale)는 jpeg-decoder가 과하게(예: 1920→240) 줄여 화질을 망쳐서 쓰지 않는다.
-    // 항상 풀 디코딩한 뒤 finish()에서 필요한 만큼만 고품질 축소한다.
     let mut d = jpeg_decoder::Decoder::new(Cursor::new(bytes));
+    // DCT 축소 디코딩: 요청 변(max_edge)으로 scale()을 호출하면 jpeg-decoder가
+    // 1/1·1/2·1/4·1/8 중 **결과 긴 변이 요청 이상**이 되는 가장 큰 축소를 골라
+    // IDCT 비용을 최대 64배까지 줄인다(예: 6000px JPEG → 320 썸네일은 750px만 IDCT,
+    // 1920 임베디드 → 320 썸네일은 480px만 IDCT). choose_idct_size가 `>= 요청`을
+    // 보장하므로 finish()의 고품질(Triangle) 재축소에 업스케일이 없고 디테일 손실이 없다.
+    // (과거 "1920→240" 화질저하는 scale 미사용 탓이 아니라 요청값을 작게 넘긴 탓이며,
+    //  scale(max_edge,max_edge)는 긴 변이 항상 max_edge 이상이라 안전하다. 프리뷰(1600)는
+    //  1920 임베디드에서 어떤 축소도 1600에 못 미쳐 풀디코딩으로 떨어진다 → 기존과 동일.)
+    // max_edge=0은 "축소 없음"(downscale도 0을 그렇게 본다)이므로 scale을 건너뛴다.
+    if let Some(me) = max_edge.filter(|&e| e > 0) {
+        let me16 = me.min(u16::MAX as u32) as u16;
+        if d.scale(me16, me16).is_err() {
+            return None; // 헤더 파싱 실패 → image 크레이트 폴백
+        }
+    }
     let pixels = d.decode().ok()?;
     let info = d.info()?;
     let icc = d.icc_profile();

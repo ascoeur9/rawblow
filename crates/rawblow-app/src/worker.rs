@@ -6,6 +6,8 @@
 use crossbeam_channel::{select, unbounded, Receiver, Sender};
 use rawblow_core::decode::{decode_file, DecodeOptions, DecodedImage};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// 디코딩 요청. `generation`은 폴더 전환 등으로 무효화된 오래된 결과를 버리기 위함.
 pub struct DecodeRequest {
@@ -16,6 +18,9 @@ pub struct DecodeRequest {
     pub max_edge: Option<u32>,
     /// true면 썸네일 캐시로, false면 프리뷰 캐시로.
     pub thumb: bool,
+    /// true면 백그라운드 프리페치: 디스크 캐시에만 채우고(이미 있으면 디코딩도 생략)
+    /// 결과 픽셀은 보내지 않는다(GPU 업로드·메모리 부담 없음). 가장 낮은 우선순위.
+    pub prefetch: bool,
     pub generation: u64,
 }
 
@@ -24,12 +29,18 @@ pub struct DecodeResult {
     pub generation: u64,
     pub full_raw: bool,
     pub thumb: bool,
+    /// 프리페치 완료 통지(픽셀 없음). UI는 pending만 정리하고 업로드하지 않는다.
+    pub prefetch: bool,
     pub image: Result<DecodedImage, String>,
 }
 
 pub struct Worker {
     tx: Sender<DecodeRequest>,
     prio_tx: Sender<DecodeRequest>,
+    bg_tx: Sender<DecodeRequest>,
+    /// 현재 폴더 세대. 워커는 이보다 오래된 요청을 디코딩하지 않고 버린다
+    /// (폴더 전환 시 프리페치 큐에 쌓인 이전 폴더 전체를 헛디코딩하는 것을 막는다).
+    cur_gen: Arc<AtomicU64>,
     pub rx: Receiver<DecodeResult>,
 }
 
@@ -43,33 +54,90 @@ impl Worker {
     pub fn new(threads: usize, cache_dir: PathBuf) -> Self {
         let (req_tx, req_rx) = unbounded::<DecodeRequest>();
         let (prio_tx, prio_rx) = unbounded::<DecodeRequest>();
+        let (bg_tx, bg_rx) = unbounded::<DecodeRequest>();
         let (res_tx, res_rx) = unbounded::<DecodeResult>();
+        let cur_gen = Arc::new(AtomicU64::new(0));
 
         for _ in 0..threads.max(1) {
             let req_rx = req_rx.clone();
             let prio_rx = prio_rx.clone();
+            let bg_rx = bg_rx.clone();
             let res_tx = res_tx.clone();
             let cache_dir = cache_dir.clone();
+            let cur_gen = cur_gen.clone();
             std::thread::spawn(move || loop {
-                // 우선순위 레인을 먼저 비운다. 없으면 둘 중 먼저 오는 것을 기다린다.
+                // 우선순위: prio > 일반 > 백그라운드(프리페치). prio·일반을 먼저 비우고,
+                // 셋 다 비면 먼저 오는 것을 기다린다. 프리페치는 항상 가장 늦게 처리돼
+                // 현재 보거나 스크롤 중인 셀을 절대 막지 않는다.
                 let req = match prio_rx.try_recv() {
                     Ok(req) => req,
-                    Err(_) => select! {
-                        recv(prio_rx) -> m => match m { Ok(r) => r, Err(_) => break },
-                        recv(req_rx) -> m => match m { Ok(r) => r, Err(_) => break },
+                    Err(_) => match req_rx.try_recv() {
+                        Ok(req) => req,
+                        Err(_) => select! {
+                            recv(prio_rx) -> m => match m { Ok(r) => r, Err(_) => break },
+                            recv(req_rx) -> m => match m { Ok(r) => r, Err(_) => break },
+                            recv(bg_rx) -> m => match m { Ok(r) => r, Err(_) => break },
+                        },
                     },
                 };
+
+                // 폴더 전환 등으로 무효화된 오래된 요청은 디코딩하지 않고 버린다. (UI는 폴더
+                // 전환 시 pending 집합을 모두 비우므로 결과를 안 보내도 묶임이 남지 않는다.)
+                if req.generation < cur_gen.load(Ordering::Relaxed) {
+                    continue;
+                }
+
                 let path = req.path.clone();
                 let full_raw = req.full_raw;
                 let max_edge = req.max_edge;
                 let is_thumb = req.thumb;
 
-                // 썸네일은 디스크 캐시 먼저 조회 → 히트면 디코딩을 건너뛰고 즉시 반환(#22).
-                let cache_key = if is_thumb {
+                // 디스크 캐시 대상: 썸네일 + (full_raw 아닌) 빠른 프리뷰. 키에 max_edge가
+                // 들어가 썸네일(320)·프리뷰(1600)가 서로 다른 항목으로 공존한다(#22 확장).
+                // ORIG(full_raw)는 원본 화질이라 캐시하지 않고 항상 새로 현상한다.
+                let cacheable = is_thumb || !full_raw;
+                let cache_key = if cacheable {
                     rawblow_core::cache::thumb_key(&path, max_edge.unwrap_or(0))
                 } else {
                     None
                 };
+
+                // 백그라운드 프리페치: 이미 캐시에 있으면 디코딩조차 건너뛴다. 없으면 디코딩 후
+                // 디스크에만 저장한다. 픽셀은 보내지 않으므로 GPU 업로드·메모리 전송 비용이 0.
+                if req.prefetch {
+                    let have = cache_key
+                        .as_ref()
+                        .map(|k| rawblow_core::cache::exists(&cache_dir, k))
+                        .unwrap_or(false);
+                    if !have {
+                        if let Some(key) = &cache_key {
+                            let img = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                decode_file(&path, DecodeOptions { full_raw, max_edge })
+                            }))
+                            .ok()
+                            .and_then(|r| r.ok());
+                            if let Some(img) = img {
+                                rawblow_core::cache::store(&cache_dir, key, &img);
+                            }
+                        }
+                    }
+                    let _ = res_tx.send(DecodeResult {
+                        id: req.id,
+                        generation: req.generation,
+                        full_raw,
+                        thumb: req.thumb,
+                        prefetch: true,
+                        image: Ok(DecodedImage {
+                            width: 0,
+                            height: 0,
+                            rgba: Vec::new(),
+                            color_managed: false,
+                            full_raw: false,
+                        }),
+                    });
+                    continue;
+                }
+
                 if let Some(key) = &cache_key {
                     // 캐시 로드도 패닉 격리: 손상된 캐시 JPEG에서 image 디코더가 패닉해도
                     // 워커 스레드가 죽지 않게 None(미스)으로 강등 → 정상 디코딩 경로로 폴백.
@@ -82,7 +150,8 @@ impl Worker {
                             id: req.id,
                             generation: req.generation,
                             full_raw: req.full_raw,
-                            thumb: true,
+                            thumb: req.thumb,
+                            prefetch: false,
                             image: Ok(img),
                         });
                         continue;
@@ -98,7 +167,7 @@ impl Worker {
                     Err(_) => Err("panic during decode".to_string()),
                 };
 
-                // 디코딩 성공한 썸네일은 디스크 캐시에 저장(다음 실행/재오픈 때 즉시 표시).
+                // 디코딩 성공한 캐시 대상(썸네일·프리뷰)은 디스크 캐시에 저장(재오픈·재방문 즉시 표시).
                 if let (Some(key), Ok(img)) = (&cache_key, &image) {
                     rawblow_core::cache::store(&cache_dir, key, img);
                 }
@@ -108,6 +177,7 @@ impl Worker {
                     generation: req.generation,
                     full_raw: req.full_raw,
                     thumb: req.thumb,
+                    prefetch: false,
                     image,
                 });
             });
@@ -116,6 +186,8 @@ impl Worker {
         Worker {
             tx: req_tx,
             prio_tx,
+            bg_tx,
+            cur_gen,
             rx: res_rx,
         }
     }
@@ -128,5 +200,15 @@ impl Worker {
     /// 우선 요청(현재 보고 있는 이미지). 일반 요청보다 먼저 처리된다.
     pub fn request_priority(&self, req: DecodeRequest) {
         let _ = self.prio_tx.send(req);
+    }
+
+    /// 백그라운드 프리페치 요청(가장 낮은 우선순위). 디스크 캐시만 채운다.
+    pub fn request_background(&self, req: DecodeRequest) {
+        let _ = self.bg_tx.send(req);
+    }
+
+    /// 현재 폴더 세대를 갱신한다. 이보다 오래된 요청은 워커가 디코딩 없이 버린다.
+    pub fn set_generation(&self, generation: u64) {
+        self.cur_gen.store(generation, Ordering::Relaxed);
     }
 }

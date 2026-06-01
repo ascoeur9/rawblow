@@ -26,3 +26,5 @@ fullraw = ["dep:imagepipe"]
 
 [dev-dependencies]
 tempfile = "3"
+# 합성 JPEG 생성용(DCT 축소 디코딩 회귀 테스트). 샘플 사진 없이 결정적으로 검증.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }

@@ -54,6 +54,14 @@ fn entry_path(cache_dir: &Path, key: &str) -> PathBuf {
     cache_dir.join(format!("{key}.jpg"))
 }
 
+/// 캐시에 해당 키 항목이 존재하는지 메타데이터만으로 확인한다(디코딩 없음).
+/// 백그라운드 프리페치(#1·#2)에서 이미 캐시된 썸네일의 재디코딩을 건너뛰는 데 쓴다.
+pub fn exists(cache_dir: &Path, key: &str) -> bool {
+    std::fs::metadata(entry_path(cache_dir, key))
+        .map(|m| m.is_file())
+        .unwrap_or(false)
+}
+
 /// 캐시에서 썸네일을 읽는다(없거나 파손 시 None).
 pub fn load(cache_dir: &Path, key: &str) -> Option<DecodedImage> {
     let bytes = std::fs::read(entry_path(cache_dir, key)).ok()?;
