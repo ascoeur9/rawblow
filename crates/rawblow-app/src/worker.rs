@@ -58,26 +58,41 @@ impl Worker {
         let (res_tx, res_rx) = unbounded::<DecodeResult>();
         let cur_gen = Arc::new(AtomicU64::new(0));
 
-        for _ in 0..threads.max(1) {
+        // 백그라운드(프리페치) 레인을 처리하는 스레드 수를 제한한다. 느린 디스크에서 모든
+        // 워커가 프리페치 읽기에 매달리면 디스크 대역폭이 포화돼, 보이는 셀의 prio 요청이
+        // 전경 대역폭을 못 얻어 굶는다. bg는 최대 2스레드만 처리하고 나머지는 prio·일반만
+        // 처리해, 항상 전경용 스레드·대역폭이 남게 한다.
+        let bg_threads = (threads / 2).clamp(1, 2);
+        for idx in 0..threads.max(1) {
             let req_rx = req_rx.clone();
             let prio_rx = prio_rx.clone();
             let bg_rx = bg_rx.clone();
             let res_tx = res_tx.clone();
             let cache_dir = cache_dir.clone();
             let cur_gen = cur_gen.clone();
+            let serves_bg = idx < bg_threads;
             std::thread::spawn(move || loop {
                 // 우선순위: prio > 일반 > 백그라운드(프리페치). prio·일반을 먼저 비우고,
-                // 셋 다 비면 먼저 오는 것을 기다린다. 프리페치는 항상 가장 늦게 처리돼
-                // 현재 보거나 스크롤 중인 셀을 절대 막지 않는다.
+                // 셋 다 비면 먼저 오는 것을 기다린다. bg를 처리하지 않는 스레드는 prio·일반만
+                // 기다려, 프리페치가 전경 스레드를 점유하지 않는다.
                 let req = match prio_rx.try_recv() {
                     Ok(req) => req,
                     Err(_) => match req_rx.try_recv() {
                         Ok(req) => req,
-                        Err(_) => select! {
-                            recv(prio_rx) -> m => match m { Ok(r) => r, Err(_) => break },
-                            recv(req_rx) -> m => match m { Ok(r) => r, Err(_) => break },
-                            recv(bg_rx) -> m => match m { Ok(r) => r, Err(_) => break },
-                        },
+                        Err(_) => {
+                            if serves_bg {
+                                select! {
+                                    recv(prio_rx) -> m => match m { Ok(r) => r, Err(_) => break },
+                                    recv(req_rx) -> m => match m { Ok(r) => r, Err(_) => break },
+                                    recv(bg_rx) -> m => match m { Ok(r) => r, Err(_) => break },
+                                }
+                            } else {
+                                select! {
+                                    recv(prio_rx) -> m => match m { Ok(r) => r, Err(_) => break },
+                                    recv(req_rx) -> m => match m { Ok(r) => r, Err(_) => break },
+                                }
+                            }
+                        }
                     },
                 };
 

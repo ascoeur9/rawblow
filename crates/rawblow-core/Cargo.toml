@@ -28,3 +28,5 @@ fullraw = ["dep:imagepipe"]
 tempfile = "3"
 # 합성 JPEG 생성용(DCT 축소 디코딩 회귀 테스트). 샘플 사진 없이 결정적으로 검증.
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
+# 스크롤 응답성 시뮬레이터(scroll_sim) 예제용 — 워커의 다중 레인 select를 재현.
+crossbeam-channel = "0.5"

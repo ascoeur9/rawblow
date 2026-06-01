@@ -2789,6 +2789,7 @@ name = "rawblow-core"
 version = "0.2.12"
 dependencies = [
  "chrono",
+ "crossbeam-channel",
  "image 0.25.10",
  "imagepipe",
  "jpeg-decoder",
