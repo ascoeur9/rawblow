@@ -214,6 +214,10 @@ RW2 중심 변경(IFD ORIG·프리뷰)이 다른 카메라를 깨지 않는지 �
 | 5Dm2 CR2 | **2.40MB**(구 26.5MB) | 2.40MB(5616) | **StripOffsets**(C162) |
 - 판정: 전 폴더 preview ≤2.4MB·ORIG ≤8MB. 3개 실개선(progressive·ORIG폴백·CR2 strip)이 라이브러리 전반에서 동작. 구 방식(CR2 preview 30MB·RW2 ORIG 56MB·미국여행 ORIG 36MB) 대비 대폭 감소.
 
+### Cycles 186–189 — 하네다 슬로우 드라이브(X:) 종합 검증
+- 혼합 RW2+JPG @X:(~4MB/s). thumb 0.13MB✓(progressive). RW2: preview **0.75-0.89MB(IFD)**·ORIG 8MB(8144) → 슬로우 드라이브서도 빠름(콜드 ~0.2s). JPG: preview/ORIG 8-11MB(본 이미지, 불가피) → 콜드 ~2.5s지만 앱이 썸네일 즉시 표시 후 프리뷰로 업그레이드(점진 표시)라 체감 즉시.
+- 판정: 슬로우 드라이브서 RW2 로딩 최소 바이트. JPG는 본 이미지 읽기가 하한이나 점진 표시로 UX 양호. (사용자 불만 폴더 260320은 RW2·빠른 SSD.)
+
 ## 측정 방법
 
 - 프로파일러: `cargo run --release -p rawblow-core --example rw2_profile -- "<folder>" [count]`
