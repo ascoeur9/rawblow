@@ -59,6 +59,11 @@ fn preview_min_edge() -> u32 {
     static C: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     tunable("RB_PREVIEW_MIN", 1600, &C) as u32
 }
+/// 점진적 썸네일 prefix의 1단계 크기 바이트(기본 128KB). env `RB_THUMB_STEP1_KB`.
+fn thumb_step1_size() -> usize {
+    static C: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    tunable("RB_THUMB_STEP1_KB", 128, &C) * 1024
+}
 
 #[derive(Clone)]
 pub struct DecodedImage {
@@ -123,7 +128,7 @@ pub fn decode_file(path: &Path, opts: DecodeOptions) -> Result<DecodedImage, Dec
                     // 점진적 prefix(128KB→512KB): EXIF 썸네일이 보통 맨 앞이라 느린 드라이브서도
                     // 적게 읽어 빠르다. 못 찾으면 늘리고, 그래도 없으면 본 이미지 전체 디코딩.
                     let mut tried = 0usize;
-                    for &sz in &[128 * 1024, thumb_prefix_size()] {
+                    for &sz in &[thumb_step1_size(), thumb_prefix_size()] {
                         if sz <= tried {
                             continue;
                         }
@@ -195,7 +200,7 @@ fn decode_raw_embedded(
     // 없으면 전체를 읽는다(최후). find_eoi 마커워킹이 잘린 임베디드를 후보에서 제외하므로
     // 작은 prefix에서도 회색 위험이 없다. 프리뷰는 IFD가 처리하므로 1MB 단일(폴백용).
     let sizes: &[usize] = if thumb {
-        &[128 * 1024, thumb_prefix_size()]
+        &[thumb_step1_size(), thumb_prefix_size()]
     } else {
         &[preview_prefix_size()]
     };

@@ -13,8 +13,17 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// 캐시 포맷 버전. 썸네일 생성 방식이 바뀌면 올려서 기존 캐시를 무효화한다.
 const CACHE_VERSION: u32 = 1;
-/// 저장 JPEG 품질(썸네일이라 85면 충분히 작고 깨끗하다).
-const JPEG_QUALITY: u8 = 85;
+/// 저장 JPEG 품질(썸네일이라 85면 충분히 작고 깨끗하다). env `RB_CACHE_Q`로 스윕 가능.
+fn jpeg_quality() -> u8 {
+    static C: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *C.get_or_init(|| {
+        std::env::var("RB_CACHE_Q")
+            .ok()
+            .and_then(|s| s.parse::<u8>().ok())
+            .filter(|&q| q >= 1 && q <= 100)
+            .unwrap_or(85)
+    })
+}
 
 /// 임시파일 이름 충돌 방지용 전역 시퀀스(같은 키를 여러 스레드가 동시에 쓰는 경우 대비).
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -98,7 +107,7 @@ pub fn store(cache_dir: &Path, key: &str, img: &DecodedImage) {
     }
     let mut buf = Vec::new();
     {
-        let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, JPEG_QUALITY);
+        let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, jpeg_quality());
         if enc
             .encode(&rgb, img.width, img.height, image::ExtendedColorType::Rgb8)
             .is_err()
