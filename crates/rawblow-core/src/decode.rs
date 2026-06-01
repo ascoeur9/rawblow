@@ -28,6 +28,38 @@ pub fn take_bytes_read() -> u64 {
     BYTES_READ.swap(0, Ordering::Relaxed)
 }
 
+/// 튜닝 파라미터: env override(있으면) 또는 기본값. OnceLock으로 1회만 읽어 프로덕션 비용 0.
+/// 성능 스윕(개선 사이클)에서 재빌드 없이 값을 바꿔 측정하기 위함이며, 기본값은 운영 최적값.
+fn tunable(var: &str, default: usize, cell: &'static std::sync::OnceLock<usize>) -> usize {
+    *cell.get_or_init(|| {
+        std::env::var(var)
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(default)
+    })
+}
+/// 썸네일 prefix 바이트(기본 512KB). env `RB_THUMB_PREFIX_KB`.
+fn thumb_prefix_size() -> usize {
+    static C: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    tunable("RB_THUMB_PREFIX_KB", 512, &C) * 1024
+}
+/// 프리뷰 prefix 폴백 바이트(기본 1MB). env `RB_PREVIEW_PREFIX_KB`.
+fn preview_prefix_size() -> usize {
+    static C: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    tunable("RB_PREVIEW_PREFIX_KB", 1024, &C) * 1024
+}
+/// ORIG IFD 임베디드 최소 긴변(기본 3000). env `RB_ORIG_GATE`.
+fn orig_gate() -> u32 {
+    static C: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    tunable("RB_ORIG_GATE", 3000, &C) as u32
+}
+/// 프리뷰 IFD 임베디드 최소 긴변(기본 1600). env `RB_PREVIEW_MIN`.
+fn preview_min_edge() -> u32 {
+    static C: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    tunable("RB_PREVIEW_MIN", 1600, &C) as u32
+}
+
 #[derive(Clone)]
 pub struct DecodedImage {
     pub width: u32,
@@ -100,7 +132,7 @@ pub fn decode_file(path: &Path, opts: DecodeOptions) -> Result<DecodedImage, Dec
                 // ORIG(원본 보기): 먼저 IFD가 가리키는 **풀해상도 임베디드 JPEG**를 그 구간만
                 // 읽어 디코딩한다(예: RW2 0x0127의 8144px). 전체파일(수십 MB) 읽기와 rawloader
                 // 패닉을 모두 피해 가장 빠르고, 카메라 풀해상도 JPEG라 컬링에 충분한 디테일.
-                if let Some(img) = decode_ifd_embedded(path, orient, opts.max_edge, 3000, false) {
+                if let Some(img) = decode_ifd_embedded(path, orient, opts.max_edge, orig_gate(), false) {
                     return Ok(img);
                 }
                 // 큰 임베디드가 없을 때만 풀 RAW 현상 시도(미지원 카메라는 패닉 → 폴백).
@@ -138,7 +170,7 @@ fn decode_raw_embedded(
     // 디코딩한다(blind 1MB prefix·전체파일 폴백 회피, 1920이 1MB 밖이어도 안전). IFD가 없거나
     // ≥1600 임베디드가 없으면(비RW2 등) 아래 prefix 경로로 폴백.
     if !thumb {
-        if let Some(img) = decode_ifd_embedded(path, orient, decode_edge, 1600, true) {
+        if let Some(img) = decode_ifd_embedded(path, orient, decode_edge, preview_min_edge(), true) {
             return Ok(img);
         }
     }
@@ -146,7 +178,7 @@ fn decode_raw_embedded(
     // 프리픽스 크기: 썸네일은 512KB. 너무 작으면(예: 64KB) 작은 썸네일의 완전한 SOI..EOI가
     // 안 들어오고, 더 큰 임베디드가 가짜(이른) EOI로 "완전"해 보여 잘린 채 디코딩 → 회색.
     // 512KB면 완전한 작은 썸네일을 거의 항상 포함. 프리뷰는 1MB(완전한 1920급 확보).
-    let prefix_size = if thumb { 512 * 1024 } else { 1024 * 1024 };
+    let prefix_size = if thumb { thumb_prefix_size() } else { preview_prefix_size() };
     let prefix = read_prefix(path, prefix_size)?;
     if let Some(img) = decode_best_embedded(&prefix, thumb, orient, decode_edge) {
         // 프리뷰가 충분히 크면 채택. 너무 작으면(1920을 못 찾음) 전체를 읽어 재시도.
