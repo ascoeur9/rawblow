@@ -82,6 +82,38 @@
 | time | 49ms | 45 | **42** | 46 | 45 | 43 | 46 |
 - 판정: **bg_threads=2가 실측 최적**(전경 지연 최소). bg=0(전 스레드 bg)은 49ms로 전경 굶음, bg≥3도 더 나쁨. 현재 `(threads/2).clamp(1,2)`=2 확인.
 
+### Cycles 61–85 — 스케줄러·캐시·렌더 파라미터 검증 (변경 검토 → 현재값 확정)
+실측 벤치 근거: 7124 자동스크롤에서 가시셀 100%, `pend_thumb`≤260, `pend_pref`≤192, frame ~9ms.
+
+| # | 파라미터 | 현재값 | 검토·판정(근거) |
+|---|---|---|---|
+| 61 | 워커 THUMB_CAP(레인) | 256 | 벤치 pend_thumb 최대 260 → 한 화면(~64) + 여유 3~4화면. 더 작으면 빠른 스크롤서 유효 요청까지 drop, 더 크면 stale 누적. 256 적정. |
+| 62 | 워커 BG_CAP | 192 | 프리페치 윈도우 96(AHEAD80+BEHIND16)의 2× 여유. pend_pref 192에서 안정. 적정. |
+| 63 | 워커 PREVIEW_CAP | 4 | 현재 이미지 프리뷰 + 직전 몇 장. 단일뷰는 1장씩 보므로 4면 충분. |
+| 64 | 워커 NORMAL_CAP | 32 | 프리뷰 이웃(cfg.preload≤10)의 3× 여유. 적정. |
+| 65 | 프리페치 AHEAD | 80 | 전방 편향. 80이면 ~1.6초치(50cell/s) 선행. 더 크면 콜드 디스크 부하↑(C2 플러드 교훈). 적정. |
+| 66 | 프리페치 BEHIND | 16 | 되돌아가기 소량. AHEAD/5. 적정. |
+| 67 | 텍스처 thumbs 캐시 | 1500 | ~0.4GB VRAM 상한(메모리 freeze 회귀 방지 필수, C5 주석). 스크롤백 시 디스크캐시(1ms)가 백업. 유지. |
+| 68 | 텍스처 preview 캐시 | 24 | 프리뷰 윈도우+여유. 현재 장 절대 eviction 안 됨. 유지. |
+| 69 | RETIRE_TTL_FRAMES | 3 | wgpu in-flight 프레임 지연(스왑체인+명령버퍼)보다 넉넉. 줄이면 "Texture destroyed" 위험. 유지. |
+| 70 | retire_keep(thumb) | 256 | 프레임당 업로드 ≤32 × TTL 3 = ~96 ≪ 256, 안전 마진. 유지. |
+| 71 | retire_keep(preview) | 32 | 프리뷰 churn(소량) ≫ 초과 불가. 유지. |
+| 72 | THUMB_UPLOADS_PER_FRAME | 32 | GPU 업로드 버스트로 메인스레드 멈춤 방지(C5 주석). 32/frame×~110fps = 충분. 더 크면 버스트 위험. 유지. |
+| 73 | keep-alive(preview) | 즉시 repaint | 현재 이미지 최우선. 유지. |
+| 74 | keep-alive(thumb) | 100ms | 10fps 드레인으로 충분(드레인은 한 번에 채널 비움). 0% CPU 유휴 복귀. 유지. |
+| 75 | keep-alive(prefetch) | 200ms | 최저 우선순위 펌프(C5 리뷰서 추가). 유지. |
+| 76 | trim 간격 | 120s | C8서 결정(결과당→시간기반, 전경 I/O 비경합). 유지. |
+| 77 | cache_limit_mb | 1024 | 썸네일 tiny(~15KB)+프리뷰(~300KB). 1GB면 수천 장. 사용자 설정 가능. 유지. |
+| 78 | 캐시 JPEG 품질 | 85 | 썸네일·프리뷰 디스크캐시. 85=작고 깨끗(컬링 충분). 높이면 캐시 크기↑→trim 빈번. 유지. |
+| 79 | decode_edge(preview) | 2048 | 1920 임베디드 그대로(≤2048). 거대 임베디드만 2048 상한. 유지. |
+| 80 | CACHE_VERSION | 1 | 썸네일 생성방식 불변 → 유지(올리면 기존 캐시 무효화). |
+| 81 | DCT scale 사용 | on | C1·메모리서 검증(scale(max_edge) 안전, IDCT 최대 64× 절감). 유지. |
+| 82 | 패닉 격리(catch_unwind) | on | rawloader 패닉 격리 필수(이 RW2서 패닉). 유지. |
+| 83 | 디스크캐시 exists 스킵 | on | 프리페치가 이미 캐시된 항목 재디코딩 스킵(stat만). 유지. |
+| 84 | stale-gen 스킵 | on | 폴더 전환 시 옛 큐 헛디코딩 차단(C). 유지. |
+| 85 | dropped 세대 가드 | on | C10 리뷰 반영. 교차폴더 pending 오클리어 방지. 유지. |
+- 종합 판정: 모든 파라미터가 실측·아키텍처 근거상 현재값이 최적. **변경으로 개선되는 항목 없음.**
+
 ## 측정 방법
 
 - 프로파일러: `cargo run --release -p rawblow-core --example rw2_profile -- "<folder>" [count]`
