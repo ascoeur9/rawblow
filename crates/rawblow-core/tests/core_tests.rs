@@ -262,6 +262,91 @@ fn orig_ifd_strip_embedded_synthetic_cr2() {
     assert_eq!((img.width, img.height), (5000, 3333), "StripOffsets 임베디드 풀해상도");
 }
 
+/// ORIG는 임베디드 후보를 **바이트 길이가 아니라 디코딩 해상도**로 골라야 한다(#perf C163 회귀 가드).
+/// SubIFD/IFD 체인 스캔을 켜면 본 프리뷰(고해상·저용량)보다 **바이트가 큰 저해상** JPEG가 후보에
+/// 섞일 수 있다(실측: CR2 ORIG가 5616→1448로 퇴화). 길이순이 아니라 해상도순으로 골라야 한다.
+/// 고해상(5000, 그라디언트=저용량)을 SubIFD에, 저해상(3500, 노이즈=고용량)을 IFD0 StripOffsets에
+/// 두고 ORIG가 5000을 선택하는지 확인한다.
+#[test]
+fn orig_ifd_picks_by_resolution_not_byte_length() {
+    use image::{ImageBuffer, Rgb};
+    fn gradient_jpeg(w: u32, h: u32) -> Vec<u8> {
+        let buf = ImageBuffer::from_fn(w, h, |x, y| {
+            Rgb([(x * 255 / (w - 1)) as u8, (y * 255 / (h - 1)) as u8, 64u8])
+        });
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(buf).write_to(&mut out, image::ImageFormat::Jpeg).unwrap();
+        out.into_inner()
+    }
+    // 의사난수 노이즈(고엔트로피 → JPEG가 잘 안 줄어 고용량) 저해상.
+    fn noise_jpeg(w: u32, h: u32) -> Vec<u8> {
+        let buf = ImageBuffer::from_fn(w, h, |x, y| {
+            let mut s = x.wrapping_mul(2654435761) ^ y.wrapping_mul(40503);
+            s ^= s >> 13;
+            s = s.wrapping_mul(0x5bd1e995);
+            s ^= s >> 15;
+            Rgb([s as u8, (s >> 8) as u8, (s >> 16) as u8])
+        });
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(buf).write_to(&mut out, image::ImageFormat::Jpeg).unwrap();
+        out.into_inner()
+    }
+    let hires = gradient_jpeg(5000, 3333); // 고해상·저용량
+    let lores = noise_jpeg(3500, 2300); // 저해상·고용량
+    assert!(
+        lores.len() > hires.len(),
+        "전제: 저해상 노이즈가 고해상 그라디언트보다 큰 바이트여야 회귀를 모의 ({} vs {})",
+        lores.len(),
+        hires.len()
+    );
+
+    // LE TIFF: IFD0(StripOffsets→저해상, SubIFDs→SubIFD, Orientation), SubIFD(StripOffsets→고해상).
+    let ifd0_entries = 4u16;
+    let subifd_off = 8 + 2 + (ifd0_entries as usize) * 12 + 4;
+    let sub_entries = 2u16;
+    let lores_off = subifd_off + 2 + (sub_entries as usize) * 12 + 4;
+    let hires_off = lores_off + lores.len();
+
+    let mut entry = |tag: u16, typ: u16, cnt: u32, val: u32, f: &mut Vec<u8>| {
+        f.extend_from_slice(&tag.to_le_bytes());
+        f.extend_from_slice(&typ.to_le_bytes());
+        f.extend_from_slice(&cnt.to_le_bytes());
+        f.extend_from_slice(&val.to_le_bytes());
+    };
+    let mut f = Vec::new();
+    f.extend_from_slice(b"II");
+    f.extend_from_slice(&0x002au16.to_le_bytes());
+    f.extend_from_slice(&8u32.to_le_bytes());
+    f.extend_from_slice(&ifd0_entries.to_le_bytes());
+    entry(0x0111, 4, 1, lores_off as u32, &mut f); // StripOffsets → 저해상(고용량)
+    entry(0x0117, 4, 1, lores.len() as u32, &mut f); // StripByteCounts
+    entry(0x014a, 4, 1, subifd_off as u32, &mut f); // SubIFDs → 고해상
+    entry(0x0112, 3, 1, 1, &mut f); // Orientation=1
+    f.extend_from_slice(&0u32.to_le_bytes()); // next-IFD
+    assert_eq!(f.len(), subifd_off);
+    f.extend_from_slice(&sub_entries.to_le_bytes());
+    entry(0x0111, 4, 1, hires_off as u32, &mut f); // SubIFD StripOffsets → 고해상(저용량)
+    entry(0x0117, 4, 1, hires.len() as u32, &mut f); // StripByteCounts
+    f.extend_from_slice(&0u32.to_le_bytes()); // next-IFD
+    assert_eq!(f.len(), lores_off);
+    f.extend_from_slice(&lores);
+    assert_eq!(f.len(), hires_off);
+    f.extend_from_slice(&hires);
+
+    let dir = std::env::temp_dir().join("rb_res_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("res.cr2");
+    std::fs::write(&p, &f).unwrap();
+
+    let img = decode::decode_file(&p, decode::DecodeOptions { full_raw: true, max_edge: Some(8192) })
+        .expect("resolution-pick ORIG");
+    assert_eq!(
+        (img.width, img.height),
+        (5000, 3333),
+        "ORIG는 바이트가 작아도 해상도가 큰 임베디드(SubIFD)를 선택해야 함"
+    );
+}
+
 #[test]
 fn sidecar_roundtrip_restores_labels() {
     let tmp = tempfile::tempdir().unwrap();

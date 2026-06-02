@@ -307,26 +307,33 @@ fn read_range(path: &Path, offset: u64, len: usize) -> std::io::Result<Vec<u8>> 
     Ok(buf)
 }
 
-/// TIFF/RW2 IFD0를 헤더(앞 64KB)만 읽어 파싱하고, 임베디드 JPEG 블롭들의 (offset, len)을
-/// 길이 내림차순으로 반환한다. Panasonic RW2는 0x002e(JpgFromRaw, ~1920 프리뷰)와
-/// 0x0127(풀해상도 8144 JPEG)에 JPEG를 통째로 담는다(type=7 UNDEFINED, count=바이트수).
-/// 표준 TIFF(0x2a)·RW2(0x55) 모두 처리(매직 검사 생략). 못 읽으면 빈 벡터.
-fn tiff_ifd0_jpeg_blobs(path: &Path) -> Vec<(u64, usize)> {
+/// 파일 앞 `max` 바이트만 헤더로 읽는다(IFD 파싱용). 못 읽으면 빈 벡터.
+fn read_header(path: &Path, max: usize) -> Vec<u8> {
     use std::io::Read;
-    let mut header = vec![0u8; 64 * 1024];
-    let n = match std::fs::File::open(path).and_then(|mut f| f.read(&mut header)) {
+    let mut buf = vec![0u8; max];
+    let n = match std::fs::File::open(path).and_then(|mut f| f.read(&mut buf)) {
         Ok(n) => n,
         Err(_) => return Vec::new(),
     };
-    header.truncate(n);
+    buf.truncate(n);
     count_read(n);
-    if header.len() < 16 {
-        return Vec::new();
-    }
-    let le = match &header[0..2] {
-        b"II" => true,
-        b"MM" => false,
-        _ => return Vec::new(),
+    buf
+}
+
+/// IFD0 + IFD 체인(next-IFD) + SubIFD(0x014A)를 재귀적으로 걸어 임베디드 JPEG 블롭 (offset, len)을
+/// 모은다. 수집 대상:
+/// - type=7 UNDEFINED 블롭(Panasonic RW2 0x002e ~1920 프리뷰 / 0x0127 8144 풀해상도),
+/// - StripOffsets(0x0111)+StripByteCounts(0x0117)(Canon CR2·DNG SubIFD 프리뷰),
+/// - JPEGInterchangeFormat(0x0201)+Length(0x0202)(Nikon/Pentax/Sony 등 IFD-체인/SubIFD 프리뷰).
+///
+/// 반환 `(blobs, need)`: `need`는 파싱에 필요한 최대 헤더 오프셋 — 헤더가 짧으면 caller가 키워 1회
+/// 재시도(RW2/CR2는 IFD가 앞 64KB 안이라 재시도 없음 → 추가 I/O 0). FF D8 head 검사로 비-JPEG
+/// 스트립·손상 오프셋은 후보에서 제외. 블롭은 길이 내림차순·중복 제거.
+fn scan_ifds(header: &[u8], file_len: u64, path: &Path) -> (Vec<(u64, usize)>, usize) {
+    let le = match header.get(0..2) {
+        Some(b"II") => true,
+        Some(b"MM") => false,
+        _ => return (Vec::new(), 0),
     };
     let r16 = |o: usize| -> Option<u16> {
         let b = header.get(o..o + 2)?;
@@ -340,55 +347,122 @@ fn tiff_ifd0_jpeg_blobs(path: &Path) -> Vec<(u64, usize)> {
             u32::from_be_bytes([b[0], b[1], b[2], b[3]])
         })
     };
-    let ifd0 = match r32(4) {
-        Some(v) => v as usize,
-        None => return Vec::new(),
+    // 오프셋이 가리키는 곳이 실제 JPEG(FF D8)인지 — 헤더 안이면 직접, 밖이면 2바이트만 seek 읽기.
+    let is_jpeg_at = |off: u64| -> bool {
+        if (off as usize) + 2 <= header.len() {
+            header.get(off as usize..off as usize + 2) == Some(&[0xFF, 0xD8][..])
+        } else {
+            read_range(path, off, 2).map(|b| b.len() >= 2 && b[0] == 0xFF && b[1] == 0xD8).unwrap_or(false)
+        }
     };
-    let count = match r16(ifd0) {
-        Some(v) => v as usize,
-        None => return Vec::new(),
-    };
-    // 오프셋이 파일 범위를 벗어난 손상 IFD 엔트리를 거르기 위한 파일 크기(못 읽으면 무제한).
-    let file_len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(u64::MAX);
     let mut blobs: Vec<(u64, usize)> = Vec::new();
-    // CR2(Canon) 등은 IFD0 StripOffsets(0x0111)+StripByteCounts(0x0117)에 임베디드 JPEG를 둔다.
-    let (mut strip_off, mut strip_len): (Option<u64>, Option<usize>) = (None, None);
-    for i in 0..count.min(512) {
-        let e = ifd0 + 2 + i * 12;
-        let (tag, typ, cnt, val) = match (r16(e), r16(e + 2), r32(e + 4), r32(e + 8)) {
-            (Some(tg), Some(t), Some(c), Some(v)) => (tg, t, c as usize, v as u64),
-            _ => break,
+    let mut need = 0usize;
+    // 스캔할 IFD 오프셋 큐. 체인·SubIFD를 따라가며 추가하되 무한루프·과다 방어로 상한(16 IFD).
+    let mut queue: Vec<usize> = match r32(4) {
+        Some(v) => vec![v as usize],
+        None => return (blobs, need),
+    };
+    let mut qi = 0;
+    let mut visited = 0;
+    while qi < queue.len() && visited < 16 {
+        let ifd = queue[qi];
+        qi += 1;
+        let cnt = match r16(ifd) {
+            Some(v) => v as usize,
+            // IFD 테이블이 헤더 밖 → cnt를 모르니 **전체 엔트리 테이블**(최대 512개)을 보수적으로
+            // 추정해 need에 반영한다(caller가 그만큼 헤더를 키워 재스캔). cnt+엔트리+next-IFD까지
+            // 한 번에 덮어 DNG SubIFD·PEF 체인(둘 다 ~100KB)이 1회 확장으로 수렴한다.
+            None => {
+                need = need.max(ifd + 2 + 512 * 12 + 4);
+                continue;
+            }
         };
-        // type=7(UNDEFINED, 1바이트) && 4바이트 초과 → val은 오프셋, cnt는 바이트 길이.
-        // JPEG로 보이는 충분히 큰 블롭만(>1KB), 오프셋이 파일 내부인 것만 후보로(잘못된 오프셋
-        // 방어). 길이 과대선언은 read_range가 EOF까지만 읽어 안전하므로 허용.
-        if typ == 7 && cnt > 1024 && val < file_len {
-            blobs.push((val, cnt));
+        if queue[..qi - 1].contains(&ifd) {
+            continue; // 이미 방문한 IFD(체인 순환 방어)
         }
-        if tag == 0x0111 {
-            strip_off = Some(val); // StripOffsets
-        }
-        if tag == 0x0117 {
-            strip_len = Some(val as usize); // StripByteCounts (count=1 → val이 길이)
-        }
-    }
-    // StripOffsets가 가리키는 곳이 실제 JPEG(FF D8)면 후보로(CR2 프리뷰). 거대한 비-JPEG 스트립
-    // (압축 안 된 TIFF의 본 데이터)을 헛읽지 않게 3바이트만 확인.
-    if let (Some(off), Some(len)) = (strip_off, strip_len) {
-        if len > 1024 && off.saturating_add(len as u64) <= file_len {
-            let is_jpeg = if (off as usize) + 2 < header.len() {
-                header[off as usize] == 0xFF && header[off as usize + 1] == 0xD8
-            } else {
-                read_range(path, off, 3)
-                    .map(|b| b.len() >= 2 && b[0] == 0xFF && b[1] == 0xD8)
-                    .unwrap_or(false)
+        visited += 1;
+        let n = cnt.min(512);
+        need = need.max(ifd + 2 + n * 12 + 4); // +4: next-IFD 포인터
+        let (mut s_off, mut s_len): (Option<u64>, Option<usize>) = (None, None);
+        let (mut j_off, mut j_len): (Option<u64>, Option<usize>) = (None, None);
+        for i in 0..n {
+            let e = ifd + 2 + i * 12;
+            let (tag, typ, c, val) = match (r16(e), r16(e + 2), r32(e + 4), r32(e + 8)) {
+                (Some(tg), Some(t), Some(cc), Some(v)) => (tg, t, cc as usize, v as u64),
+                _ => break,
             };
-            if is_jpeg {
-                blobs.push((off, len));
+            // type=7(UNDEFINED) && >1KB → val은 오프셋, c는 바이트 길이(RW2 통짜 JPEG).
+            if typ == 7 && c > 1024 && val < file_len && is_jpeg_at(val) {
+                blobs.push((val, c));
+            }
+            match tag {
+                0x0111 => s_off = Some(val),          // StripOffsets
+                0x0117 => s_len = Some(val as usize), // StripByteCounts
+                0x0201 => j_off = Some(val),          // JPEGInterchangeFormat
+                0x0202 => j_len = Some(val as usize), // JPEGInterchangeFormatLength
+                0x014a => {
+                    // SubIFDs: count=1이면 val이 SubIFD 오프셋, 아니면 val은 오프셋 배열 위치.
+                    if c == 1 {
+                        queue.push(val as usize);
+                    } else {
+                        need = need.max(val as usize + c.min(16) * 4);
+                        for k in 0..c.min(16) {
+                            if let Some(so) = r32(val as usize + k * 4) {
+                                queue.push(so as usize);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // StripOffsets/JPEGInterchangeFormat가 가리키는 곳이 실제 JPEG면 후보로(거대한 비-JPEG
+        // 스트립=무압축 본데이터를 헛읽지 않게 head만 확인). 길이 과대선언은 read_range가 EOF까지만
+        // 읽어 안전.
+        for (off, len) in [(s_off, s_len), (j_off, j_len)] {
+            if let (Some(off), Some(len)) = (off, len) {
+                if len > 1024 && off.saturating_add(len as u64) <= file_len && is_jpeg_at(off) {
+                    blobs.push((off, len));
+                }
+            }
+        }
+        // IFD 체인: 엔트리 테이블 직후의 next-IFD 포인터.
+        if let Some(nxt) = r32(ifd + 2 + n * 12) {
+            if nxt != 0 && (nxt as u64) < file_len {
+                queue.push(nxt as usize);
             }
         }
     }
-    blobs.sort_by(|a, b| b.1.cmp(&a.1)); // 길이 내림차순
+    blobs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0))); // 길이 내림차순
+    blobs.dedup();
+    (blobs, need)
+}
+
+/// TIFF/RW2 IFD가 가리키는 임베디드 JPEG 블롭들의 (offset, len)을 길이 내림차순으로 반환한다.
+/// 먼저 앞 64KB 헤더로 IFD0+체인+SubIFD를 걸고(RW2/CR2는 여기서 끝 → 추가 I/O 0), IFD가 64KB
+/// 밖에 있으면(예: DNG/PEF의 SubIFD·체인이 ~100KB) 필요한 만큼(≤1MB) 헤더를 키워 1회 재스캔한다.
+/// 표준 TIFF(0x2a)·RW2(0x55) 모두 처리(매직 검사 생략). 못 읽으면 빈 벡터.
+fn tiff_ifd0_jpeg_blobs(path: &Path) -> Vec<(u64, usize)> {
+    let file_len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(u64::MAX);
+    let mut header = read_header(path, 64 * 1024);
+    if header.len() < 16 {
+        return Vec::new();
+    }
+    let (mut blobs, mut need) = scan_ifds(&header, file_len, path);
+    // IFD가 헤더 밖이면(DNG SubIFD·PEF 체인이 ~100KB) 필요한 만큼 키워 재스캔. 보수적 추정이라
+    // 보통 1회로 수렴하지만 체인이 깊을 수 있어 몇 번 반복(1MB 상한). RW2/CR2는 need≤64KB라 0회.
+    let mut guard = 0;
+    while need > header.len() && header.len() < 1024 * 1024 && guard < 4 {
+        guard += 1;
+        let grown = read_header(path, need.min(1024 * 1024));
+        if grown.len() <= header.len() {
+            break; // 파일이 더 짧아 더 못 키움 → 현재까지로 확정
+        }
+        header = grown;
+        let (b, nd) = scan_ifds(&header, file_len, path);
+        blobs = b;
+        need = nd;
+    }
     blobs
 }
 
@@ -405,23 +479,43 @@ fn decode_ifd_embedded(
     min_long_edge: u32,
     prefer_smallest: bool,
 ) -> Option<DecodedImage> {
-    let mut blobs = tiff_ifd0_jpeg_blobs(path); // 길이 내림차순
-    if prefer_smallest {
-        blobs.reverse(); // 길이 오름차순
+    let blobs = tiff_ifd0_jpeg_blobs(path);
+    if blobs.is_empty() {
+        return None;
     }
-    for (off, len) in blobs {
-        let bytes = match read_range(path, off, len) {
+    // 후보를 **바이트 길이가 아니라 디코딩 해상도**로 고른다. 각 블롭의 SOF를 앞 64KB head probe로
+    // 싸게 읽어 (긴 변) 크기를 구한 뒤, ORIG은 가장 큰 해상도, 프리뷰는 min 이상 중 가장 작은
+    // 해상도를 선택한다. 이렇게 해야 CR2의 IFD 체인에 섞인 저해상·대용량 JPEG(예: 1448×3804, 20MB)가
+    // 길이상 1위라도 ORIG의 본 프리뷰(5616)를 밀어내지 못한다(회귀 가드). 무손실(SOF3) 등 디코딩
+    // 불가 JPEG은 jpeg_dimensions가 None → 자동 제외. head만 읽어 거대 블롭 전체를 헛읽지도 않는다.
+    let mut scored: Vec<(u32, u64, usize)> = Vec::new(); // (long_edge, off, len)
+    for (off, len) in &blobs {
+        let probe = match read_range(path, *off, (*len).min(64 * 1024)) {
             Ok(b) if b.len() >= 4 && b[0] == 0xFF && b[1] == 0xD8 => b,
             _ => continue,
         };
-        // 디코딩 가능 SOF에서 크기 확인 — 작으면 건너뛴다(프리뷰는 ≥화면, ORIG는 ≥3000).
-        if let Some((w, h)) = jpeg_dimensions(&bytes) {
-            if (w.max(h) as u32) < min_long_edge {
-                continue;
+        if let Some((w, h)) = jpeg_dimensions(&probe) {
+            let le = w.max(h) as u32;
+            if le >= min_long_edge {
+                scored.push((le, *off, *len));
             }
         }
-        if let Ok(img) = decode_jpeg_scaled(&bytes, orient, max_edge) {
-            return Some(img);
+    }
+    if scored.is_empty() {
+        return None;
+    }
+    scored.sort_by_key(|s| s.0); // 해상도 오름차순
+    // ORIG(prefer_smallest=false): 큰 해상도부터. 프리뷰(true): min 이상 중 작은 해상도부터.
+    let order: Vec<usize> =
+        if prefer_smallest { (0..scored.len()).collect() } else { (0..scored.len()).rev().collect() };
+    for idx in order {
+        let (_, off, len) = scored[idx];
+        if let Ok(bytes) = read_range(path, off, len) {
+            if bytes.len() >= 4 && bytes[0] == 0xFF && bytes[1] == 0xD8 {
+                if let Ok(img) = decode_jpeg_scaled(&bytes, orient, max_edge) {
+                    return Some(img);
+                }
+            }
         }
     }
     None
