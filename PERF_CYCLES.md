@@ -279,6 +279,21 @@ RW2 중심 변경(IFD ORIG·프리뷰)이 다른 카메라를 깨지 않는지 �
 
 검증: 전 라이브러리 ~10,000 파일 에러·폴백·회색 0. 적대적 리뷰 5건 반영. 합성 회귀 테스트 3종(DCT·RW2 IFD·CR2 strip). 전 파라미터 실측 스윕으로 현재값 최적 확인. 사이클별 커밋(롤백 가능).
 
+## 부록 — 타 제조사 RAW 교차 검증 (공개 샘플 실측, 2026-06-02)
+샘플 폴더엔 Canon CR2만 있어, 공개 샘플(raw.pixls.us/rawsamples.ch)을 받아 7개 제조사 포맷을 실측.
+| 포맷(제조사) | thumb | preview | ORIG | 패닉 | 에러 |
+|---|---|---|---|---|---|
+| NEF(Nikon D70) | 320x211/0.13MB✓ | 2048/1.11MB✓ | 3038(rawloader)✓ | 0 | 0 |
+| ARW(Sony A100) | 160/0.13MB✓ | 640/**11.3MB**(SubIFD→전체파일) | 3881✓ | 0 | 0 |
+| RAF(Fuji X-T1) | 160/0.13MB✓ | 1920/1.11MB✓ | 4936✓ | 0 | 0 |
+| ORF(Olympus E-M10) | 160/0.13MB✓ | 2048/1.11MB✓ | 4608✓ | 0 | 0 |
+| **DNG(Pentax K-5, 실제)** | 320/0.13MB✓ | 2047/**20MB**(SubIFD→전체파일) | 4992✓ | 0 | 0 |
+| PEF(Pentax K-x) | 160/0.13MB✓ | 2048/**11.6MB**(전체파일) | 4308✓ | 0 | 0 |
+| SRW(Samsung NX500) | 320/0.13MB✓ | 1616/1.11MB✓ | 6496✓ | 0 | 0 |
+- **결론: 7개 제조사 전부 thumb·preview·ORIG 정상 디코딩(패닉 0·에러 0).** 썸네일은 전 포맷 0.13MB(progressive 임베디드). ORIG는 rawloader가 전 포맷 풀해상도 현상. 범용 임베디드 스캔 + rawloader가 견고히 처리.
+- 참고: 합성 raw-only DNG(임베디드 프리뷰 없음)는 디코드 에러로 정상 처리(크래시 아님) — 실제 카메라 DNG는 정상.
+- **개선 여지(버그 아님)**: ARW/PEF/DNG 프리뷰가 전체파일을 읽음(임베디드가 IFD0 아닌 **SubIFD(0x014A)**에 있음). 동작은 정상이나 느린 드라이브선 느림. SubIFD 스캔 추가(CR2 StripOffsets와 동일 패턴)로 최적화 가능 — 선택 사항.
+
 ## 측정 방법
 
 - 프로파일러: `cargo run --release -p rawblow-core --example rw2_profile -- "<folder>" [count]`
