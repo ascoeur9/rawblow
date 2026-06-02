@@ -40,7 +40,20 @@ cargo test  -p rawblow-core              # 코어 로직 단위 테스트
 > 테스터 PC(VC++ 재배포 미설치)에서 `LoadLibrary failed with error 126`로 실행 불가
 > (이슈 #10, v0.2.9에서 발생).
 
-### Windows (PowerShell)
+### Windows (PowerShell) — 권장: 빌드 스크립트
+```powershell
+.\scripts\build-release-windows.ps1
+# 산출물: target\release\rawblow.exe  (단독 실행, 사용자명 없음)
+```
+
+스크립트는 매 호출마다 `RUSTFLAGS`를 명시적으로 다시 설정하고, 빌드 직후
+`dumpbin /dependents`로 **VCRUNTIME140.dll / api-ms-win-crt-*.dll 의존이
+남았는지 자동 검증**합니다. 의존이 잡히면 종료 코드 1로 실패해서 그 바이너리는
+배포되지 못합니다 — 이슈 #10이 v0.2.10/v0.2.11에서 재발한 적이 있어(셸 세션에
+다른 `RUSTFLAGS`가 살아있던 케이스) 릴리스 빌드는 반드시 이 스크립트로 돌리는
+걸 권장합니다.
+
+### Windows (PowerShell) — 수동 빌드 (스크립트를 못 쓸 때)
 ```powershell
 $env:RUSTFLAGS = "-C target-feature=+crt-static --remap-path-prefix=$env:USERPROFILE=~"
 cargo build --release -p rawblow-app
@@ -80,6 +93,22 @@ gh release create vX.Y.Z "RawBlow-vX.Y.Z-<os>.exe" \
 ---
 
 ## 변경 이력 (Changelog)
+
+### v0.3.0
+- **썸네일 로딩 속도 대폭 개선** — 그리드/필름스트립을 빠르게 넘겨도 썸네일이 **밀리지 않고
+  바로** 뜨도록 워커를 **뷰포트 기준 LIFO+상한 스케줄러**로 재설계. 현재 화면을 항상 먼저
+  디코딩하고 쌓인 옛 요청은 버려, 수천 장 RW2 폴더에서 "썸네일이 몇 분씩 걸리던" 문제를 해결
+  (원인은 디코딩 속도가 아니라 FIFO 무제한 큐의 백로그였음).
+- **단일 파일 고화질(ORIG) 즉시 표시** — RAW에서 IFD가 가리키는 **풀해상도 임베디드 JPEG
+  구간만** 읽어 디코딩(파일 전체 수십 MB 읽기와 rawloader 중복 디코딩 제거). 단일뷰 5~15초 →
+  1초 이내.
+- **느린 드라이브(외장 HDD/USB/네트워크) 대응** — 점진적 prefix(128KB→512KB)로 필요한 만큼만
+  읽어 느린 저장소에서도 빠르게. 썸네일/프리뷰 전 경로가 파일 전체 대신 임베디드 구간만 읽도록 정비.
+- **타 제조사 RAW 미리보기 최적화** — Nikon(NEF)·Sony(ARW)·Fujifilm(RAF)·Olympus(ORF)·
+  Pentax(PEF·DNG)·Samsung(SRW)의 임베디드 프리뷰를 **SubIFD·IFD 체인**에서 직접 찾아 읽어
+  미리보기 디스크 I/O를 최대 16배 감소. Canon(CR2)은 풀해상도 프리뷰를 **해상도 기준**으로
+  정확히 선택(바이트 크기로 고르던 회귀 수정).
+- **영구 썸네일 디스크 캐시·별점 등 v0.2.12 기능 포함** (이전 항목 참조).
 
 ### v0.2.12
 - **별점(★1~5)** — 숫자 1~5로 부여, `(백틱)으로 해제. 라벨(QWER)과 독립으로 동시 부여.
