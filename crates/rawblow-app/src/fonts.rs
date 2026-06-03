@@ -2,17 +2,27 @@
 //! 디렉토리에서 한국어/일본어 폰트를 찾아 등록한다(임베드 대신 → 빌드 단순).
 
 use egui::{FontData, FontDefinitions, FontFamily};
+use rawblow_core::config::Lang;
 
-/// 플랫폼별 CJK 폰트 후보 경로(우선순위 순).
-fn cjk_candidates() -> Vec<&'static str> {
+/// 플랫폼별 CJK 폰트 후보 경로(우선순위 순). **활성 언어의 폰트를 맨 앞(primary)으로** 둔다.
+/// 한 폰트가 그 언어 글리프를 모두 가지면 폴백이 일어나지 않아, 폰트마다 다른 세로 메트릭이
+/// 섞여 글자가 위/아래로 어긋나는 문제(#32 후속)가 사라진다. 폴백은 타 언어 stray 글자용.
+fn cjk_candidates(lang: Lang) -> Vec<&'static str> {
+    let _ = lang;
     #[cfg(target_os = "windows")]
     {
-        vec![
-            r"C:\Windows\Fonts\malgun.ttf",
+        let malgun = r"C:\Windows\Fonts\malgun.ttf"; // 한국어
+        let ja = [
             r"C:\Windows\Fonts\YuGothM.ttc",
             r"C:\Windows\Fonts\meiryo.ttc",
             r"C:\Windows\Fonts\msgothic.ttc",
-        ]
+        ];
+        return match lang {
+            // 일본어 UI: 일본어 폰트를 primary로 → 가나·한자·라틴이 한 폰트에서 일관 렌더.
+            Lang::Ja => vec![ja[0], ja[1], ja[2], malgun],
+            // 한국어/영어 UI: 한국어 폰트를 primary로(한글·한자·라틴 일관), 일본어는 폴백.
+            _ => vec![malgun, ja[0], ja[1], ja[2]],
+        };
     }
     #[cfg(target_os = "macos")]
     {
@@ -39,13 +49,13 @@ fn cjk_candidates() -> Vec<&'static str> {
     }
 }
 
-/// 존재하는 CJK 폰트를 **여러 개**(폴백 체인용) (이름, 바이트)로 반환한다(최대 3개).
-/// 단일 폰트만 쓰면 한국어 폰트(Windows malgun)에 일본어 신자체(黄/緑/青 등) 글리프가 없어
-/// 두부(□)로 깨진다. 한국어 폰트를 앞에, 일본어 폰트를 뒤 폴백으로 두면 한 폰트에 없는 글리프가
-/// 다음 폰트로 채워진다(언어 무관 자동). 후보 목록은 한국어 우선·일본어 폴백 순으로 정렬돼 있다.
-fn load_cjk_fonts() -> Vec<(String, Vec<u8>)> {
+/// 존재하는 CJK 폰트를 **여러 개**(폴백 체인용) (이름, 바이트)로 반환한다(최대 3개). 활성 언어의
+/// 폰트가 primary(첫 번째)가 되어 그 언어 글리프를 모두 커버하므로 폴백이 거의 안 일어나
+/// 글자 어긋남이 없다. 단일 폰트만 쓰면 한국어 폰트(Windows malgun)에 일본어 신자체(黄/緑/青)가
+/// 없어 두부(□)로 깨지므로, 폴백 체인은 그대로 둔다(타 언어 stray 글자 대비).
+fn load_cjk_fonts(lang: Lang) -> Vec<(String, Vec<u8>)> {
     let mut out: Vec<(String, Vec<u8>)> = Vec::new();
-    for path in cjk_candidates() {
+    for path in cjk_candidates(lang) {
         if let Ok(bytes) = std::fs::read(path) {
             if !bytes.is_empty() && !out.iter().any(|(_, b)| b.len() == bytes.len()) {
                 out.push((format!("cjk{}", out.len()), bytes));
@@ -58,10 +68,11 @@ fn load_cjk_fonts() -> Vec<(String, Vec<u8>)> {
     out
 }
 
-/// CJK 폰트를 egui에 설치한다. 없으면 기본 폰트만(라틴) 사용.
-pub fn install(ctx: &egui::Context) {
+/// CJK 폰트를 egui에 설치한다(활성 언어의 폰트를 primary로). 없으면 기본 폰트만(라틴) 사용.
+/// 언어 변경 시 다시 호출하면 폰트도 그 언어에 맞게 교체된다(#32 후속: 일본어 세로 어긋남 해결).
+pub fn install(ctx: &egui::Context, lang: Lang) {
     let mut fonts = FontDefinitions::default();
-    let loaded = load_cjk_fonts();
+    let loaded = load_cjk_fonts(lang);
     let names: Vec<String> = loaded.iter().map(|(n, _)| n.clone()).collect();
     for (name, bytes) in loaded {
         // `Arc<T>: From<T>` 이므로 `.into()`가 egui 버전과 무관하게 동작.

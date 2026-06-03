@@ -196,7 +196,6 @@ pub struct RawBlowApp {
 impl RawBlowApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::apply(&cc.egui_ctx);
-        crate::fonts::install(&cc.egui_ctx);
 
         let cfg = config::load();
         // 워커 스레드 수: 코어 수에 비례하되 상한으로 CPU 피크를 억제. 디코딩이 DCT 축소로
@@ -214,6 +213,8 @@ impl RawBlowApp {
         let worker = Worker::new(threads, config::cache_dir());
         // UI 언어(#30): 저장값(cfg.lang) 있으면 그걸, 없으면 OS 언어 감지.
         let lang = crate::i18n::effective_lang(&cfg);
+        // 폰트는 활성 언어의 폰트를 primary로 설치(#32 후속: 일본어 글자 세로 어긋남 방지).
+        crate::fonts::install(&cc.egui_ctx, lang);
 
         let mut app = RawBlowApp {
             lang,
@@ -1070,7 +1071,7 @@ impl RawBlowApp {
                     ui.add_space(28.0);
                     if ui
                         .add(egui::Button::new(
-                            egui::RichText::new(format!("  {}  ⌘O  ", tr(lang, "폴더 열기"))).color(Color32::from_rgb(0x0a, 0x14, 0x20)),
+                            egui::RichText::new(format!("  {}  {}O  ", tr(lang, "폴더 열기"), cmd_key())).color(Color32::from_rgb(0x0a, 0x14, 0x20)),
                         ).fill(theme::ACCENT))
                         .clicked()
                     {
@@ -1134,7 +1135,7 @@ impl RawBlowApp {
                     ui.add_space(6.0);
                     vsep(ui);
                     // 폴더 열기(이슈 #2: 폴더 연 상태에서 다른 폴더 여는 버튼 없음 — ⌘O를 못 찾음).
-                    if toggle_btn(ui, &format!("{} (⌘O)", tr(lang, "폴더 열기")), false).clicked() {
+                    if toggle_btn(ui, &format!("{} ({}O)", tr(lang, "폴더 열기"), cmd_key()), false).clicked() {
                         self.pick_folder();
                     }
                     vsep(ui);
@@ -1185,7 +1186,7 @@ impl RawBlowApp {
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .add(egui::Button::new(egui::RichText::new(format!(" {} (⌘E) ", tr(lang, "전송"))).color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT))
+                            .add(egui::Button::new(egui::RichText::new(format!(" {} ({}E) ", tr(lang, "전송"), cmd_key())).color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT))
                             .clicked()
                         {
                             self.open_transfer();
@@ -2498,6 +2499,8 @@ impl RawBlowApp {
                         if sel != self.cfg.lang {
                             self.cfg.lang = sel;
                             self.lang = crate::i18n::effective_lang(&self.cfg);
+                            // 폰트도 새 언어의 폰트를 primary로 교체(#32 후속: 세로 어긋남 방지).
+                            crate::fonts::install(ui.ctx(), self.lang);
                             let _ = config::save(&self.cfg);
                         }
                     });
@@ -2802,6 +2805,17 @@ fn format_capture_datetime(dt: &str) -> String {
     match dt.split_once(' ') {
         Some((date, time)) => format!("{} {}", date.replace(':', "."), time),
         None => dt.replace(':', "."),
+    }
+}
+
+/// 플랫폼별 Command/Ctrl 표기(#32). macOS는 `⌘`, 그 외(Windows/Linux)는 `Ctrl+`.
+/// Windows에서 `⌘` 글리프가 폴백 폰트로 그려지며 세로로 떠 보이는 문제 + 실제 키도 Ctrl이라
+/// 텍스트로 대체한다(예: `{cmd}O` → mac "⌘O", win "Ctrl+O").
+fn cmd_key() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "⌘"
+    } else {
+        "Ctrl+"
     }
 }
 
