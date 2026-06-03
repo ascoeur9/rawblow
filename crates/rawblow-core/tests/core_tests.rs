@@ -1,6 +1,6 @@
 //! rawblow-core 통합 테스트. 실제 sample 데이터(RW2/JPG)를 사용한다.
 
-use rawblow_core::model::{Entry, Kind, Label, MatchMode};
+use rawblow_core::model::{ColorTag, Entry, Kind, Label, MatchMode};
 use rawblow_core::{decode, scan, sidecar, transfer};
 use std::path::{Path, PathBuf};
 
@@ -400,6 +400,9 @@ fn transfer_copies_selected_with_conflict_rename() {
         dest: dst.clone(),
         split_by_label: false,
         conflict: transfer::ConflictPolicy::AutoIncrement,
+        tags: vec![],
+        split_by_tag: false,
+        rename: None,
     };
     let report = transfer::execute(&req);
     assert_eq!(report.transferred, 2, "JPG+RW2 둘 다 전송");
@@ -434,6 +437,9 @@ fn transfer_split_by_label_subfolders() {
         dest: dst.clone(),
         split_by_label: true,
         conflict: transfer::ConflictPolicy::AutoIncrement,
+        tags: vec![],
+        split_by_tag: false,
+        rename: None,
     };
     let report = transfer::execute(&req);
     assert_eq!(report.transferred, 2);
@@ -492,6 +498,9 @@ fn transfer_by_stars_union_with_labels() {
         dest: dst.clone(),
         split_by_label: false,
         conflict: transfer::ConflictPolicy::AutoIncrement,
+        tags: vec![],
+        split_by_tag: false,
+        rename: None,
     };
     let report = transfer::execute(&req);
     assert_eq!(report.transferred, 2, "Pick(A) + 5★(B)만 전송");
@@ -526,6 +535,9 @@ fn transfer_star_only_split_goes_to_star_folder_not_unrated() {
         dest: dst.clone(),
         split_by_label: true,
         conflict: transfer::ConflictPolicy::AutoIncrement,
+        tags: vec![],
+        split_by_tag: false,
+        rename: None,
     };
     let report = transfer::execute(&req);
     assert_eq!(report.transferred, 2);
@@ -653,4 +665,151 @@ fn kind_classification() {
     assert_eq!(rawblow_core::model::kind_of(Path::new("a.RW2")), Some(Kind::Raw));
     assert_eq!(rawblow_core::model::kind_of(Path::new("a.jpg")), Some(Kind::Image));
     assert_eq!(rawblow_core::model::kind_of(Path::new("a.txt")), None);
+}
+
+/// #26: 별점 등급별 리네임(A1,A2,B1…). RAW+이미지 페어는 같은 새 stem을 공유해야 한다.
+#[test]
+fn transfer_rename_grade_grouped_keeps_pairs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("AAA.JPG"), b"a").unwrap();
+    std::fs::write(src.join("AAA.RW2"), b"a").unwrap(); // 페어
+    std::fs::write(src.join("BBB.JPG"), b"b").unwrap();
+    std::fs::write(src.join("CCC.JPG"), b"c").unwrap();
+
+    let mut entries = scan::scan_folder(&src, false, rawblow_core::SortOrder::Name);
+    for e in entries.iter_mut() {
+        e.stars = match e.stem.as_str() {
+            "AAA" => 5,
+            "BBB" => 5,
+            "CCC" => 4,
+            _ => 0,
+        };
+    }
+    let req = transfer::TransferRequest {
+        entries: &entries,
+        labels: vec![],
+        stars: vec![5, 4],
+        tags: vec![],
+        action: transfer::Action::Copy,
+        companions: transfer::Companions::Both,
+        dest: dst.clone(),
+        split_by_label: false,
+        split_by_tag: false,
+        conflict: transfer::ConflictPolicy::AutoIncrement,
+        rename: Some(transfer::RenameRule {
+            template: "{gradeseq}".into(),
+            numbering: transfer::Numbering::GradeGrouped,
+        }),
+    };
+    let report = transfer::execute(&req);
+    assert_eq!(report.transferred, 4, "AAA(2 페어)+BBB+CCC");
+    assert!(dst.join("A1.JPG").exists(), "AAA 5★ → A1.JPG");
+    assert!(dst.join("A1.RW2").exists(), "페어 RAW도 같은 stem A1");
+    assert!(dst.join("A2.JPG").exists(), "BBB 5★ → A2.JPG");
+    assert!(dst.join("B1.JPG").exists(), "CCC 4★ → B1.JPG");
+}
+
+/// #26: 선택 순서 + 패딩 + 원본 토큰("{seq:03}_{orig}").
+#[test]
+fn transfer_rename_order_padding_and_orig() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("XQ.JPG"), b"x").unwrap();
+    std::fs::write(src.join("ZP.JPG"), b"z").unwrap();
+
+    let mut entries = scan::scan_folder(&src, false, rawblow_core::SortOrder::Name);
+    for e in entries.iter_mut() {
+        e.label = Label::Pick;
+    }
+    let req = transfer::TransferRequest {
+        entries: &entries,
+        labels: vec![Label::Pick],
+        stars: vec![],
+        tags: vec![],
+        action: transfer::Action::Copy,
+        companions: transfer::Companions::Both,
+        dest: dst.clone(),
+        split_by_label: false,
+        split_by_tag: false,
+        conflict: transfer::ConflictPolicy::AutoIncrement,
+        rename: Some(transfer::RenameRule {
+            template: "{seq:03}_{orig}".into(),
+            numbering: transfer::Numbering::Order,
+        }),
+    };
+    transfer::execute(&req);
+    assert!(dst.join("001_XQ.JPG").exists(), "1번째 → 001_XQ");
+    assert!(dst.join("002_ZP.JPG").exists(), "2번째 → 002_ZP");
+}
+
+/// #27: 컬러 태그를 전송 선택 기준(합집합)으로, 태그별 하위폴더(@green) 분기.
+#[test]
+fn transfer_tag_union_and_split_subfolder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("G.JPG"), b"g").unwrap();
+    std::fs::write(src.join("R.JPG"), b"r").unwrap();
+    std::fs::write(src.join("N.JPG"), b"n").unwrap();
+
+    let mut entries = scan::scan_folder(&src, false, rawblow_core::SortOrder::Name);
+    for e in entries.iter_mut() {
+        e.tag = match e.stem.as_str() {
+            "G" => ColorTag::Green,
+            "R" => ColorTag::Red,
+            _ => ColorTag::None,
+        };
+    }
+    let req = transfer::TransferRequest {
+        entries: &entries,
+        labels: vec![],
+        stars: vec![],
+        tags: vec![ColorTag::Green], // Green만 선택
+        action: transfer::Action::Copy,
+        companions: transfer::Companions::Both,
+        dest: dst.clone(),
+        split_by_label: false,
+        split_by_tag: true,
+        conflict: transfer::ConflictPolicy::AutoIncrement,
+        rename: None,
+    };
+    let report = transfer::execute(&req);
+    assert_eq!(report.transferred, 1, "Green만 전송");
+    assert!(dst.join("@green").join("G.JPG").exists(), "태그별 하위폴더");
+    assert!(!dst.join("@red").exists(), "선택 안 한 태그는 전송 안 됨");
+}
+
+/// #27: 사이드카가 태그를 보존(구버전 호환). 태그만 있는(라벨/별점 없는) 항목도 저장된다.
+#[test]
+fn sidecar_tag_roundtrip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let folder = tmp.path();
+    std::fs::write(folder.join("ONLY_TAG.JPG"), b"x").unwrap();
+    std::fs::write(folder.join("PICKED.JPG"), b"y").unwrap();
+
+    let mut entries = scan::scan_folder(folder, false, rawblow_core::SortOrder::Name);
+    for e in entries.iter_mut() {
+        match e.stem.as_str() {
+            "ONLY_TAG" => e.tag = ColorTag::Green, // 라벨/별점 없이 태그만
+            "PICKED" => e.label = Label::Pick,
+            _ => {}
+        }
+    }
+    sidecar::save(folder, &entries).unwrap();
+
+    let mut reloaded = scan::scan_folder(folder, false, rawblow_core::SortOrder::Name);
+    let session = sidecar::load(folder).expect("세션 로드");
+    sidecar::apply(&session, &mut reloaded);
+
+    let only = reloaded.iter().find(|e| e.stem == "ONLY_TAG").unwrap();
+    assert_eq!(only.tag, ColorTag::Green, "태그만 있는 항목도 저장·복원");
+    let picked = reloaded.iter().find(|e| e.stem == "PICKED").unwrap();
+    assert_eq!(picked.label, Label::Pick);
+    assert_eq!(picked.tag, ColorTag::None);
 }

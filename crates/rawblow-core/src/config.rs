@@ -97,6 +97,10 @@ pub struct Config {
     pub cache_limit_mb: u64,
     /// UI 언어(#30). `None` = OS 언어 자동. 설정에서 변경하면 저장된다.
     pub lang: Option<Lang>,
+    /// 컬러 태그(#27) 색별 커스텀 이름 [Red, Yellow, Green, Blue, Purple]. 빈 문자열이면
+    /// 기본 색 이름을 표시한다(예: Green="템플릿"). 설정에서 편집.
+    #[serde(default)]
+    pub tag_names: [String; 5],
 }
 
 impl Default for Config {
@@ -113,6 +117,17 @@ impl Default for Config {
             keymap: KeyMap::default(),
             cache_limit_mb: 1024, // 기본 1GB. 0이면 무제한.
             lang: None,           // OS 언어 자동(#30).
+            tag_names: Default::default(), // 5색 모두 빈 이름(기본 색 이름 표시)(#27).
+        }
+    }
+}
+
+impl Config {
+    /// 컬러 태그의 표시 이름: 커스텀 이름이 있으면 그것을, 없으면 기본 색 이름(다국어).
+    pub fn tag_label(&self, tag: crate::model::ColorTag, lang: Lang) -> String {
+        match tag.index() {
+            Some(i) if !self.tag_names[i].trim().is_empty() => self.tag_names[i].clone(),
+            _ => tag.default_name(lang).to_string(),
         }
     }
 }

@@ -1,7 +1,7 @@
 //! 비파괴 사이드카 (F5): 분류 결과를 폴더 내 `.rawblow/session.json`에 저장/복원.
 //! PRD §8 스키마(version=1, items=stem 키). 사람용 txt도 함께 출력.
 
-use crate::model::{Entry, Label};
+use crate::model::{ColorTag, Entry, Label};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -25,6 +25,9 @@ pub struct ItemRec {
     /// 별점(0~5). 구버전 세션(필드 없음)은 0으로 로드된다(#23).
     #[serde(default)]
     pub stars: u8,
+    /// 컬러 태그(#27). 구버전 세션(필드 없음)은 `None`으로 로드된다.
+    #[serde(default)]
+    pub tag: ColorTag,
     pub members: Vec<String>,
 }
 
@@ -58,8 +61,8 @@ fn rel(folder: &Path, p: &Path) -> String {
 pub fn save(folder: &Path, entries: &[Entry]) -> std::io::Result<()> {
     let mut items = BTreeMap::new();
     for e in entries {
-        if e.label == Label::Unrated && e.stars == 0 {
-            continue; // 미선택 + 무별점은 키 생략(스펙). 별점만 있어도 보존.
+        if e.label == Label::Unrated && e.stars == 0 && e.tag == ColorTag::None {
+            continue; // 미선택 + 무별점 + 무태그는 키 생략(스펙). 별점·태그만 있어도 보존.
         }
         let members = e.members.iter().map(|p| rel(folder, p)).collect();
         items.insert(
@@ -67,6 +70,7 @@ pub fn save(folder: &Path, entries: &[Entry]) -> std::io::Result<()> {
             ItemRec {
                 label: e.label,
                 stars: e.stars,
+                tag: e.tag,
                 members,
             },
         );
@@ -123,20 +127,39 @@ pub fn render_txt(session: &Session) -> String {
         }
         out.push('\n');
     }
+    // 컬러 태그 섹션(#27, 있는 것만). 라벨·별점과 독립이므로 별도 나열(영문 슬러그로 안정 표기).
+    for tag in ColorTag::ALL {
+        let stems: Vec<&String> = session
+            .items
+            .iter()
+            .filter(|(_, v)| v.tag == tag)
+            .map(|(k, _)| k)
+            .collect();
+        if stems.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("# @{} ({})\n", tag.slug(), stems.len()));
+        for s in stems {
+            out.push_str(s);
+            out.push('\n');
+        }
+        out.push('\n');
+    }
     out
 }
 
 /// 로드한 세션의 라벨을 현재 항목에 복원한다(stem 대소문자 무시 매칭).
 pub fn apply(session: &Session, entries: &mut [Entry]) {
-    let map: BTreeMap<String, (Label, u8)> = session
+    let map: BTreeMap<String, (Label, u8, ColorTag)> = session
         .items
         .iter()
-        .map(|(k, v)| (k.to_ascii_lowercase(), (v.label, v.stars)))
+        .map(|(k, v)| (k.to_ascii_lowercase(), (v.label, v.stars, v.tag)))
         .collect();
     for e in entries.iter_mut() {
-        if let Some((l, s)) = map.get(&e.stem.to_ascii_lowercase()) {
+        if let Some((l, s, t)) = map.get(&e.stem.to_ascii_lowercase()) {
             e.label = *l;
             e.stars = (*s).min(5); // 손편집/구포맷의 비정상 값 방어(표시 깨짐 방지).
+            e.tag = *t;
         }
     }
 }

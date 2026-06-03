@@ -110,6 +110,91 @@ impl Label {
     }
 }
 
+/// 컬러 태그(#27): 라벨·별점과 **독립**된 3번째 분류축. 단일선택(한 항목에 한 색).
+/// 보정 방식 등 사용자가 의미를 부여(설정에서 색별 이름 지정 가능 — `Config.tag_names`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ColorTag {
+    #[default]
+    None,
+    Red,
+    Yellow,
+    Green,
+    Blue,
+    Purple,
+}
+
+impl ColorTag {
+    /// 부여 가능한 5색(레일·필터·전송 UI 순회용). `None`(무태그)은 제외.
+    pub const ALL: [ColorTag; 5] = [
+        ColorTag::Red,
+        ColorTag::Yellow,
+        ColorTag::Green,
+        ColorTag::Blue,
+        ColorTag::Purple,
+    ];
+
+    /// 점/칩 색(무태그는 None). 라벨 팔레트와 톤을 맞춘 5색.
+    pub fn color_rgb(self) -> Option<[u8; 3]> {
+        Some(match self {
+            ColorTag::None => return None,
+            ColorTag::Red => [0xf8, 0x71, 0x71],
+            ColorTag::Yellow => [0xfb, 0xbf, 0x24],
+            ColorTag::Green => [0x4a, 0xde, 0x80],
+            ColorTag::Blue => [0x60, 0xa5, 0xfa],
+            ColorTag::Purple => [0xa7, 0x8b, 0xfa],
+        })
+    }
+
+    /// 0-기반 색 인덱스(Red=0 … Purple=4). 무태그는 None. `Config.tag_names` 인덱싱에 사용.
+    pub fn index(self) -> Option<usize> {
+        Self::ALL.iter().position(|&t| t == self)
+    }
+
+    /// Shift+숫자(1~5) → 색 태그. 범위 밖이면 None.
+    pub fn from_number(n: u8) -> Option<ColorTag> {
+        Self::ALL.get(n.checked_sub(1)? as usize).copied()
+    }
+
+    /// 커스텀 이름이 없을 때 표시할 기본 색 이름(다국어).
+    pub fn default_name(self, lang: crate::config::Lang) -> &'static str {
+        use crate::config::Lang;
+        match (lang, self) {
+            (_, ColorTag::None) => match lang {
+                Lang::Ko => "무태그",
+                Lang::En => "Untagged",
+                Lang::Ja => "タグなし",
+            },
+            (Lang::Ko, ColorTag::Red) => "빨강",
+            (Lang::Ko, ColorTag::Yellow) => "노랑",
+            (Lang::Ko, ColorTag::Green) => "초록",
+            (Lang::Ko, ColorTag::Blue) => "파랑",
+            (Lang::Ko, ColorTag::Purple) => "보라",
+            (Lang::En, ColorTag::Red) => "Red",
+            (Lang::En, ColorTag::Yellow) => "Yellow",
+            (Lang::En, ColorTag::Green) => "Green",
+            (Lang::En, ColorTag::Blue) => "Blue",
+            (Lang::En, ColorTag::Purple) => "Purple",
+            (Lang::Ja, ColorTag::Red) => "赤",
+            (Lang::Ja, ColorTag::Yellow) => "黄",
+            (Lang::Ja, ColorTag::Green) => "緑",
+            (Lang::Ja, ColorTag::Blue) => "青",
+            (Lang::Ja, ColorTag::Purple) => "紫",
+        }
+    }
+
+    /// 전송 분기 폴더명·파일명 토큰용 안정적 영문 슬러그(언어 무관).
+    pub fn slug(self) -> &'static str {
+        match self {
+            ColorTag::None => "untagged",
+            ColorTag::Red => "red",
+            ColorTag::Yellow => "yellow",
+            ColorTag::Green => "green",
+            ColorTag::Blue => "blue",
+            ColorTag::Purple => "purple",
+        }
+    }
+}
+
 /// 논리 항목: 동일 stem을 공유하는 파일들의 묶음(F3 페어링).
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -125,6 +210,8 @@ pub struct Entry {
     pub label: Label,
     /// 별점(0=무별점, 1~5). 라벨(pick/hold/reject)과 **독립**으로 동시에 매겨진다(#23).
     pub stars: u8,
+    /// 컬러 태그(#27). 라벨·별점과 독립된 3번째 축(보정 방식 등). 기본 `None`(무태그).
+    pub tag: ColorTag,
 }
 
 impl Entry {
@@ -147,6 +234,7 @@ impl Entry {
             has_image,
             label: Label::Unrated,
             stars: 0,
+            tag: ColorTag::None,
         }
     }
 
@@ -272,6 +360,23 @@ impl StarFilter {
         match self {
             StarFilter::Any => true,
             StarFilter::Exact(n) => stars == n,
+        }
+    }
+}
+
+/// 컬러 태그 필터(#27). 라벨·별점 필터와 **독립**으로 AND 결합한다.
+/// `Any`=태그 무시, `Only(t)`=정확히 그 태그(`Only(None)`=무태그만).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagFilter {
+    Any,
+    Only(ColorTag),
+}
+
+impl TagFilter {
+    pub fn accepts(self, tag: ColorTag) -> bool {
+        match self {
+            TagFilter::Any => true,
+            TagFilter::Only(t) => tag == t,
         }
     }
 }

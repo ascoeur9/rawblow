@@ -200,6 +200,26 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         ),
         "언어" => ("Language", "言語"),
         "시스템 (자동)" => ("System (Auto)", "システム (自動)"),
+        // #27 컬러 태그 / #26 리네임 UI
+        "색별 이름을 지정해 보정 방식 등 나만의 분류로 — ⇧1~5로 부여" => (
+            "Name each color for your own classification (e.g. retouch style) — assign with ⇧1–5",
+            "色ごとに名前を付けて自分の分類に（補正方式など）— ⇧1～5で付与",
+        ),
+        "태그별 하위폴더로 분기 (@green …)" => (
+            "Split into subfolders by tag (@green …)",
+            "タグ別サブフォルダに振り分け (@green …)",
+        ),
+        "순번 (1,2,3)" => ("Sequence (1,2,3)", "連番 (1,2,3)"),
+        "별점등급 (A1,B1…)" => ("Rating grade (A1,B1…)", "評価ランク (A1,B1…)"),
+        "직접 입력" => ("Custom", "カスタム"),
+        "선택순" => ("Order", "選択順"),
+        "선택 순서" => ("Selection order", "選択順"),
+        "등급순" => ("Grade", "ランク順"),
+        "별점 등급" => ("By rating grade", "評価ランク順"),
+        "대상 없음 — 위에서 라벨·별점·태그를 선택하세요." => (
+            "No targets — select labels, ratings, or tags above.",
+            "対象なし — 上でラベル・評価・タグを選択してください。",
+        ),
         _ => return None,
     })
 }

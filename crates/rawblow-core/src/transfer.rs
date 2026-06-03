@@ -4,13 +4,31 @@
 //! 라벨별 하위폴더, 충돌 시 자동 일련번호(덮어쓰기 금지)를 지원한다.
 //! 파일번호(stem) 매칭(점프/필터)도 RawPull 방식으로 제공한다.
 
-use crate::model::{kind_of, Entry, Kind, Label, MatchMode};
+use crate::model::{kind_of, ColorTag, Entry, Kind, Label, MatchMode};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
     Copy,
     Move,
+}
+
+/// 분류 기반 파일명 변경 규칙(#26). 전송(Copy/Move) 시에만 새 이름을 부여한다(원본 무손상).
+#[derive(Clone, Debug)]
+pub struct RenameRule {
+    /// 토큰 템플릿. 지원: `{seq}`(`{seq:03}` 패딩), `{grade}`(A=5★…E=1★), `{gradeseq}`(A1,B2…),
+    /// `{stars}`, `{label}`, `{tag}`, `{orig}`(원본 stem). RAW+이미지 페어는 같은 새 stem을 공유.
+    pub template: String,
+    pub numbering: Numbering,
+}
+
+/// 순번 부여 방식(#26).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Numbering {
+    /// 선택/정렬 순서대로 1,2,3…
+    Order,
+    /// 별점 등급별로 묶어 A1,A2,…,B1,…(별점 내림차순). 0★(무별점)은 리네임 제외(원본명 유지).
+    GradeGrouped,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -31,14 +49,20 @@ pub enum ConflictPolicy {
 pub struct TransferRequest<'a> {
     pub entries: &'a [Entry],
     pub labels: Vec<Label>,
-    /// 전송 대상 별점 집합(1~5). 라벨과 **합집합(OR)**으로 묶인다(#23):
-    /// 항목의 라벨이 선택됐거나 별점이 이 집합에 들면 전송 대상.
+    /// 전송 대상 별점 집합(1~5). 라벨·태그와 **합집합(OR)**으로 묶인다(#23):
+    /// 항목의 라벨이 선택됐거나 별점·태그가 이 집합에 들면 전송 대상.
     pub stars: Vec<u8>,
+    /// 전송 대상 컬러 태그 집합(#27). 라벨·별점과 합집합(OR). `None`(무태그)은 매칭 대상 아님.
+    pub tags: Vec<ColorTag>,
     pub action: Action,
     pub companions: Companions,
     pub dest: PathBuf,
     pub split_by_label: bool,
+    /// 태그별 하위폴더(`@green` 등)로 분기(#27).
+    pub split_by_tag: bool,
     pub conflict: ConflictPolicy,
+    /// 분류 기반 파일명 변경(#26). `None`이면 원본 이름 유지.
+    pub rename: Option<RenameRule>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -62,15 +86,19 @@ pub fn select_members<'a>(entry: &'a Entry, companions: Companions) -> Vec<&'a P
     }
 }
 
-/// 전송 대상 (소스 파일, 소속 라벨, 별점) 목록을 만든다(실행 전 미리보기에도 사용).
-/// 별점은 split_by_label 시 라벨 없는(별점만 매긴) 항목의 분기 폴더 결정에 쓰인다.
+/// 전송 대상 여부: 라벨 OR 별점 OR 태그(합집합). 무별점(0)·무태그(None)는 매칭 대상이 아니다(#23/#27).
+fn is_selected(req: &TransferRequest, e: &Entry) -> bool {
+    let label_hit = req.labels.contains(&e.label);
+    let star_hit = e.stars >= 1 && req.stars.contains(&e.stars);
+    let tag_hit = e.tag != ColorTag::None && req.tags.contains(&e.tag);
+    label_hit || star_hit || tag_hit
+}
+
+/// 전송 대상 (소스 파일, 소속 라벨, 별점) 목록을 만든다(실행 전 미리보기 카운트에 사용).
 pub fn plan(req: &TransferRequest) -> Vec<(PathBuf, Label, u8)> {
     let mut out = Vec::new();
     for e in req.entries {
-        // 라벨 OR 별점(합집합). 무별점(0)은 별점 매칭 대상이 아니다.
-        let label_hit = req.labels.contains(&e.label);
-        let star_hit = e.stars >= 1 && req.stars.contains(&e.stars);
-        if !(label_hit || star_hit) {
+        if !is_selected(req, e) {
             continue;
         }
         for m in select_members(e, req.companions) {
@@ -107,61 +135,245 @@ fn unique_path(dir: &Path, file_name: &str, policy: ConflictPolicy) -> Option<(P
     }
 }
 
-/// 전송을 실행한다.
+/// 별점(0~5) → 등급 문자(A=5★ … E=1★, 0★은 빈 문자)(#26).
+fn grade_letter(stars: u8) -> &'static str {
+    match stars {
+        5 => "A",
+        4 => "B",
+        3 => "C",
+        2 => "D",
+        1 => "E",
+        _ => "",
+    }
+}
+
+/// 파일명 템플릿 치환 컨텍스트(#26).
+struct NameCtx<'a> {
+    order_seq: usize, // 전체 전송 순서(1-기반)
+    grade_seq: usize, // 같은 별점 등급 안에서의 순서(1-기반)
+    grade: &'a str,   // 등급 문자
+    stars: u8,
+    label: &'a str, // 라벨 슬러그(pick/hold/…)
+    tag: &'a str,   // 태그 슬러그(red/…/untagged)
+    orig: &'a str,  // 원본 stem
+    numbering: Numbering,
+}
+
+impl NameCtx<'_> {
+    fn resolve(&self, token: &str) -> String {
+        // "seq:03" → name="seq", pad=Some(3). 숫자 토큰을 0패딩.
+        let (name, pad) = match token.split_once(':') {
+            Some((n, spec)) => (n, spec.trim().parse::<usize>().ok()),
+            None => (token, None),
+        };
+        let num = |v: usize| match pad {
+            Some(w) => format!("{:0width$}", v, width = w),
+            None => v.to_string(),
+        };
+        // {seq}는 번호 방식에 따라: Order=전체순서, GradeGrouped=등급내순서.
+        let primary = if self.numbering == Numbering::GradeGrouped {
+            self.grade_seq
+        } else {
+            self.order_seq
+        };
+        match name {
+            "seq" => num(primary),
+            "order" => num(self.order_seq),
+            "grade" => self.grade.to_string(),
+            "gradeseq" => format!("{}{}", self.grade, num(self.grade_seq)),
+            "stars" => self.stars.to_string(),
+            "label" => self.label.to_string(),
+            "tag" => self.tag.to_string(),
+            "orig" => self.orig.to_string(),
+            _ => String::new(), // 알 수 없는 토큰 → 빈 문자.
+        }
+    }
+}
+
+/// 토큰 템플릿을 새 stem으로 치환(#26). `{name}`/`{name:0N}`. 파일명에 위험한 문자는 `_`로,
+/// 결과가 비면 원본 stem으로 폴백.
+fn render_name(template: &str, ctx: &NameCtx) -> String {
+    let mut out = String::new();
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        if let Some(close) = after.find('}') {
+            out.push_str(&ctx.resolve(&after[..close]));
+            rest = &after[close + 1..];
+        } else {
+            out.push_str(&rest[open..]);
+            rest = "";
+            break;
+        }
+    }
+    out.push_str(rest);
+    let cleaned: String = out
+        .chars()
+        .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.').trim();
+    if trimmed.is_empty() {
+        ctx.orig.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// 전송을 실행한다. 항목(엔트리) 단위로 순회하며 #26 리네임(페어 동일 stem)·#27 태그 분기를 반영.
 pub fn execute(req: &TransferRequest) -> TransferReport {
     let mut report = TransferReport::default();
+    let mut grade_counter = [0usize; 6]; // 별점 0~5별 등급 내 순번
+    let mut order = 0usize; // 전체 전송 순서
 
-    for (src, label, stars) in plan(req) {
-        let target_dir = if req.split_by_label {
-            req.dest.join(split_folder(label, stars))
-        } else {
-            req.dest.clone()
-        };
-        if let Err(e) = std::fs::create_dir_all(&target_dir) {
-            report.failed.push((src.clone(), e.to_string()));
+    for e in req.entries {
+        if !is_selected(req, e) {
+            continue;
+        }
+        let members = select_members(e, req.companions);
+        if members.is_empty() {
+            continue;
+        }
+        order += 1;
+        let gi = e.stars.min(5) as usize;
+        grade_counter[gi] += 1;
+
+        // 새 stem(#26): 항목 1개당 한 번 계산 → 모든 동반 멤버가 같은 stem을 공유(페어 유지).
+        // GradeGrouped + 0★(무별점)은 리네임 제외(원본명 유지).
+        let new_stem = req.rename.as_ref().and_then(|rule| {
+            if rule.numbering == Numbering::GradeGrouped && e.stars == 0 {
+                return None;
+            }
+            let ctx = NameCtx {
+                order_seq: order,
+                grade_seq: grade_counter[gi],
+                grade: grade_letter(e.stars),
+                stars: e.stars,
+                label: label_folder(e.label),
+                tag: e.tag.slug(),
+                orig: &e.stem,
+                numbering: rule.numbering,
+            };
+            Some(render_name(&rule.template, &ctx))
+        });
+
+        // 분기 폴더: 라벨(있으면) + 태그(있으면)(#27).
+        let mut target_dir = req.dest.clone();
+        if req.split_by_label {
+            target_dir = target_dir.join(split_folder(e.label, e.stars));
+        }
+        if req.split_by_tag && e.tag != ColorTag::None {
+            target_dir = target_dir.join(format!("@{}", e.tag.slug()));
+        }
+        if let Err(err) = std::fs::create_dir_all(&target_dir) {
+            for src in &members {
+                report.failed.push(((*src).clone(), err.to_string()));
+            }
             continue;
         }
 
-        let file_name = match src.file_name().and_then(|s| s.to_str()) {
-            Some(n) => n.to_string(),
-            None => {
-                report.failed.push((src.clone(), "invalid filename".into()));
-                continue;
-            }
-        };
-
-        let (dst, renamed) = match unique_path(&target_dir, &file_name, req.conflict) {
-            Some(v) => v,
-            None => {
-                report.skipped += 1;
-                continue;
-            }
-        };
-
-        let size = std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
-        let result = match req.action {
-            Action::Copy => std::fs::copy(&src, &dst).map(|_| ()),
-            Action::Move => move_file(&src, &dst),
-        };
-
-        match result {
-            Ok(()) => {
-                report.transferred += 1;
-                report.bytes += size;
-                match kind_of(&src) {
-                    Some(Kind::Raw) => report.raw_count += 1,
-                    Some(Kind::Image) => report.image_count += 1,
-                    None => {}
+        for src in members {
+            let file_name = match src.file_name().and_then(|s| s.to_str()) {
+                Some(n) => n.to_string(),
+                None => {
+                    report.failed.push((src.clone(), "invalid filename".into()));
+                    continue;
                 }
-                if let Some(new_name) = renamed {
-                    report.renamed.push((file_name, new_name));
+            };
+            // 새 이름 = 템플릿 stem + 원본 확장자(없으면 stem). 리네임 없으면 원본명 그대로.
+            let out_name = match &new_stem {
+                Some(stem) => match src.extension().and_then(|s| s.to_str()) {
+                    Some(ext) => format!("{stem}.{ext}"),
+                    None => stem.clone(),
+                },
+                None => file_name.clone(),
+            };
+
+            let (dst, conflict_renamed) = match unique_path(&target_dir, &out_name, req.conflict) {
+                Some(v) => v,
+                None => {
+                    report.skipped += 1;
+                    continue;
                 }
+            };
+
+            let size = std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+            let result = match req.action {
+                Action::Copy => std::fs::copy(src, &dst).map(|_| ()),
+                Action::Move => move_file(src, &dst),
+            };
+
+            match result {
+                Ok(()) => {
+                    report.transferred += 1;
+                    report.bytes += size;
+                    match kind_of(src) {
+                        Some(Kind::Raw) => report.raw_count += 1,
+                        Some(Kind::Image) => report.image_count += 1,
+                        None => {}
+                    }
+                    let final_name = conflict_renamed.unwrap_or(out_name);
+                    if final_name != file_name {
+                        report.renamed.push((file_name, final_name));
+                    }
+                }
+                Err(err) => report.failed.push((src.clone(), err.to_string())),
             }
-            Err(e) => report.failed.push((src.clone(), e.to_string())),
         }
     }
 
     report
+}
+
+/// 전송하지 않고 (원본 파일명 → 새 파일명) 미리보기를 만든다(#26 다이얼로그 프리뷰).
+/// 충돌(_001) 회피는 반영하지 않는다(대상 폴더 상태와 무관한 순수 이름 미리보기). `limit`개까지.
+pub fn rename_preview(req: &TransferRequest, limit: usize) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut grade_counter = [0usize; 6];
+    let mut order = 0usize;
+    for e in req.entries {
+        if !is_selected(req, e) {
+            continue;
+        }
+        let members = select_members(e, req.companions);
+        if members.is_empty() {
+            continue;
+        }
+        order += 1;
+        let gi = e.stars.min(5) as usize;
+        grade_counter[gi] += 1;
+        let new_stem = req.rename.as_ref().and_then(|rule| {
+            if rule.numbering == Numbering::GradeGrouped && e.stars == 0 {
+                return None;
+            }
+            let ctx = NameCtx {
+                order_seq: order,
+                grade_seq: grade_counter[gi],
+                grade: grade_letter(e.stars),
+                stars: e.stars,
+                label: label_folder(e.label),
+                tag: e.tag.slug(),
+                orig: &e.stem,
+                numbering: rule.numbering,
+            };
+            Some(render_name(&rule.template, &ctx))
+        });
+        for src in members {
+            let file_name = src.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+            let new_name = match &new_stem {
+                Some(stem) => match src.extension().and_then(|s| s.to_str()) {
+                    Some(ext) => format!("{stem}.{ext}"),
+                    None => stem.clone(),
+                },
+                None => file_name.clone(),
+            };
+            out.push((file_name, new_name));
+            if out.len() >= limit {
+                return out;
+            }
+        }
+    }
+    out
 }
 
 /// rename 우선, 교차 디바이스면 copy+remove로 이동.

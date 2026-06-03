@@ -9,8 +9,13 @@ use egui::{Align, Align2, Color32, Layout, Pos2, Rect, Rounding, Sense, Stroke, 
 use rawblow_core::cache;
 use rawblow_core::config::{self, Config, Lang};
 use rawblow_core::meta::{read_exif, ExifInfo};
-use rawblow_core::transfer::{self, Action, Companions, ConflictPolicy, TransferReport, TransferRequest};
-use rawblow_core::{scan, sidecar, Entry, Filter, Label, MatchMode, SortOrder, StarFilter, ViewMode};
+use rawblow_core::transfer::{
+    self, Action, Companions, ConflictPolicy, Numbering, RenameRule, TransferReport, TransferRequest,
+};
+use rawblow_core::{
+    scan, sidecar, ColorTag, Entry, Filter, Label, MatchMode, SortOrder, StarFilter, TagFilter,
+    ViewMode,
+};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -43,16 +48,54 @@ struct Item {
     exif_loaded: bool,
 }
 
+/// 전송 다이얼로그 리네임 모드(#26). 프리셋 3종 + 자유 템플릿.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RenameMode {
+    Off,    // 원본 이름 유지
+    Seq,    // 순번 {seq:03}
+    Grade,  // 별점등급 {gradeseq} (A1,B1…)
+    Custom, // 자유 템플릿
+}
+
 #[derive(Clone)]
 struct TransferDialogState {
     labels: Vec<Label>,
     /// 전송 대상 별점 집합(1~5). 라벨과 합집합(OR)으로 묶인다(#23).
     stars: Vec<u8>,
+    /// 전송 대상 컬러 태그 집합(#27). 라벨·별점과 합집합(OR).
+    tags: Vec<ColorTag>,
     action: Action,
     companions: Companions,
     split_by_label: bool,
+    /// 태그별 하위폴더 분기(#27).
+    split_by_tag: bool,
     conflict: ConflictPolicy,
     dest: String,
+    /// 파일명 변경(#26).
+    rename_mode: RenameMode,
+    rename_template: String,
+    rename_numbering: Numbering,
+}
+
+impl TransferDialogState {
+    /// 다이얼로그 상태 → 전송 리네임 규칙(#26). Off면 None.
+    fn rename_rule(&self) -> Option<RenameRule> {
+        match self.rename_mode {
+            RenameMode::Off => None,
+            RenameMode::Seq => Some(RenameRule {
+                template: "{seq:03}".into(),
+                numbering: Numbering::Order,
+            }),
+            RenameMode::Grade => Some(RenameRule {
+                template: "{gradeseq}".into(),
+                numbering: Numbering::GradeGrouped,
+            }),
+            RenameMode::Custom => Some(RenameRule {
+                template: self.rename_template.clone(),
+                numbering: self.rename_numbering,
+            }),
+        }
+    }
 }
 
 impl Default for TransferDialogState {
@@ -60,11 +103,16 @@ impl Default for TransferDialogState {
         TransferDialogState {
             labels: vec![Label::Pick],
             stars: Vec::new(),
+            tags: Vec::new(),
             action: Action::Copy,
             companions: Companions::Both,
             split_by_label: false,
+            split_by_tag: false,
             conflict: ConflictPolicy::AutoIncrement,
             dest: String::new(),
+            rename_mode: RenameMode::Off,
+            rename_template: "{gradeseq}_{orig}".into(),
+            rename_numbering: Numbering::GradeGrouped,
         }
     }
 }
@@ -78,6 +126,7 @@ pub struct RawBlowApp {
     fullscreen: bool,
     filter: Filter,
     star_filter: StarFilter, // 별점 필터(라벨 필터와 독립 AND).
+    tag_filter: TagFilter,   // 컬러 태그 필터(라벨·별점 필터와 독립 AND)(#27).
     show_exif: bool,
     show_hist: bool,
     full_raw: bool, // ORIG(원본 보기): 풀 RAW/최대 임베디드를 원본 크기로 디코딩
@@ -170,6 +219,7 @@ impl RawBlowApp {
             fullscreen: false,
             filter: Filter::All,
             star_filter: StarFilter::Any,
+            tag_filter: TagFilter::Any,
             show_exif: cfg.show_exif,
             show_hist: cfg.show_histogram,
             full_raw: false,
@@ -334,7 +384,9 @@ impl RawBlowApp {
             .iter()
             .enumerate()
             .filter(|(_, it)| {
-                self.filter.accepts(it.entry.label) && self.star_filter.accepts(it.entry.stars)
+                self.filter.accepts(it.entry.label)
+                    && self.star_filter.accepts(it.entry.stars)
+                    && self.tag_filter.accepts(it.entry.tag)
             })
             .map(|(i, _)| i)
             .collect()
@@ -628,6 +680,38 @@ impl RawBlowApp {
         c
     }
 
+    /// 컬러 태그(#27) 설정. 라벨·별점과 독립. 그리드 다중 선택 중이면 선택 전부에 일괄 적용.
+    /// 같은 태그 재입력 시 무태그(None)로 토글. 보조 축이라 자동진행은 하지 않는다.
+    fn set_tag(&mut self, tag: ColorTag) {
+        if self.view == ViewMode::Grid && !self.selected.is_empty() {
+            let targets: Vec<usize> = self.selected.iter().copied().collect();
+            for real in targets {
+                if let Some(it) = self.items.get_mut(real) {
+                    it.entry.tag = tag;
+                }
+            }
+            self.sidecar_dirty = true;
+            return;
+        }
+        if let Some(real) = self.current_real() {
+            if let Some(it) = self.items.get_mut(real) {
+                it.entry.tag = if it.entry.tag == tag { ColorTag::None } else { tag };
+                self.sidecar_dirty = true;
+            }
+        }
+    }
+
+    /// 태그별 항목 수 `[Red, Yellow, Green, Blue, Purple]`(전체 items 기준, 무태그 제외)(#27).
+    fn tag_counts(&self) -> [usize; 5] {
+        let mut c = [0usize; 5];
+        for it in &self.items {
+            if let Some(i) = it.entry.tag.index() {
+                c[i] += 1;
+            }
+        }
+        c
+    }
+
     fn advance(&mut self, delta: i64) {
         let len = self.filtered().len();
         if len == 0 {
@@ -877,6 +961,14 @@ impl RawBlowApp {
                         Key::E if cmd => self.open_transfer(), // Ctrl/⌘E 전송
                         Key::E => self.set_label(Label::Reject),
                         Key::R => self.set_label(Label::Unrated),
+                        // 컬러 태그(#27): Shift+1~5 = 5색(Red/Yellow/Green/Blue/Purple), Shift+0 = 해제.
+                        // 별점(1~5)·라벨(QWER)과 독립. shift 아래 별점 arm보다 먼저 와야 가로채진다.
+                        Key::Num1 if modifiers.shift && !cmd => self.set_tag(ColorTag::Red),
+                        Key::Num2 if modifiers.shift && !cmd => self.set_tag(ColorTag::Yellow),
+                        Key::Num3 if modifiers.shift && !cmd => self.set_tag(ColorTag::Green),
+                        Key::Num4 if modifiers.shift && !cmd => self.set_tag(ColorTag::Blue),
+                        Key::Num5 if modifiers.shift && !cmd => self.set_tag(ColorTag::Purple),
+                        Key::Num0 if modifiers.shift && !cmd => self.set_tag(ColorTag::None),
                         // 별점(#23): 1~5로 지정, `(백틱)으로 해제. 라벨(QWER)과 독립·중복 사용 가능.
                         // !cmd 가드: ⌘/Ctrl+숫자(타 앱 탭 전환 습관 등)가 실수로 별점을 매기지 않게.
                         Key::Num1 if !cmd => self.set_stars(1, true),
@@ -1189,6 +1281,57 @@ impl RawBlowApp {
                     self.set_stars(n, false);
                 }
 
+                // ── Color tag (#27) ── 라벨·별점과 독립. 현재 항목에 5색 중 하나 부여/해제(⇧1~5).
+                section_head(ui, "Color", Some("⇧1–5"));
+                let cur_tag = self
+                    .current_real()
+                    .and_then(|r| self.items.get(r))
+                    .map(|i| i.entry.tag)
+                    .unwrap_or(ColorTag::None);
+                let tag_cnt_in = self.tag_counts();
+                let tag_names: Vec<String> =
+                    ColorTag::ALL.iter().map(|t| self.cfg.tag_label(*t, lang)).collect();
+                let mut clicked_tag: Option<ColorTag> = None;
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    for (i, tag) in ColorTag::ALL.iter().enumerate() {
+                        let rgb = tag.color_rgb().unwrap_or([0x6b, 0x72, 0x80]);
+                        let col = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                        let active = cur_tag == *tag;
+                        let (r, resp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
+                        ui.painter().circle_filled(r.center(), if active { 9.0 } else { 6.5 }, col);
+                        if active {
+                            ui.painter().circle_stroke(r.center(), 10.0, Stroke::new(1.5, theme::INK));
+                        }
+                        if resp.clicked() {
+                            clicked_tag = Some(*tag);
+                        }
+                        if resp.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        resp.on_hover_text(format!("{} · {}", tag_names[i], tag_cnt_in[i]));
+                    }
+                    ui.add_space(6.0);
+                    let (cr, cresp) = ui.allocate_exact_size(Vec2::new(28.0, 22.0), Sense::click());
+                    ui.painter().text(
+                        cr.center(),
+                        Align2::CENTER_CENTER,
+                        tr(lang, "해제"),
+                        prop(10.5),
+                        if cresp.hovered() { theme::INK } else { theme::INK3 },
+                    );
+                    if cresp.clicked() {
+                        clicked_tag = Some(ColorTag::None);
+                    }
+                    if cresp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                });
+                if let Some(t) = clicked_tag {
+                    self.set_tag(t);
+                }
+
                 section_head(ui, "Progress", None);
                 ui.horizontal(|ui| {
                     ui.add_space(14.0);
@@ -1268,6 +1411,53 @@ impl RawBlowApp {
                     self.index = 0;
                 }
 
+                // 컬러 태그 필터(#27): 라벨·별점 필터와 독립 AND. 특정 색만 표시. `전체`=태그 무시.
+                section_head(ui, "Filter Color", None);
+                let tag_sel = self.tag_filter;
+                let tcnt = self.tag_counts();
+                let mut new_tag_filter: Option<TagFilter> = None;
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    let active = tag_sel == TagFilter::Any;
+                    let (r, resp) = ui.allocate_exact_size(Vec2::new(30.0, 22.0), Sense::click());
+                    if active {
+                        ui.painter().rect_filled(r, Rounding::same(4.0), theme::BG3);
+                    }
+                    ui.painter().text(r.center(), Align2::CENTER_CENTER, tr(lang, "전체"), prop(11.0), if active { theme::INK } else { theme::INK2 });
+                    if resp.clicked() {
+                        new_tag_filter = Some(TagFilter::Any);
+                    }
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    for (i, tag) in ColorTag::ALL.iter().enumerate() {
+                        let active = tag_sel == TagFilter::Only(*tag);
+                        let empty = tcnt[i] == 0;
+                        let (r, resp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
+                        if active {
+                            ui.painter().rect_filled(r, Rounding::same(4.0), theme::BG3);
+                        }
+                        let rgb = tag.color_rgb().unwrap_or([0x6b, 0x72, 0x80]);
+                        let mut col = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                        if empty && !active {
+                            col = widgets::with_alpha(col, 64);
+                        }
+                        ui.painter().circle_filled(r.center(), 6.5, col);
+                        if resp.clicked() {
+                            new_tag_filter =
+                                Some(if active { TagFilter::Any } else { TagFilter::Only(*tag) });
+                        }
+                        if resp.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                    }
+                });
+                if let Some(tf) = new_tag_filter {
+                    self.tag_filter = tf;
+                    self.index = 0;
+                }
+
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                     ui.add_space(8.0);
                     let saved = if self.sidecar_dirty { "● saving…" } else { "● saved" };
@@ -1342,6 +1532,7 @@ impl RawBlowApp {
                             focused: false,
                             selected: false,
                             stars: it.entry.stars,
+                            tag: it.entry.tag,
                         };
                         draw_thumb(ui, rect, tex, tsize, &info);
                         if resp.clicked() {
@@ -1598,6 +1789,7 @@ impl RawBlowApp {
                             focused: false,
                             selected: self.selected.contains(&real),
                             stars: it.entry.stars,
+                            tag: it.entry.tag,
                         };
                         draw_thumb(ui, rect, tex, tsize, &info);
                         if resp.clicked() {
@@ -1652,6 +1844,9 @@ impl RawBlowApp {
         let mut do_cancel = false;
         let (pick, hold, reject, unrated) = self.counts();
         let star_cnt = self.star_counts();
+        let tag_cnt = self.tag_counts();
+        let tag_names: Vec<String> =
+            ColorTag::ALL.iter().map(|t| self.cfg.tag_label(*t, lang)).collect();
 
         // 뒤 화면 어둡게(dim) + 클릭 차단. Middle 레이어 → 패널 위, 카드(Foreground) 아래.
         let screen = ctx.screen_rect();
@@ -1669,11 +1864,14 @@ impl RawBlowApp {
             entries: &entries,
             labels: st.labels.clone(),
             stars: st.stars.clone(),
+            tags: st.tags.clone(),
             action: st.action,
             companions: st.companions,
             dest: PathBuf::from(&st.dest),
             split_by_label: st.split_by_label,
+            split_by_tag: st.split_by_tag,
             conflict: st.conflict,
+            rename: st.rename_rule(),
         });
         let raw_n = plan.iter().filter(|(p, _, _)| rawblow_core::model::kind_of(p) == Some(rawblow_core::model::Kind::Raw)).count();
         let img_n = plan.len().saturating_sub(raw_n);
@@ -1756,6 +1954,28 @@ impl RawBlowApp {
                                 ui.label(egui::RichText::new(tr(lang, "라벨 또는 별점 중 하나라도 해당하면 전송됩니다(합집합).")).font(mono(10.0)).color(theme::INK4));
                                 ui.add_space(16.0);
 
+                                // 컬러 태그 기준(#27): 라벨·별점과 합집합(OR). 태그별 하위폴더 분기 옵션.
+                                section_label(ui, "COLOR TAGS");
+                                ui.horizontal_wrapped(|ui| {
+                                    for (i, tag) in ColorTag::ALL.iter().enumerate() {
+                                        let on = st.tags.contains(tag);
+                                        let rgb = tag.color_rgb().unwrap_or([0x6b, 0x72, 0x80]);
+                                        let col = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                                        if check_chip(ui, &tag_names[i], Some(tag_cnt[i]), col, on) {
+                                            if on {
+                                                st.tags.retain(|t| t != tag);
+                                            } else {
+                                                st.tags.push(*tag);
+                                            }
+                                        }
+                                    }
+                                });
+                                ui.add_space(8.0);
+                                if check_chip(ui, tr(lang, "태그별 하위폴더로 분기 (@green …)"), None, theme::ACCENT, st.split_by_tag) {
+                                    st.split_by_tag = !st.split_by_tag;
+                                }
+                                ui.add_space(16.0);
+
                                 section_label(ui, "ACTION");
                                 let act_sel = if st.action == Action::Copy { 0 } else { 1 };
                                 if let Some(i) = segmented(ui, &[("Copy", tr(lang, "원본 유지")), ("Move", tr(lang, "원본 이동"))], act_sel) {
@@ -1786,6 +2006,59 @@ impl RawBlowApp {
                                 let conf_sel = if st.conflict == ConflictPolicy::AutoIncrement { 0 } else { 1 };
                                 if let Some(i) = segmented(ui, &[(tr(lang, "자동 일련번호"), tr(lang, "_001 접미")), (tr(lang, "건너뛰기"), tr(lang, "기존 유지"))], conf_sel) {
                                     st.conflict = if i == 0 { ConflictPolicy::AutoIncrement } else { ConflictPolicy::Skip };
+                                }
+                                ui.add_space(16.0);
+
+                                // 분류 기반 파일명 변경(#26): 프리셋 + 자유 템플릿 + 라이브 프리뷰.
+                                section_label(ui, "RENAME");
+                                let modes: [(RenameMode, &str); 4] = [
+                                    (RenameMode::Off, tr(lang, "원본 유지")),
+                                    (RenameMode::Seq, tr(lang, "순번 (1,2,3)")),
+                                    (RenameMode::Grade, tr(lang, "별점등급 (A1,B1…)")),
+                                    (RenameMode::Custom, tr(lang, "직접 입력")),
+                                ];
+                                ui.horizontal_wrapped(|ui| {
+                                    for (mode, label) in modes {
+                                        if check_chip(ui, label, None, theme::ACCENT, st.rename_mode == mode) {
+                                            st.rename_mode = mode;
+                                        }
+                                    }
+                                });
+                                if st.rename_mode == RenameMode::Custom {
+                                    ui.add_space(6.0);
+                                    ui.horizontal(|ui| {
+                                        ui.add(egui::TextEdit::singleline(&mut st.rename_template).font(mono(12.0)).desired_width(330.0).hint_text("{gradeseq}_{orig}"));
+                                        let num_sel = if st.rename_numbering == Numbering::Order { 0 } else { 1 };
+                                        if let Some(i) = segmented(ui, &[(tr(lang, "선택순"), tr(lang, "선택 순서")), (tr(lang, "등급순"), tr(lang, "별점 등급"))], num_sel) {
+                                            st.rename_numbering = if i == 0 { Numbering::Order } else { Numbering::GradeGrouped };
+                                        }
+                                    });
+                                    ui.add_space(3.0);
+                                    ui.label(egui::RichText::new("{seq} {seq:03} {grade} {gradeseq} {stars} {label} {tag} {orig}").font(mono(9.0)).color(theme::INK4));
+                                }
+                                if st.rename_mode != RenameMode::Off {
+                                    let preview_req = TransferRequest {
+                                        entries: &entries,
+                                        labels: st.labels.clone(),
+                                        stars: st.stars.clone(),
+                                        tags: st.tags.clone(),
+                                        action: st.action,
+                                        companions: st.companions,
+                                        dest: PathBuf::new(),
+                                        split_by_label: false,
+                                        split_by_tag: false,
+                                        conflict: st.conflict,
+                                        rename: st.rename_rule(),
+                                    };
+                                    let pv = transfer::rename_preview(&preview_req, 4);
+                                    ui.add_space(6.0);
+                                    if pv.is_empty() {
+                                        ui.label(egui::RichText::new(tr(lang, "대상 없음 — 위에서 라벨·별점·태그를 선택하세요.")).font(mono(9.5)).color(theme::INK4));
+                                    } else {
+                                        for (old, new) in &pv {
+                                            ui.label(egui::RichText::new(format!("{}  →  {}", old, new)).font(mono(9.5)).color(theme::INK3));
+                                        }
+                                    }
                                 }
                             });
                         hline_full(ui);
@@ -1842,11 +2115,14 @@ impl RawBlowApp {
                 entries: &entries,
                 labels: st.labels.clone(),
                 stars: st.stars.clone(),
+                tags: st.tags.clone(),
                 action: st.action,
                 companions: st.companions,
                 dest: PathBuf::from(&st.dest),
                 split_by_label: st.split_by_label,
+                split_by_tag: st.split_by_tag,
                 conflict: st.conflict,
+                rename: st.rename_rule(),
             };
             let report = transfer::execute(&req);
             let dest = PathBuf::from(&st.dest);
@@ -2228,6 +2504,25 @@ impl RawBlowApp {
                     ui.label(egui::RichText::new(tr(lang, "단축키 재바인딩 UI는 v1.1 예정 — 현재 기본값 QWER 고정 표시")).font(mono(10.0)).color(theme::INK4));
                     ui.add_space(6.0);
                     ui.label(egui::RichText::new(tr(lang, "별점 1~5 지정 · ` (백틱)으로 해제 — 라벨(QWER)과 독립으로 동시에 매겨집니다")).font(mono(10.0)).color(theme::INK4));
+
+                    // ── COLOR TAGS (#27): 색별 커스텀 이름. 비우면 기본 색 이름 표시 ──
+                    ui.add_space(18.0);
+                    ui.label(egui::RichText::new("COLOR TAGS").font(prop(11.0)).color(theme::INK3));
+                    ui.add_space(2.0);
+                    ui.label(egui::RichText::new(tr(lang, "색별 이름을 지정해 보정 방식 등 나만의 분류로 — ⇧1~5로 부여")).font(mono(10.0)).color(theme::INK4));
+                    ui.add_space(4.0);
+                    for (i, tag) in ColorTag::ALL.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            let rgb = tag.color_rgb().unwrap_or([0x6b, 0x72, 0x80]);
+                            let (r, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
+                            ui.painter().circle_filled(r.center(), 6.0, Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.cfg.tag_names[i])
+                                    .hint_text(tag.default_name(lang))
+                                    .desired_width(220.0),
+                            );
+                        });
+                    }
 
                     // ── CACHE (#22): 썸네일 디스크 캐시 사용량 + 비우기 ──
                     ui.add_space(18.0);

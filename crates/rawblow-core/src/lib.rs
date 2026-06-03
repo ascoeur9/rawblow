@@ -14,4 +14,6 @@ pub mod scan;
 pub mod sidecar;
 pub mod transfer;
 
-pub use model::{Entry, Filter, Label, MatchMode, SortOrder, StarFilter, ViewMode};
+pub use model::{
+    ColorTag, Entry, Filter, Label, MatchMode, SortOrder, StarFilter, TagFilter, ViewMode,
+};

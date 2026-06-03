@@ -3,7 +3,7 @@
 
 use crate::theme;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Rounding, Stroke, Ui, Vec2};
-use rawblow_core::Label;
+use rawblow_core::{ColorTag, Label};
 use std::collections::{HashMap, VecDeque};
 
 /// 사진 위 HUD 텍스트: 카드 배경 없이 그림자를 흉내내려 두 번 그린다(핸드오프 CRITICAL).
@@ -114,8 +114,9 @@ pub struct ThumbInfo {
     pub raw_only: bool,  // RAW 단독
     pub active: bool,
     pub focused: bool,
-    pub selected: bool, // 다중 선택됨
-    pub stars: u8,      // 별점(0~5, #23)
+    pub selected: bool,  // 다중 선택됨
+    pub stars: u8,       // 별점(0~5, #23)
+    pub tag: ColorTag,   // 컬러 태그(#27)
 }
 
 /// 주어진 rect에 썸네일을 그린다. 텍스처가 있으면 이미지를, 없으면 플레이스홀더.
@@ -190,6 +191,12 @@ pub fn draw_thumb(ui: &Ui, rect: Rect, tex: Option<egui::TextureId>, size: Vec2,
         );
         p.rect_filled(badge, Rounding::same(2.0), Color32::from_black_alpha(170));
         p.text(badge.center(), Align2::CENTER_CENTER, &txt, font, theme::HOLD);
+    }
+    // 컬러 태그 점(BR, #27): 라벨(TL)·RAW(TR)·별점(BL)과 위치가 겹치지 않는다.
+    if let Some(rgb) = info.tag.color_rgb() {
+        let c = Pos2::new(rect.right() - 8.0, rect.bottom() - 8.0);
+        p.circle_filled(c, 4.0, Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+        p.circle_stroke(c, 4.0, Stroke::new(1.0, Color32::from_black_alpha(120)));
     }
 }
 
