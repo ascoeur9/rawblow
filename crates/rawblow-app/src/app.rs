@@ -124,6 +124,8 @@ pub struct RawBlowApp {
     index: usize, // 필터된 목록 기준 위치
     view: ViewMode,
     fullscreen: bool,
+    /// OS 창 풀스크린이 `fullscreen`에 반영된 상태(#31). 변할 때만 ViewportCommand 전송.
+    fs_applied: bool,
     filter: Filter,
     star_filter: StarFilter, // 별점 필터(라벨 필터와 독립 AND).
     tag_filter: TagFilter,   // 컬러 태그 필터(라벨·별점 필터와 독립 AND)(#27).
@@ -217,6 +219,7 @@ impl RawBlowApp {
             lang,
             view: ViewMode::Single,
             fullscreen: false,
+            fs_applied: false,
             filter: Filter::All,
             star_filter: StarFilter::Any,
             tag_filter: TagFilter::Any,
@@ -858,6 +861,13 @@ impl eframe::App for RawBlowApp {
             self.handle_keys(ctx);
         }
 
+        // OS 창 풀스크린을 self.fullscreen에 동기화(#31). 토글 출처(F11·버튼·Esc) 무관하게 한 곳에서
+        // 처리해 ViewportCommand를 상태가 바뀔 때만 보낸다(매 프레임 전송 금지).
+        if self.fullscreen != self.fs_applied {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+            self.fs_applied = self.fullscreen;
+        }
+
         if let Some(real) = self.current_real() {
             self.ensure_exif(real);
         }
@@ -1159,6 +1169,10 @@ impl RawBlowApp {
                     }
                     if toggle_btn(ui, "ORIG", self.full_raw).clicked() {
                         self.full_raw = !self.full_raw;
+                    }
+                    // 전체화면 토글(#31). 버튼/F11 어느 쪽이든 OS 창 풀스크린으로(update에서 동기화).
+                    if toggle_btn(ui, "Full · F11", self.fullscreen).clicked() {
+                        self.fullscreen = !self.fullscreen;
                     }
                     vsep(ui);
                     if toggle_btn(ui, "EXIF", self.show_exif).clicked() {
