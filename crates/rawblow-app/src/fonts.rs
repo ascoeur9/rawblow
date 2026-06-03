@@ -39,36 +39,45 @@ fn cjk_candidates() -> Vec<&'static str> {
     }
 }
 
-/// 첫 번째로 읽히는 CJK 폰트를 (이름, 바이트)로 반환.
-fn load_cjk() -> Option<(String, Vec<u8>)> {
+/// 존재하는 CJK 폰트를 **여러 개**(폴백 체인용) (이름, 바이트)로 반환한다(최대 3개).
+/// 단일 폰트만 쓰면 한국어 폰트(Windows malgun)에 일본어 신자체(黄/緑/青 등) 글리프가 없어
+/// 두부(□)로 깨진다. 한국어 폰트를 앞에, 일본어 폰트를 뒤 폴백으로 두면 한 폰트에 없는 글리프가
+/// 다음 폰트로 채워진다(언어 무관 자동). 후보 목록은 한국어 우선·일본어 폴백 순으로 정렬돼 있다.
+fn load_cjk_fonts() -> Vec<(String, Vec<u8>)> {
+    let mut out: Vec<(String, Vec<u8>)> = Vec::new();
     for path in cjk_candidates() {
         if let Ok(bytes) = std::fs::read(path) {
-            if !bytes.is_empty() {
-                return Some(("cjk".to_string(), bytes));
+            if !bytes.is_empty() && !out.iter().any(|(_, b)| b.len() == bytes.len()) {
+                out.push((format!("cjk{}", out.len()), bytes));
+                if out.len() >= 3 {
+                    break;
+                }
             }
         }
     }
-    None
+    out
 }
 
 /// CJK 폰트를 egui에 설치한다. 없으면 기본 폰트만(라틴) 사용.
 pub fn install(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
-    if let Some((name, bytes)) = load_cjk() {
+    let loaded = load_cjk_fonts();
+    let names: Vec<String> = loaded.iter().map(|(n, _)| n.clone()).collect();
+    for (name, bytes) in loaded {
         // `Arc<T>: From<T>` 이므로 `.into()`가 egui 버전과 무관하게 동작.
-        fonts
-            .font_data
-            .insert(name.clone(), FontData::from_owned(bytes).into());
-        fonts
-            .families
-            .entry(FontFamily::Proportional)
-            .or_default()
-            .insert(0, name.clone());
-        fonts
-            .families
-            .entry(FontFamily::Monospace)
-            .or_default()
-            .push(name);
+        fonts.font_data.insert(name, FontData::from_owned(bytes).into());
+    }
+    if !names.is_empty() {
+        // Proportional: CJK 폰트들을 선두에 순서대로(앞이 우선, 뒤가 폴백) → 그다음 egui 기본(라틴).
+        let prop = fonts.families.entry(FontFamily::Proportional).or_default();
+        for (i, name) in names.iter().enumerate() {
+            prop.insert(i, name.clone());
+        }
+        // Monospace: 라틴은 기본 고정폭, CJK 문자는 뒤의 cjk 폰트들로 폴백.
+        let mono = fonts.families.entry(FontFamily::Monospace).or_default();
+        for name in &names {
+            mono.push(name.clone());
+        }
     }
     ctx.set_fonts(fonts);
 }

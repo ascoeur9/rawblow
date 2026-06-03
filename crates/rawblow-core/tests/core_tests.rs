@@ -761,8 +761,8 @@ fn transfer_tag_union_and_split_subfolder() {
     let mut entries = scan::scan_folder(&src, false, rawblow_core::SortOrder::Name);
     for e in entries.iter_mut() {
         e.tag = match e.stem.as_str() {
-            "G" => ColorTag::Green,
-            "R" => ColorTag::Red,
+            "G" => ColorTag::Teal,
+            "R" => ColorTag::Orange,
             _ => ColorTag::None,
         };
     }
@@ -770,7 +770,7 @@ fn transfer_tag_union_and_split_subfolder() {
         entries: &entries,
         labels: vec![],
         stars: vec![],
-        tags: vec![ColorTag::Green], // Green만 선택
+        tags: vec![ColorTag::Teal], // Teal만 선택
         action: transfer::Action::Copy,
         companions: transfer::Companions::Both,
         dest: dst.clone(),
@@ -780,9 +780,9 @@ fn transfer_tag_union_and_split_subfolder() {
         rename: None,
     };
     let report = transfer::execute(&req);
-    assert_eq!(report.transferred, 1, "Green만 전송");
-    assert!(dst.join("@green").join("G.JPG").exists(), "태그별 하위폴더");
-    assert!(!dst.join("@red").exists(), "선택 안 한 태그는 전송 안 됨");
+    assert_eq!(report.transferred, 1, "Teal만 전송");
+    assert!(dst.join("@teal").join("G.JPG").exists(), "태그별 하위폴더");
+    assert!(!dst.join("@orange").exists(), "선택 안 한 태그는 전송 안 됨");
 }
 
 /// #27: 사이드카가 태그를 보존(구버전 호환). 태그만 있는(라벨/별점 없는) 항목도 저장된다.
@@ -796,7 +796,7 @@ fn sidecar_tag_roundtrip() {
     let mut entries = scan::scan_folder(folder, false, rawblow_core::SortOrder::Name);
     for e in entries.iter_mut() {
         match e.stem.as_str() {
-            "ONLY_TAG" => e.tag = ColorTag::Green, // 라벨/별점 없이 태그만
+            "ONLY_TAG" => e.tag = ColorTag::Teal, // 라벨/별점 없이 태그만
             "PICKED" => e.label = Label::Pick,
             _ => {}
         }
@@ -808,7 +808,7 @@ fn sidecar_tag_roundtrip() {
     sidecar::apply(&session, &mut reloaded);
 
     let only = reloaded.iter().find(|e| e.stem == "ONLY_TAG").unwrap();
-    assert_eq!(only.tag, ColorTag::Green, "태그만 있는 항목도 저장·복원");
+    assert_eq!(only.tag, ColorTag::Teal, "태그만 있는 항목도 저장·복원");
     let picked = reloaded.iter().find(|e| e.stem == "PICKED").unwrap();
     assert_eq!(picked.label, Label::Pick);
     assert_eq!(picked.tag, ColorTag::None);

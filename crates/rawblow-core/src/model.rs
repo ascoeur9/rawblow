@@ -112,40 +112,42 @@ impl Label {
 
 /// 컬러 태그(#27): 라벨·별점과 **독립**된 3번째 분류축. 단일선택(한 항목에 한 색).
 /// 보정 방식 등 사용자가 의미를 부여(설정에서 색별 이름 지정 가능 — `Config.tag_names`).
+/// 색은 라벨 팔레트(pick=초록 / hold=황색 / reject=빨강 / unrated=회색)와 **겹치지 않게**
+/// 고른 5색(주황·분홍·청록·파랑·보라). 라벨 점과 태그 점이 한눈에 구분된다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ColorTag {
     #[default]
     None,
-    Red,
-    Yellow,
-    Green,
+    Orange,
+    Pink,
+    Teal,
     Blue,
     Purple,
 }
 
 impl ColorTag {
-    /// 부여 가능한 5색(레일·필터·전송 UI 순회용). `None`(무태그)은 제외.
+    /// 부여 가능한 5색(레일·필터·전송 UI 순회용, ⇧1~5 순서). `None`(무태그)은 제외.
     pub const ALL: [ColorTag; 5] = [
-        ColorTag::Red,
-        ColorTag::Yellow,
-        ColorTag::Green,
+        ColorTag::Orange,
+        ColorTag::Pink,
+        ColorTag::Teal,
         ColorTag::Blue,
         ColorTag::Purple,
     ];
 
-    /// 점/칩 색(무태그는 None). 라벨 팔레트와 톤을 맞춘 5색.
+    /// 점/칩 색(무태그는 None). 라벨 팔레트(초록·황색·빨강·회색)와 겹치지 않는 5색.
     pub fn color_rgb(self) -> Option<[u8; 3]> {
         Some(match self {
             ColorTag::None => return None,
-            ColorTag::Red => [0xf8, 0x71, 0x71],
-            ColorTag::Yellow => [0xfb, 0xbf, 0x24],
-            ColorTag::Green => [0x4a, 0xde, 0x80],
+            ColorTag::Orange => [0xfb, 0x92, 0x3c],
+            ColorTag::Pink => [0xf4, 0x72, 0xb6],
+            ColorTag::Teal => [0x2d, 0xd4, 0xbf],
             ColorTag::Blue => [0x60, 0xa5, 0xfa],
-            ColorTag::Purple => [0xa7, 0x8b, 0xfa],
+            ColorTag::Purple => [0xc0, 0x84, 0xfc],
         })
     }
 
-    /// 0-기반 색 인덱스(Red=0 … Purple=4). 무태그는 None. `Config.tag_names` 인덱싱에 사용.
+    /// 0-기반 색 인덱스(Orange=0 … Purple=4). 무태그는 None. `Config.tag_names` 인덱싱에 사용.
     pub fn index(self) -> Option<usize> {
         Self::ALL.iter().position(|&t| t == self)
     }
@@ -164,19 +166,19 @@ impl ColorTag {
                 Lang::En => "Untagged",
                 Lang::Ja => "タグなし",
             },
-            (Lang::Ko, ColorTag::Red) => "빨강",
-            (Lang::Ko, ColorTag::Yellow) => "노랑",
-            (Lang::Ko, ColorTag::Green) => "초록",
+            (Lang::Ko, ColorTag::Orange) => "주황",
+            (Lang::Ko, ColorTag::Pink) => "분홍",
+            (Lang::Ko, ColorTag::Teal) => "청록",
             (Lang::Ko, ColorTag::Blue) => "파랑",
             (Lang::Ko, ColorTag::Purple) => "보라",
-            (Lang::En, ColorTag::Red) => "Red",
-            (Lang::En, ColorTag::Yellow) => "Yellow",
-            (Lang::En, ColorTag::Green) => "Green",
+            (Lang::En, ColorTag::Orange) => "Orange",
+            (Lang::En, ColorTag::Pink) => "Pink",
+            (Lang::En, ColorTag::Teal) => "Teal",
             (Lang::En, ColorTag::Blue) => "Blue",
             (Lang::En, ColorTag::Purple) => "Purple",
-            (Lang::Ja, ColorTag::Red) => "赤",
-            (Lang::Ja, ColorTag::Yellow) => "黄",
-            (Lang::Ja, ColorTag::Green) => "緑",
+            (Lang::Ja, ColorTag::Orange) => "オレンジ",
+            (Lang::Ja, ColorTag::Pink) => "ピンク",
+            (Lang::Ja, ColorTag::Teal) => "ティール",
             (Lang::Ja, ColorTag::Blue) => "青",
             (Lang::Ja, ColorTag::Purple) => "紫",
         }
@@ -186,9 +188,9 @@ impl ColorTag {
     pub fn slug(self) -> &'static str {
         match self {
             ColorTag::None => "untagged",
-            ColorTag::Red => "red",
-            ColorTag::Yellow => "yellow",
-            ColorTag::Green => "green",
+            ColorTag::Orange => "orange",
+            ColorTag::Pink => "pink",
+            ColorTag::Teal => "teal",
             ColorTag::Blue => "blue",
             ColorTag::Purple => "purple",
         }

@@ -200,14 +200,16 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         ),
         "언어" => ("Language", "言語"),
         "시스템 (자동)" => ("System (Auto)", "システム (自動)"),
+        "전송" => ("Transfer", "転送"),
+        "일괄" => ("Bulk", "一括"),
         // #27 컬러 태그 / #26 리네임 UI
         "색별 이름을 지정해 보정 방식 등 나만의 분류로 — ⇧1~5로 부여" => (
             "Name each color for your own classification (e.g. retouch style) — assign with ⇧1–5",
             "色ごとに名前を付けて自分の分類に（補正方式など）— ⇧1～5で付与",
         ),
-        "태그별 하위폴더로 분기 (@green …)" => (
-            "Split into subfolders by tag (@green …)",
-            "タグ別サブフォルダに振り分け (@green …)",
+        "태그별 하위폴더로 분기 (@teal …)" => (
+            "Split into subfolders by tag (@teal …)",
+            "タグ別サブフォルダに振り分け (@teal …)",
         ),
         "순번 (1,2,3)" => ("Sequence (1,2,3)", "連番 (1,2,3)"),
         "별점등급 (A1,B1…)" => ("Rating grade (A1,B1…)", "評価ランク (A1,B1…)"),

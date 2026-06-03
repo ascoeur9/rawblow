@@ -973,9 +973,9 @@ impl RawBlowApp {
                         Key::R => self.set_label(Label::Unrated),
                         // 컬러 태그(#27): Shift+1~5 = 5색(Red/Yellow/Green/Blue/Purple), Shift+0 = 해제.
                         // 별점(1~5)·라벨(QWER)과 독립. shift 아래 별점 arm보다 먼저 와야 가로채진다.
-                        Key::Num1 if modifiers.shift && !cmd => self.set_tag(ColorTag::Red),
-                        Key::Num2 if modifiers.shift && !cmd => self.set_tag(ColorTag::Yellow),
-                        Key::Num3 if modifiers.shift && !cmd => self.set_tag(ColorTag::Green),
+                        Key::Num1 if modifiers.shift && !cmd => self.set_tag(ColorTag::Orange),
+                        Key::Num2 if modifiers.shift && !cmd => self.set_tag(ColorTag::Pink),
+                        Key::Num3 if modifiers.shift && !cmd => self.set_tag(ColorTag::Teal),
                         Key::Num4 if modifiers.shift && !cmd => self.set_tag(ColorTag::Blue),
                         Key::Num5 if modifiers.shift && !cmd => self.set_tag(ColorTag::Purple),
                         Key::Num0 if modifiers.shift && !cmd => self.set_tag(ColorTag::None),
@@ -1134,15 +1134,15 @@ impl RawBlowApp {
                     ui.add_space(6.0);
                     vsep(ui);
                     // 폴더 열기(이슈 #2: 폴더 연 상태에서 다른 폴더 여는 버튼 없음 — ⌘O를 못 찾음).
-                    if toggle_btn(ui, &format!("{} ⌘O", tr(lang, "폴더 열기")), false).clicked() {
+                    if toggle_btn(ui, &format!("{} (⌘O)", tr(lang, "폴더 열기")), false).clicked() {
                         self.pick_folder();
                     }
                     vsep(ui);
                     let single = self.view == ViewMode::Single;
-                    if toggle_btn(ui, "Single", single).clicked() {
+                    if toggle_btn(ui, "Single (T)", single).clicked() {
                         self.view = ViewMode::Single;
                     }
-                    if toggle_btn(ui, "Grid", !single).clicked() {
+                    if toggle_btn(ui, "Grid (T)", !single).clicked() {
                         self.view = ViewMode::Grid;
                     }
                     vsep(ui);
@@ -1158,46 +1158,44 @@ impl RawBlowApp {
                     }
                     vsep(ui);
 
-                    if toggle_btn(ui, "Fit", self.fit).clicked() {
+                    if toggle_btn(ui, "Fit (Space)", self.fit).clicked() {
                         self.fit = true;
                         self.pan = Vec2::ZERO;
                     }
-                    if toggle_btn(ui, "1:1", !self.fit && (self.zoom - 1.0).abs() < 0.01).clicked() {
+                    if toggle_btn(ui, "1:1 (Space)", !self.fit && (self.zoom - 1.0).abs() < 0.01).clicked() {
                         self.fit = false;
                         self.zoom = 1.0;
                         self.pan = Vec2::ZERO;
                     }
-                    if toggle_btn(ui, "ORIG", self.full_raw).clicked() {
+                    if toggle_btn(ui, "ORIG (D)", self.full_raw).clicked() {
                         self.full_raw = !self.full_raw;
                     }
                     // 전체화면 토글(#31). 버튼/F11 어느 쪽이든 OS 창 풀스크린으로(update에서 동기화).
-                    if toggle_btn(ui, "Full · F11", self.fullscreen).clicked() {
+                    if toggle_btn(ui, "Full (F11)", self.fullscreen).clicked() {
                         self.fullscreen = !self.fullscreen;
                     }
                     vsep(ui);
-                    if toggle_btn(ui, "EXIF", self.show_exif).clicked() {
+                    if toggle_btn(ui, "EXIF (I)", self.show_exif).clicked() {
                         self.show_exif = !self.show_exif;
                     }
-                    if toggle_btn(ui, "Hist", self.show_hist).clicked() {
+                    if toggle_btn(ui, "Hist (H)", self.show_hist).clicked() {
                         self.show_hist = !self.show_hist;
                     }
-                    if toggle_btn(ui, &format!("Filter · {}", self.filter.name(lang)), false).clicked() {
-                        self.filter = self.filter.next();
-                    }
+                    // (필터 변경은 좌측 레일에서 전담 — 상단 Filter 버튼 제거, #toolbar feedback)
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .add(egui::Button::new(egui::RichText::new(" Transfer  ⌘E ").color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT))
+                            .add(egui::Button::new(egui::RichText::new(format!(" {} (⌘E) ", tr(lang, "전송"))).color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT))
                             .clicked()
                         {
                             self.open_transfer();
                         }
-                        if toggle_btn(ui, "Jump · G", false).clicked() {
+                        if toggle_btn(ui, &format!("{} (G)", tr(lang, "점프")), false).clicked() {
                             self.jump_open = true;
                         }
                         // 그리드 모드 한정: 파일명으로 일괄 라벨링(#3).
                         if self.view == ViewMode::Grid
-                            && toggle_btn(ui, "Bulk · B", false).clicked()
+                            && toggle_btn(ui, &format!("{} (B)", tr(lang, "일괄")), false).clicked()
                         {
                             self.bulk_open = true;
                             self.bulk_searched = false;
@@ -1985,7 +1983,7 @@ impl RawBlowApp {
                                     }
                                 });
                                 ui.add_space(8.0);
-                                if check_chip(ui, tr(lang, "태그별 하위폴더로 분기 (@green …)"), None, theme::ACCENT, st.split_by_tag) {
+                                if check_chip(ui, tr(lang, "태그별 하위폴더로 분기 (@teal …)"), None, theme::ACCENT, st.split_by_tag) {
                                     st.split_by_tag = !st.split_by_tag;
                                 }
                                 ui.add_space(16.0);
