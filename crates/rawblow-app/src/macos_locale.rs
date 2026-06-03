@@ -21,3 +21,26 @@ pub fn align_with_system() {
         let _: () = msg_send![defaults, setObject:langs forKey:key];
     }
 }
+
+/// 시스템 선호 언어 코드(예: "ko-KR", "ja-JP", "en-US")의 첫 항목. UI 언어 자동 선택(#30)에 쓴다.
+pub fn preferred_language() -> Option<String> {
+    unsafe {
+        let langs: *mut Object = msg_send![class!(NSLocale), preferredLanguages];
+        if langs.is_null() {
+            return None;
+        }
+        let count: usize = msg_send![langs, count];
+        if count == 0 {
+            return None;
+        }
+        let first: *mut Object = msg_send![langs, objectAtIndex: 0usize];
+        if first.is_null() {
+            return None;
+        }
+        let utf8: *const std::os::raw::c_char = msg_send![first, UTF8String];
+        if utf8.is_null() {
+            return None;
+        }
+        Some(std::ffi::CStr::from_ptr(utf8).to_string_lossy().into_owned())
+    }
+}

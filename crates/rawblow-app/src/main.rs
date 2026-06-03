@@ -3,6 +3,7 @@
 
 mod app;
 mod fonts;
+mod i18n;
 mod logo;
 #[cfg(target_os = "macos")]
 mod macos_locale;

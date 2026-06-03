@@ -69,13 +69,33 @@ pub enum Label {
 }
 
 impl Label {
-    /// 사람이 읽는 한국어 표기.
+    /// 사람이 읽는 한국어 표기. (사이드카 TXT 등 언어 무관 데이터에 사용 — 안정적으로 한국어 유지.)
     pub fn ko(self) -> &'static str {
         match self {
             Label::Unrated => "미선택",
             Label::Pick => "선택",
             Label::Hold => "보류",
             Label::Reject => "제외",
+        }
+    }
+
+    /// UI 표시용 다국어 라벨명(#30).
+    pub fn name(self, lang: crate::config::Lang) -> &'static str {
+        use crate::config::Lang;
+        match lang {
+            Lang::Ko => self.ko(),
+            Lang::En => match self {
+                Label::Unrated => "Unrated",
+                Label::Pick => "Pick",
+                Label::Hold => "Hold",
+                Label::Reject => "Reject",
+            },
+            Lang::Ja => match self {
+                Label::Unrated => "未選択",
+                Label::Pick => "選択",
+                Label::Hold => "保留",
+                Label::Reject => "除外",
+            },
         }
     }
 
@@ -213,6 +233,28 @@ impl Filter {
             Filter::Hold => "보류",
             Filter::Reject => "제외",
             Filter::Unrated => "미선택",
+        }
+    }
+
+    /// UI 표시용 다국어 필터명(#30).
+    pub fn name(self, lang: crate::config::Lang) -> &'static str {
+        use crate::config::Lang;
+        match lang {
+            Lang::Ko => self.ko(),
+            Lang::En => match self {
+                Filter::All => "All",
+                Filter::Pick => "Pick",
+                Filter::Hold => "Hold",
+                Filter::Reject => "Reject",
+                Filter::Unrated => "Unrated",
+            },
+            Lang::Ja => match self {
+                Filter::All => "すべて",
+                Filter::Pick => "選択",
+                Filter::Hold => "保留",
+                Filter::Reject => "除外",
+                Filter::Unrated => "未選択",
+            },
         }
     }
 }

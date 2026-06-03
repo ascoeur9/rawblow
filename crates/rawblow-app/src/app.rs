@@ -1,12 +1,13 @@
 //! RawBlow GUI 본체. 핸드오프 디자인(Studio 기본 / Cinema 풀스크린)을 egui로 구현.
 
+use crate::i18n::{tr, trf};
 use crate::theme;
 use crate::widgets::{self, draw_thumb, hud_text, kbd, mono, prop, section_head, ThumbInfo, TexCache};
 use crate::worker::{DecodeRequest, Worker};
 use eframe::egui;
 use egui::{Align, Align2, Color32, Layout, Pos2, Rect, Rounding, Sense, Stroke, Vec2};
 use rawblow_core::cache;
-use rawblow_core::config::{self, Config};
+use rawblow_core::config::{self, Config, Lang};
 use rawblow_core::meta::{read_exif, ExifInfo};
 use rawblow_core::transfer::{self, Action, Companions, ConflictPolicy, TransferReport, TransferRequest};
 use rawblow_core::{scan, sidecar, Entry, Filter, Label, MatchMode, SortOrder, StarFilter, ViewMode};
@@ -136,6 +137,9 @@ pub struct RawBlowApp {
     // 성능 표시
     last_frame: Instant,
     frame_ms: f32,
+
+    // UI 표시 언어(#30). cfg.lang(저장값) 또는 OS 감지값으로 시작 시 결정, 설정에서 변경.
+    lang: Lang,
 }
 
 impl RawBlowApp {
@@ -157,8 +161,11 @@ impl RawBlowApp {
                     .unwrap_or(4)
             });
         let worker = Worker::new(threads, config::cache_dir());
+        // UI 언어(#30): 저장값(cfg.lang) 있으면 그걸, 없으면 OS 언어 감지.
+        let lang = crate::i18n::effective_lang(&cfg);
 
         let mut app = RawBlowApp {
+            lang,
             view: ViewMode::Single,
             fullscreen: false,
             filter: Filter::All,
@@ -279,7 +286,7 @@ impl RawBlowApp {
         self.cfg.push_recent(&folder.to_string_lossy());
         let _ = config::save(&self.cfg);
         self.folder = Some(folder);
-        self.toast = Some((format!("{} 항목 로드", self.items.len()), Instant::now()));
+        self.toast = Some((trf(self.lang, "{} 항목 로드", &[&self.items.len().to_string()]), Instant::now()));
         self.schedule_cache_trim(); // 폴더 열 때 캐시 상한 정리(다른/오래된 폴더 썸네일 회수).
         // 프리페치는 폴더 전체가 아니라 현재 위치 주변 윈도우만(update에서 매 프레임 슬라이드).
     }
@@ -942,6 +949,7 @@ impl RawBlowApp {
 
     // ── Open Folder 화면 ──────────────────────────────────
     fn ui_open(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(theme::BG1))
             .show(ctx, |ui| {
@@ -953,14 +961,14 @@ impl RawBlowApp {
                     ui.add_space(14.0);
                     ui.label(egui::RichText::new("RawBlow").font(prop(30.0)).color(theme::INK));
                     ui.label(
-                        egui::RichText::new("FAST RAW CULLING · 사진 셀렉 뷰어")
+                        egui::RichText::new(format!("FAST RAW CULLING · {}", tr(lang, "사진 셀렉 뷰어")))
                             .font(mono(11.0))
                             .color(theme::INK3),
                     );
                     ui.add_space(28.0);
                     if ui
                         .add(egui::Button::new(
-                            egui::RichText::new("  폴더 열기 (Open Folder)  ⌘O  ").color(Color32::from_rgb(0x0a, 0x14, 0x20)),
+                            egui::RichText::new(format!("  {}  ⌘O  ", tr(lang, "폴더 열기"))).color(Color32::from_rgb(0x0a, 0x14, 0x20)),
                         ).fill(theme::ACCENT))
                         .clicked()
                     {
@@ -1012,6 +1020,7 @@ impl RawBlowApp {
     }
 
     fn ui_toolbar(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
         egui::TopBottomPanel::top("toolbar")
             .exact_height(TOOLBAR_H)
             .frame(egui::Frame::none().fill(theme::BG1).inner_margin(egui::Margin::symmetric(12.0, 6.0)))
@@ -1023,7 +1032,7 @@ impl RawBlowApp {
                     ui.add_space(6.0);
                     vsep(ui);
                     // 폴더 열기(이슈 #2: 폴더 연 상태에서 다른 폴더 여는 버튼 없음 — ⌘O를 못 찾음).
-                    if toggle_btn(ui, "폴더 열기 ⌘O", false).clicked() {
+                    if toggle_btn(ui, &format!("{} ⌘O", tr(lang, "폴더 열기")), false).clicked() {
                         self.pick_folder();
                     }
                     vsep(ui);
@@ -1066,7 +1075,7 @@ impl RawBlowApp {
                     if toggle_btn(ui, "Hist", self.show_hist).clicked() {
                         self.show_hist = !self.show_hist;
                     }
-                    if toggle_btn(ui, &format!("Filter · {}", self.filter.ko()), false).clicked() {
+                    if toggle_btn(ui, &format!("Filter · {}", self.filter.name(lang)), false).clicked() {
                         self.filter = self.filter.next();
                     }
 
@@ -1098,6 +1107,7 @@ impl RawBlowApp {
     }
 
     fn ui_left_rail(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
         let (pick, hold, reject, unrated) = self.counts();
         let total = self.items.len().max(1);
         egui::SidePanel::left("rail")
@@ -1163,7 +1173,7 @@ impl RawBlowApp {
                     ui.painter().text(
                         cr.center(),
                         Align2::CENTER_CENTER,
-                        "해제",
+                        tr(lang, "해제"),
                         prop(10.5),
                         if cresp.hovered() { theme::INK } else { theme::INK3 },
                     );
@@ -1200,7 +1210,7 @@ impl RawBlowApp {
                     if active {
                         p.rect_filled(rect, Rounding::same(4.0), theme::BG3);
                     }
-                    p.text(Pos2::new(rect.left() + 12.0, rect.center().y), Align2::LEFT_CENTER, filt.ko(), prop(12.0), if active { theme::INK } else { theme::INK2 });
+                    p.text(Pos2::new(rect.left() + 12.0, rect.center().y), Align2::LEFT_CENTER, filt.name(lang), prop(12.0), if active { theme::INK } else { theme::INK2 });
                     if resp.clicked() {
                         self.filter = filt;
                         self.index = 0;
@@ -1221,7 +1231,7 @@ impl RawBlowApp {
                     if active {
                         ui.painter().rect_filled(r, Rounding::same(4.0), theme::BG3);
                     }
-                    ui.painter().text(r.center(), Align2::CENTER_CENTER, "전체", prop(11.0), if active { theme::INK } else { theme::INK2 });
+                    ui.painter().text(r.center(), Align2::CENTER_CENTER, tr(lang, "전체"), prop(11.0), if active { theme::INK } else { theme::INK2 });
                     if resp.clicked() {
                         new_star = Some(StarFilter::Any);
                     }
@@ -1343,12 +1353,13 @@ impl RawBlowApp {
     }
 
     fn ui_single(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
         let rect = ui.max_rect();
         let real = match self.current_real() {
             Some(r) => r,
             None => {
                 ui.centered_and_justified(|ui| {
-                    ui.label(egui::RichText::new("표시할 항목이 없습니다").color(theme::INK3));
+                    ui.label(egui::RichText::new(tr(lang, "표시할 항목이 없습니다")).color(theme::INK3));
                 });
                 return;
             }
@@ -1366,6 +1377,7 @@ impl RawBlowApp {
     /// - 드래그: 확대 상태에서 이동(pan)
     /// 프리뷰가 있으면 그것을, 없으면 썸네일을 열화 표시, 둘 다 없으면 "디코딩 중".
     fn photo_view(&mut self, ui: &mut egui::Ui, area: Rect, real: usize) {
+        let lang = self.lang;
         // 표시할 항목이 바뀌면 줌 상태 리셋(fit).
         if self.zoom_for != Some(real) {
             self.fit = true;
@@ -1381,7 +1393,7 @@ impl RawBlowApp {
             Some(v) => v,
             None => {
                 ui.painter()
-                    .text(area.center(), Align2::CENTER_CENTER, "디코딩 중…", mono(12.0), theme::INK3);
+                    .text(area.center(), Align2::CENTER_CENTER, tr(lang, "디코딩 중…"), mono(12.0), theme::INK3);
                 ui.ctx().request_repaint();
                 return;
             }
@@ -1469,12 +1481,13 @@ impl RawBlowApp {
     }
 
     fn paint_hud(&self, ui: &egui::Ui, area: Rect, real: usize, counter_suffix: &str) {
+        let lang = self.lang;
         let it = &self.items[real];
         let f = self.filtered();
         // TL: 라벨 + 파일명.
         let name = it.entry.display.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         let mut tl = area.left_top() + Vec2::new(20.0, 22.0);
-        let chip = format!("[{}]", it.entry.label.ko());
+        let chip = format!("[{}]", it.entry.label.name(lang));
         hud_text(ui, tl, Align2::LEFT_TOP, &chip, mono(12.0), theme::label_color(it.entry.label));
         tl.x += 64.0;
         let badge = if it.entry.shows_raw_badge() { "  +RAW" } else { "" };
@@ -1633,6 +1646,7 @@ impl RawBlowApp {
 
     // ── 전송 다이얼로그 ──────────────────────────────────
     fn ui_transfer_dialog(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
         let mut st = self.transfer.clone().unwrap();
         let mut do_start = false;
         let mut do_cancel = false;
@@ -1688,8 +1702,8 @@ impl RawBlowApp {
                                     send_icon(ui.painter(), ir.center(), 14.0, theme::ACCENT);
                                     ui.add_space(9.0);
                                     ui.vertical(|ui| {
-                                        ui.label(egui::RichText::new("파일 전송").font(prop(15.0)).color(theme::INK));
-                                        ui.label(egui::RichText::new("선택한 라벨·별점의 파일을 복사/이동 · RAW 페어 처리").font(mono(10.5)).color(theme::INK3));
+                                        ui.label(egui::RichText::new(tr(lang, "파일 전송")).font(prop(15.0)).color(theme::INK));
+                                        ui.label(egui::RichText::new(tr(lang, "선택한 라벨·별점의 파일을 복사/이동 · RAW 페어 처리")).font(mono(10.5)).color(theme::INK3));
                                     });
                                     ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                                         let (xr, xresp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
@@ -1712,13 +1726,13 @@ impl RawBlowApp {
                                 ui.horizontal_wrapped(|ui| {
                                     for (label, n) in [(Label::Pick, pick), (Label::Hold, hold), (Label::Reject, reject), (Label::Unrated, unrated)] {
                                         let on = st.labels.contains(&label);
-                                        if check_chip(ui, label.ko(), Some(n), theme::label_color(label), on) {
+                                        if check_chip(ui, label.name(lang), Some(n), theme::label_color(label), on) {
                                             if on { st.labels.retain(|l| *l != label); } else { st.labels.push(label); }
                                         }
                                     }
                                 });
                                 ui.add_space(8.0);
-                                if check_chip(ui, "라벨별 하위폴더로 분기 (/pick, /hold …)", None, theme::ACCENT, st.split_by_label) {
+                                if check_chip(ui, tr(lang, "라벨별 하위폴더로 분기 (/pick, /hold …)"), None, theme::ACCENT, st.split_by_label) {
                                     st.split_by_label = !st.split_by_label;
                                 }
                                 ui.add_space(16.0);
@@ -1739,19 +1753,19 @@ impl RawBlowApp {
                                     }
                                 });
                                 ui.add_space(6.0);
-                                ui.label(egui::RichText::new("라벨 또는 별점 중 하나라도 해당하면 전송됩니다(합집합).").font(mono(10.0)).color(theme::INK4));
+                                ui.label(egui::RichText::new(tr(lang, "라벨 또는 별점 중 하나라도 해당하면 전송됩니다(합집합).")).font(mono(10.0)).color(theme::INK4));
                                 ui.add_space(16.0);
 
                                 section_label(ui, "ACTION");
                                 let act_sel = if st.action == Action::Copy { 0 } else { 1 };
-                                if let Some(i) = segmented(ui, &[("Copy", "원본 유지"), ("Move", "원본 이동")], act_sel) {
+                                if let Some(i) = segmented(ui, &[("Copy", tr(lang, "원본 유지")), ("Move", tr(lang, "원본 이동"))], act_sel) {
                                     st.action = if i == 0 { Action::Copy } else { Action::Move };
                                 }
                                 ui.add_space(16.0);
 
                                 section_label(ui, "COMPANIONS");
                                 let comp_sel = match st.companions { Companions::Both => 0, Companions::RawOnly => 1, Companions::ImageOnly => 2 };
-                                if let Some(i) = segmented(ui, &[("RAW+이미지", "페어 함께"), ("RAW만", "RAW만"), ("이미지만", "JPG만")], comp_sel) {
+                                if let Some(i) = segmented(ui, &[(tr(lang, "RAW+이미지"), tr(lang, "페어 함께")), (tr(lang, "RAW만"), tr(lang, "RAW만")), (tr(lang, "이미지만"), tr(lang, "JPG만"))], comp_sel) {
                                     st.companions = [Companions::Both, Companions::RawOnly, Companions::ImageOnly][i];
                                 }
                                 ui.add_space(16.0);
@@ -1770,7 +1784,7 @@ impl RawBlowApp {
 
                                 section_label(ui, "ON FILENAME CONFLICT");
                                 let conf_sel = if st.conflict == ConflictPolicy::AutoIncrement { 0 } else { 1 };
-                                if let Some(i) = segmented(ui, &[("자동 일련번호", "_001 접미"), ("건너뛰기", "기존 유지")], conf_sel) {
+                                if let Some(i) = segmented(ui, &[(tr(lang, "자동 일련번호"), tr(lang, "_001 접미")), (tr(lang, "건너뛰기"), tr(lang, "기존 유지"))], conf_sel) {
                                     st.conflict = if i == 0 { ConflictPolicy::AutoIncrement } else { ConflictPolicy::Skip };
                                 }
                             });
@@ -1786,24 +1800,24 @@ impl RawBlowApp {
                                     ui.label(egui::RichText::new("WILL TRANSFER").font(prop(10.0)).color(theme::INK3));
                                     ui.add_space(8.0);
                                     ui.label(egui::RichText::new(plan.len().to_string()).font(mono(13.0)).color(theme::ACCENT));
-                                    ui.label(egui::RichText::new("파일").font(mono(10.0)).color(theme::INK3));
+                                    ui.label(egui::RichText::new(tr(lang, "파일")).font(mono(10.0)).color(theme::INK3));
                                     ui.add_space(6.0);
                                     ui.label(egui::RichText::new(raw_n.to_string()).font(mono(11.0)).color(theme::INK2));
                                     ui.label(egui::RichText::new("RAW").font(mono(9.5)).color(theme::INK3));
                                     ui.add_space(4.0);
                                     ui.label(egui::RichText::new(img_n.to_string()).font(mono(11.0)).color(theme::INK2));
-                                    ui.label(egui::RichText::new("이미지").font(mono(9.5)).color(theme::INK3));
+                                    ui.label(egui::RichText::new(tr(lang, "이미지")).font(mono(9.5)).color(theme::INK3));
 
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                         // 라벨·별점 둘 다 비어 대상이 0건이면 시작 버튼 비활성(빈 전송 방지).
                                         let can_start = !plan.is_empty();
-                                        if ui.add_enabled(can_start, egui::Button::new(egui::RichText::new("  전송 시작  ").color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT)).clicked() {
+                                        if ui.add_enabled(can_start, egui::Button::new(egui::RichText::new(format!("  {}  ", tr(lang, "전송 시작"))).color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT)).clicked() {
                                             do_start = true;
                                         }
                                         ui.add_space(5.0);
                                         kbd(ui, "Enter");
                                         ui.add_space(14.0);
-                                        if toggle_btn(ui, "취소", false).clicked() {
+                                        if toggle_btn(ui, tr(lang, "취소"), false).clicked() {
                                             do_cancel = true;
                                         }
                                         ui.add_space(5.0);
@@ -1853,6 +1867,7 @@ impl RawBlowApp {
     }
 
     fn ui_transfer_result(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
         let report = self.result.clone().unwrap();
         let mut close = false;
         let mut open_dest = false;
@@ -1864,10 +1879,10 @@ impl RawBlowApp {
             .fixed_size(Vec2::new(560.0, 0.0))
             .frame(modal_frame())
             .show(ctx, |ui| {
-                modal_header(ui, "전송 완료", "");
-                ui.label(egui::RichText::new(format!("✓ {} 파일 전송 · {} 리네임 · {} 실패", report.transferred, report.renamed.len(), report.failed.len())).font(prop(13.0)).color(theme::OK));
+                modal_header(ui, tr(lang, "전송 완료"), "");
+                ui.label(egui::RichText::new(trf(lang, "✓ {} 파일 전송 · {} 리네임 · {} 실패", &[&report.transferred.to_string(), &report.renamed.len().to_string(), &report.failed.len().to_string()])).font(prop(13.0)).color(theme::OK));
                 ui.add_space(6.0);
-                ui.label(egui::RichText::new(format!("RAW {} · 이미지 {} · {:.1} MB", report.raw_count, report.image_count, report.bytes as f64 / 1_048_576.0)).font(mono(11.0)).color(theme::INK2));
+                ui.label(egui::RichText::new(trf(lang, "RAW {} · 이미지 {} · {:.1} MB", &[&report.raw_count.to_string(), &report.image_count.to_string(), &format!("{:.1}", report.bytes as f64 / 1_048_576.0)])).font(mono(11.0)).color(theme::INK2));
                 if !report.renamed.is_empty() {
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new(format!("RENAMED · {}", report.renamed.len())).font(prop(10.0)).color(theme::WARN));
@@ -1890,11 +1905,11 @@ impl RawBlowApp {
                 let has_dest = self.last_dest.as_ref().map(|d| d.is_dir()).unwrap_or(false);
                 ui.horizontal(|ui| {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.add(egui::Button::new(egui::RichText::new("  닫기  ").color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT)).clicked() {
+                        if ui.add(egui::Button::new(egui::RichText::new(format!("  {}  ", tr(lang, "닫기"))).color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT)).clicked() {
                             close = true;
                         }
                         ui.add_space(8.0);
-                        if has_dest && toggle_btn(ui, "대상 폴더 열기", false).clicked() {
+                        if has_dest && toggle_btn(ui, tr(lang, "대상 폴더 열기"), false).clicked() {
                             open_dest = true;
                         }
                     });
@@ -1918,6 +1933,7 @@ impl RawBlowApp {
     }
 
     fn ui_jump(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
         let mut close = false;
         let mut go = false;
         egui::Window::new("jump_dialog")
@@ -1928,17 +1944,17 @@ impl RawBlowApp {
             .fixed_size(Vec2::new(420.0, 0.0))
             .frame(modal_frame())
             .show(ctx, |ui| {
-                modal_header(ui, "파일번호 점프", "줄바꿈·쉼표·탭으로 구분");
+                modal_header(ui, tr(lang, "파일번호 점프"), tr(lang, "줄바꿈·쉼표·탭으로 구분"));
                 ui.add(egui::TextEdit::multiline(&mut self.jump_text).font(mono(12.0)).desired_rows(2).desired_width(f32::INFINITY));
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.jump_exact, "정확히 일치");
+                    ui.checkbox(&mut self.jump_exact, tr(lang, "정확히 일치"));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.add(egui::Button::new(egui::RichText::new("  점프  ⏎  ").color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT)).clicked() {
+                        if ui.add(egui::Button::new(egui::RichText::new(format!("  {}  ⏎  ", tr(lang, "점프"))).color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT)).clicked() {
                             go = true;
                         }
                         ui.add_space(8.0);
-                        if toggle_btn(ui, "닫기 (Esc)", false).clicked() {
+                        if toggle_btn(ui, tr(lang, "닫기 (Esc)"), false).clicked() {
                             close = true;
                         }
                     });
@@ -1955,9 +1971,9 @@ impl RawBlowApp {
                 if let Some(pos) = f.iter().position(|&r| r == first) {
                     self.index = pos;
                 }
-                self.toast = Some((format!("{} 건 매칭", hits.len()), Instant::now()));
+                self.toast = Some((trf(lang, "{} 건 매칭", &[&hits.len().to_string()]), Instant::now()));
             } else {
-                self.toast = Some(("매칭 없음".into(), Instant::now()));
+                self.toast = Some((tr(lang, "매칭 없음").into(), Instant::now()));
             }
             close = true;
         }
@@ -1972,6 +1988,7 @@ impl RawBlowApp {
     /// 매칭 규칙은 RawPull과 동일(stem 기준 contains/exact, 대소문자 무시) —
     /// transfer::parse_terms / match_indices를 그대로 재사용한다.
     fn ui_bulk(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
         let mut close = false;
         let mut search = false;
         let mut apply = false;
@@ -1983,22 +2000,22 @@ impl RawBlowApp {
             .fixed_size(Vec2::new(520.0, 0.0))
             .frame(modal_frame())
             .show(ctx, |ui| {
-                modal_header(ui, "일괄 분류 변경", "파일명·일부 → 매칭 → 라벨 적용");
+                modal_header(ui, tr(lang, "일괄 분류 변경"), tr(lang, "파일명·일부 → 매칭 → 라벨 적용"));
                 ui.add(
                     egui::TextEdit::multiline(&mut self.bulk_text)
                         .font(mono(12.0))
                         .desired_rows(3)
                         .desired_width(f32::INFINITY)
-                        .hint_text("파일명 또는 일부 — 줄바꿈·쉼표·탭으로 구분"),
+                        .hint_text(tr(lang, "파일명 또는 일부 — 줄바꿈·쉼표·탭으로 구분")),
                 );
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.bulk_exact, "정확히 일치");
+                    ui.checkbox(&mut self.bulk_exact, tr(lang, "정확히 일치"));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
                             .add(
                                 egui::Button::new(
-                                    egui::RichText::new("  검색  ⏎  ")
+                                    egui::RichText::new(format!("  {}  ⏎  ", tr(lang, "검색")))
                                         .color(Color32::from_rgb(0x0a, 0x14, 0x20)),
                                 )
                                 .fill(theme::ACCENT),
@@ -2014,7 +2031,7 @@ impl RawBlowApp {
                 if self.bulk_searched {
                     ui.add_space(10.0);
                     ui.label(
-                        egui::RichText::new(format!("매칭 {}건", self.bulk_hits.len()))
+                        egui::RichText::new(trf(lang, "매칭 {}건", &[&self.bulk_hits.len().to_string()]))
                             .font(prop(11.0))
                             .color(theme::INK2),
                     );
@@ -2025,7 +2042,7 @@ impl RawBlowApp {
                         .show(ui, |ui| {
                             if self.bulk_hits.is_empty() {
                                 ui.label(
-                                    egui::RichText::new("매칭 결과 없음")
+                                    egui::RichText::new(tr(lang, "매칭 결과 없음"))
                                         .font(mono(11.0))
                                         .color(theme::INK3),
                                 );
@@ -2058,19 +2075,19 @@ impl RawBlowApp {
                         });
                     ui.add_space(10.0);
                     ui.label(
-                        egui::RichText::new("적용할 라벨")
+                        egui::RichText::new(tr(lang, "적용할 라벨"))
                             .font(prop(11.0))
                             .color(theme::INK3),
                     );
                     ui.horizontal(|ui| {
-                        for (lbl, name) in [
-                            (Label::Pick, "Q  선택"),
-                            (Label::Hold, "W  보류"),
-                            (Label::Reject, "E  제외"),
-                            (Label::Unrated, "R  해제"),
+                        for (lbl, key) in [
+                            (Label::Pick, "Q"),
+                            (Label::Hold, "W"),
+                            (Label::Reject, "E"),
+                            (Label::Unrated, "R"),
                         ] {
                             let active = self.bulk_target == lbl;
-                            if toggle_btn(ui, name, active).clicked() {
+                            if toggle_btn(ui, &format!("{}  {}", key, lbl.name(lang)), active).clicked() {
                                 self.bulk_target = lbl;
                             }
                         }
@@ -2082,7 +2099,7 @@ impl RawBlowApp {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let can_apply = self.bulk_searched && !self.bulk_hits.is_empty();
                         let btn = egui::Button::new(
-                            egui::RichText::new("  적용  ")
+                            egui::RichText::new(format!("  {}  ", tr(lang, "적용")))
                                 .color(Color32::from_rgb(0x0a, 0x14, 0x20)),
                         )
                         .fill(theme::ACCENT);
@@ -2090,7 +2107,7 @@ impl RawBlowApp {
                             apply = true;
                         }
                         ui.add_space(8.0);
-                        if toggle_btn(ui, "닫기 (Esc)", false).clicked() {
+                        if toggle_btn(ui, tr(lang, "닫기 (Esc)"), false).clicked() {
                             close = true;
                         }
                     });
@@ -2131,7 +2148,7 @@ impl RawBlowApp {
                 self.last_save = Instant::now() - Duration::from_millis(400);
             }
             self.toast = Some((
-                format!("{}건 → {}", self.bulk_hits.len(), target.ko()),
+                trf(lang, "{}건 → {}", &[&self.bulk_hits.len().to_string(), target.name(lang)]),
                 Instant::now(),
             ));
             self.bulk_open = false;
@@ -2144,12 +2161,13 @@ impl RawBlowApp {
     }
 
     fn ui_settings(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
         egui::TopBottomPanel::top("settings_top")
             .exact_height(TOOLBAR_H)
             .frame(egui::Frame::none().fill(theme::BG1).inner_margin(egui::Margin::symmetric(12.0, 6.0)))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    if ui.button("← 돌아가기").clicked() {
+                    if ui.button(format!("← {}", tr(lang, "돌아가기"))).clicked() {
                         self.show_settings = false;
                         let _ = config::save(&self.cfg);
                         self.schedule_cache_trim(); // 변경된 상한으로 캐시 정리.
@@ -2162,33 +2180,54 @@ impl RawBlowApp {
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.label(egui::RichText::new("GENERAL").font(prop(11.0)).color(theme::INK3));
-                    ui.checkbox(&mut self.cfg.auto_advance, "라벨링 후 자동 전진");
-                    ui.checkbox(&mut self.cfg.recursive, "하위 폴더 포함 스캔");
-                    ui.checkbox(&mut self.cfg.show_exif, "EXIF 오버레이 기본 표시");
-                    ui.checkbox(&mut self.cfg.show_histogram, "히스토그램 기본 표시");
+                    ui.checkbox(&mut self.cfg.auto_advance, tr(lang, "라벨링 후 자동 전진"));
+                    ui.checkbox(&mut self.cfg.recursive, tr(lang, "하위 폴더 포함 스캔"));
+                    ui.checkbox(&mut self.cfg.show_exif, tr(lang, "EXIF 오버레이 기본 표시"));
+                    ui.checkbox(&mut self.cfg.show_histogram, tr(lang, "히스토그램 기본 표시"));
                     ui.horizontal(|ui| {
-                        ui.label("프리로드 ±");
+                        ui.label(tr(lang, "프리로드 ±"));
                         ui.add(egui::DragValue::new(&mut self.cfg.preload).range(0..=10));
                     });
                     ui.horizontal(|ui| {
-                        ui.label("그리드 열 수");
+                        ui.label(tr(lang, "그리드 열 수"));
                         ui.add(egui::DragValue::new(&mut self.cfg.grid_cols).range(4..=12));
+                    });
+                    // 언어 선택(#30): 시스템(자동)/한국어/English/日本語. 변경 즉시 적용·저장.
+                    ui.horizontal(|ui| {
+                        ui.label(tr(lang, "언어"));
+                        let opts: [(Option<Lang>, &str); 4] = [
+                            (None, tr(lang, "시스템 (자동)")),
+                            (Some(Lang::Ko), Lang::Ko.native_name()),
+                            (Some(Lang::En), Lang::En.native_name()),
+                            (Some(Lang::Ja), Lang::Ja.native_name()),
+                        ];
+                        let mut sel = self.cfg.lang;
+                        for (val, label) in opts {
+                            if ui.selectable_label(sel == val, label).clicked() {
+                                sel = val;
+                            }
+                        }
+                        if sel != self.cfg.lang {
+                            self.cfg.lang = sel;
+                            self.lang = crate::i18n::effective_lang(&self.cfg);
+                            let _ = config::save(&self.cfg);
+                        }
                     });
                     ui.add_space(16.0);
                     ui.label(egui::RichText::new("LABELS").font(prop(11.0)).color(theme::INK3));
                     let km = &self.cfg.keymap;
-                    for (name, key) in [("선택 Pick", &km.pick), ("보류 Hold", &km.hold), ("제외 Reject", &km.reject), ("미선택 Clear", &km.clear)] {
+                    for (lbl, key) in [(Label::Pick, &km.pick), (Label::Hold, &km.hold), (Label::Reject, &km.reject), (Label::Unrated, &km.clear)] {
                         ui.horizontal(|ui| {
-                            ui.label(name);
+                            ui.label(lbl.name(lang));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 kbd(ui, key);
                             });
                         });
                     }
                     ui.add_space(8.0);
-                    ui.label(egui::RichText::new("단축키 재바인딩 UI는 v1.1 예정 — 현재 기본값 QWER 고정 표시").font(mono(10.0)).color(theme::INK4));
+                    ui.label(egui::RichText::new(tr(lang, "단축키 재바인딩 UI는 v1.1 예정 — 현재 기본값 QWER 고정 표시")).font(mono(10.0)).color(theme::INK4));
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new("별점 1~5 지정 · ` (백틱)으로 해제 — 라벨(QWER)과 독립으로 동시에 매겨집니다").font(mono(10.0)).color(theme::INK4));
+                    ui.label(egui::RichText::new(tr(lang, "별점 1~5 지정 · ` (백틱)으로 해제 — 라벨(QWER)과 독립으로 동시에 매겨집니다")).font(mono(10.0)).color(theme::INK4));
 
                     // ── CACHE (#22): 썸네일 디스크 캐시 사용량 + 비우기 ──
                     ui.add_space(18.0);
@@ -2198,23 +2237,23 @@ impl RawBlowApp {
                     }
                     let size = self.cache_size.unwrap_or(0);
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(format!("썸네일 캐시 사용량 · {}", fmt_bytes(size))).font(mono(11.0)).color(theme::INK2));
-                        if toggle_btn(ui, "캐시 비우기", false).clicked() {
+                        ui.label(egui::RichText::new(trf(lang, "썸네일 캐시 사용량 · {}", &[&fmt_bytes(size)])).font(mono(11.0)).color(theme::INK2));
+                        if toggle_btn(ui, tr(lang, "캐시 비우기"), false).clicked() {
                             let _ = cache::clear(&config::cache_dir());
                             self.cache_size = Some(cache::dir_size(&config::cache_dir()));
-                            self.toast = Some(("썸네일 캐시를 비웠습니다".into(), Instant::now()));
+                            self.toast = Some((tr(lang, "썸네일 캐시를 비웠습니다").into(), Instant::now()));
                         }
-                        if toggle_btn(ui, "새로고침", false).clicked() {
+                        if toggle_btn(ui, tr(lang, "새로고침"), false).clicked() {
                             self.cache_size = Some(cache::dir_size(&config::cache_dir()));
                         }
                     });
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("자동 상한").font(mono(11.0)).color(theme::INK2));
+                        ui.label(egui::RichText::new(tr(lang, "자동 상한")).font(mono(11.0)).color(theme::INK2));
                         ui.add(egui::DragValue::new(&mut self.cfg.cache_limit_mb).speed(64.0).range(0..=1_048_576).suffix(" MB"));
-                        ui.label(egui::RichText::new("(0 = 무제한)").font(mono(10.0)).color(theme::INK4));
+                        ui.label(egui::RichText::new(tr(lang, "(0 = 무제한)")).font(mono(10.0)).color(theme::INK4));
                     });
-                    ui.label(egui::RichText::new("상한을 넘으면 오래된 썸네일부터 자동 삭제 — 폴더 열 때·설정 변경 시 정리됩니다.").font(mono(10.0)).color(theme::INK4));
-                    ui.label(egui::RichText::new("폴더를 다시 열어도 재디코딩 없이 즉시 표시됩니다.").font(mono(10.0)).color(theme::INK4));
+                    ui.label(egui::RichText::new(tr(lang, "상한을 넘으면 오래된 썸네일부터 자동 삭제 — 폴더 열 때·설정 변경 시 정리됩니다.")).font(mono(10.0)).color(theme::INK4));
+                    ui.label(egui::RichText::new(tr(lang, "폴더를 다시 열어도 재디코딩 없이 즉시 표시됩니다.")).font(mono(10.0)).color(theme::INK4));
                     ui.label(egui::RichText::new(config::cache_dir().to_string_lossy().to_string()).font(mono(9.5)).color(theme::INK4));
 
                     // ── ABOUT / LINKS (#18): 버전·릴리즈·이슈·제작자·cosly ──
@@ -2222,17 +2261,17 @@ impl RawBlowApp {
                     ui.label(egui::RichText::new("ABOUT").font(prop(11.0)).color(theme::INK3));
                     ui.label(egui::RichText::new(format!("RawBlow v{}", env!("CARGO_PKG_VERSION"))).font(mono(11.0)).color(theme::INK2));
                     ui.add_space(6.0);
-                    link_label(ui, "최신 버전 받기 · GitHub Releases", "https://github.com/ascoeur9/rawblow/releases");
-                    link_label(ui, "버그 제보 · GitHub Issues", "https://github.com/ascoeur9/rawblow/issues");
+                    link_label(ui, tr(lang, "최신 버전 받기 · GitHub Releases"), "https://github.com/ascoeur9/rawblow/releases");
+                    link_label(ui, tr(lang, "버그 제보 · GitHub Issues"), "https://github.com/ascoeur9/rawblow/issues");
                     ui.add_space(10.0);
-                    ui.label(egui::RichText::new("만든 사람 · 하레 (Hare)").font(prop(11.5)).color(theme::INK2));
+                    ui.label(egui::RichText::new(tr(lang, "만든 사람 · 하레 (Hare)")).font(prop(11.5)).color(theme::INK2));
                     ui.horizontal(|ui| {
                         link_label(ui, "X · @ascoeur9", "https://x.com/ascoeur9");
                         ui.label(egui::RichText::new("·").font(mono(10.0)).color(theme::INK4));
                         link_label(ui, "X · @hare_kig", "https://x.com/hare_kig");
                     });
                     ui.add_space(10.0);
-                    ui.label(egui::RichText::new("마음에 드시나요? 그럼 cosly도 이용해보세요.").font(prop(11.5)).color(theme::INK2));
+                    ui.label(egui::RichText::new(tr(lang, "마음에 드시나요? 그럼 cosly도 이용해보세요.")).font(prop(11.5)).color(theme::INK2));
                     link_label(ui, "https://cosly.link", "https://cosly.link");
                 });
             });

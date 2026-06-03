@@ -3,6 +3,46 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// UI 표시 언어(#30). `Config.lang`이 `None`이면 OS 언어를 따른다(앱에서 감지).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lang {
+    Ko,
+    En,
+    Ja,
+}
+
+impl Lang {
+    /// 로케일 코드("ko", "ko-KR", "ja_JP", "en-US"…)의 접두로 매핑. 모르면 None.
+    pub fn from_locale(code: &str) -> Option<Lang> {
+        let c = code.trim().to_ascii_lowercase();
+        if c.starts_with("ko") {
+            Some(Lang::Ko)
+        } else if c.starts_with("ja") {
+            Some(Lang::Ja)
+        } else if c.starts_with("en") {
+            Some(Lang::En)
+        } else {
+            None
+        }
+    }
+    /// 2글자 언어 코드.
+    pub fn code(self) -> &'static str {
+        match self {
+            Lang::Ko => "ko",
+            Lang::En => "en",
+            Lang::Ja => "ja",
+        }
+    }
+    /// 설정 메뉴에 표시할 자기 언어 이름(각 언어 고유 표기).
+    pub fn native_name(self) -> &'static str {
+        match self {
+            Lang::Ko => "한국어",
+            Lang::En => "English",
+            Lang::Ja => "日本語",
+        }
+    }
+}
+
 /// 단축키 맵(핸드오프 기본값). 값은 표시용 키 문자열.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct KeyMap {
@@ -55,6 +95,8 @@ pub struct Config {
     pub keymap: KeyMap,
     /// 썸네일 디스크 캐시 상한(MB). 초과 시 오래된 것부터 자동 삭제. 0 = 무제한(#22).
     pub cache_limit_mb: u64,
+    /// UI 언어(#30). `None` = OS 언어 자동. 설정에서 변경하면 저장된다.
+    pub lang: Option<Lang>,
 }
 
 impl Default for Config {
@@ -70,6 +112,7 @@ impl Default for Config {
             recent_folders: Vec::new(),
             keymap: KeyMap::default(),
             cache_limit_mb: 1024, // 기본 1GB. 0이면 무제한.
+            lang: None,           // OS 언어 자동(#30).
         }
     }
 }
