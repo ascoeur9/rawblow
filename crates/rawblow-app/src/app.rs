@@ -2444,9 +2444,19 @@ fn exif_lines(ex: &ExifInfo) -> Vec<String> {
         lines.push(expo.join("  "));
     }
     if let Some(dt) = &ex.datetime {
-        lines.push(dt.clone());
+        lines.push(format_capture_datetime(dt));
     }
     lines
+}
+
+/// EXIF 촬영일시 표시 형식(#29): "YYYY:MM:DD HH:MM:SS" → "YYYY.MM.DD HH:MM:SS".
+/// 날짜부의 콜론만 점으로 바꾸고 시각부(있으면)는 콜론을 유지한다. 예상과 다른 형식이면
+/// 안전하게 원본을 그대로 반환한다(공백 없으면 날짜만 있는 것으로 보고 콜론→점).
+fn format_capture_datetime(dt: &str) -> String {
+    match dt.split_once(' ') {
+        Some((date, time)) => format!("{} {}", date.replace(':', "."), time),
+        None => dt.replace(':', "."),
+    }
 }
 
 /// 외부 URL을 기본 브라우저로 연다(#18). reveal_in_file_manager와 같은 무음 spawn 패턴.
@@ -2509,4 +2519,19 @@ fn reveal_in_file_manager(path: &std::path::Path) {
     } else {
         Command::new("xdg-open").arg(path).spawn()
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_capture_datetime;
+
+    #[test]
+    fn capture_datetime_uses_dots_for_date_keeps_colons_for_time() {
+        // EXIF 표준 "YYYY:MM:DD HH:MM:SS" → "YYYY.MM.DD HH:MM:SS" (#29).
+        assert_eq!(format_capture_datetime("2024:06:03 14:30:45"), "2024.06.03 14:30:45");
+        // 날짜만 있는 경우(공백 없음)도 안전하게 점으로.
+        assert_eq!(format_capture_datetime("2024:06:03"), "2024.06.03");
+        // 이미 점/다른 형식이어도 깨지지 않음.
+        assert_eq!(format_capture_datetime("2024.06.03 14:30:45"), "2024.06.03 14:30:45");
+    }
 }

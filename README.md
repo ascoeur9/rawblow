@@ -92,6 +92,7 @@ cargo run   --release -p rawblow-app
 #### Fujifilm — `.RAF`
 - GFX100S
 - GFX100RF
+- X-T5
 
 #### Canon — `.CR2`
 - EOS 5D
@@ -132,6 +133,7 @@ cargo run   --release -p rawblow-app
 - **@stellar_sound** ([X](https://x.com/stellar_sound)) — Nikon Z8 / Z30 / Z50II(`.NEF`) 테스트, macOS 이미지 로드 확인
 - **doer** — Fujifilm GFX100S / GFX100RF(`.RAF`) 테스트
 - **Laflat** — Nikon Z6III(`.NEF`) 테스트
+- **아그네스 디지털** — Fujifilm X-T5(`.RAF`) 테스트
 
 ---
 
