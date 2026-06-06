@@ -10,6 +10,7 @@ pub mod config;
 pub mod decode;
 pub mod meta;
 pub mod model;
+pub mod organize;
 pub mod scan;
 pub mod sidecar;
 pub mod transfer;

@@ -813,3 +813,155 @@ fn sidecar_tag_roundtrip() {
     assert_eq!(picked.label, Label::Pick);
     assert_eq!(picked.tag, ColorTag::None);
 }
+
+// ── #35 진행 보고·취소 ─────────────────────────────────────────────
+
+#[test]
+fn transfer_progress_reports_and_completes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("A.JPG"), b"aa").unwrap();
+    std::fs::write(src.join("B.JPG"), b"bbb").unwrap();
+    std::fs::write(src.join("C.JPG"), b"cccc").unwrap();
+
+    let mut entries = scan::scan_folder(&src, false, rawblow_core::SortOrder::Name);
+    for e in entries.iter_mut() {
+        e.label = Label::Pick;
+    }
+    let req = transfer::TransferRequest {
+        entries: &entries,
+        labels: vec![Label::Pick],
+        stars: vec![],
+        action: transfer::Action::Copy,
+        companions: transfer::Companions::Both,
+        dest: dst.clone(),
+        split_by_label: false,
+        conflict: transfer::ConflictPolicy::AutoIncrement,
+        tags: vec![],
+        split_by_tag: false,
+        rename: None,
+    };
+    let mut last_total = 0usize;
+    let mut calls = 0usize;
+    let report = transfer::execute_with_progress(&req, &mut |p| {
+        calls += 1;
+        last_total = p.total;
+        true
+    });
+    assert_eq!(report.transferred, 3);
+    assert!(!report.canceled);
+    assert_eq!(last_total, 3, "분모는 전체 대상 파일 수");
+    assert_eq!(calls, 3, "파일마다 한 번씩 진행 보고");
+}
+
+#[test]
+fn transfer_progress_cancel_stops_midway() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    std::fs::create_dir_all(&src).unwrap();
+    for n in 0..5 {
+        std::fs::write(src.join(format!("F{n}.JPG")), b"x").unwrap();
+    }
+    let mut entries = scan::scan_folder(&src, false, rawblow_core::SortOrder::Name);
+    for e in entries.iter_mut() {
+        e.label = Label::Pick;
+    }
+    let req = transfer::TransferRequest {
+        entries: &entries,
+        labels: vec![Label::Pick],
+        stars: vec![],
+        action: transfer::Action::Copy,
+        companions: transfer::Companions::Both,
+        dest: dst.clone(),
+        split_by_label: false,
+        conflict: transfer::ConflictPolicy::AutoIncrement,
+        tags: vec![],
+        split_by_tag: false,
+        rename: None,
+    };
+    // 두 번째 파일 직전에 취소(첫 파일 전 호출에서 true, 그 다음 false).
+    let mut seen = 0usize;
+    let report = transfer::execute_with_progress(&req, &mut |_| {
+        seen += 1;
+        seen < 2
+    });
+    assert!(report.canceled, "취소 플래그 설정");
+    assert_eq!(report.transferred, 1, "취소 전 1건만 전송");
+}
+
+// ── #34 폴더 자동 분류 ─────────────────────────────────────────────
+
+#[test]
+fn organize_by_extension_splits_pairs() {
+    use rawblow_core::organize::{self, OrganizeKey, OrganizeRequest};
+    let tmp = tempfile::tempdir().unwrap();
+    let folder = tmp.path();
+    std::fs::write(folder.join("A.JPG"), b"a").unwrap();
+    std::fs::write(folder.join("A.RW2"), b"aaaa").unwrap();
+    std::fs::write(folder.join("B.JPG"), b"b").unwrap();
+
+    let entries = scan::scan_folder(folder, false, rawblow_core::SortOrder::Name);
+    let req = OrganizeRequest {
+        entries: &entries,
+        key: OrganizeKey::Extension,
+        action: transfer::Action::Move,
+        dest_root: folder.to_path_buf(),
+        conflict: transfer::ConflictPolicy::AutoIncrement,
+    };
+    let report = organize::organize(&req);
+    assert_eq!(report.transferred, 3);
+    assert!(folder.join("JPG").join("A.JPG").exists());
+    assert!(folder.join("JPG").join("B.JPG").exists());
+    assert!(folder.join("RW2").join("A.RW2").exists(), "확장자별로 페어가 갈라짐");
+    assert!(!folder.join("A.JPG").exists(), "이동이므로 원본 자리에 없음");
+}
+
+#[test]
+fn organize_by_camera_keeps_pairs_together() {
+    use rawblow_core::organize::{self, OrganizeKey, OrganizeRequest};
+    let tmp = tempfile::tempdir().unwrap();
+    let folder = tmp.path();
+    // EXIF 없는 더미 → "unknown-camera"로 묶임. 페어(RAW+JPG)는 같은 폴더 유지가 핵심.
+    std::fs::write(folder.join("A.JPG"), b"a").unwrap();
+    std::fs::write(folder.join("A.RW2"), b"aaaa").unwrap();
+
+    let entries = scan::scan_folder(folder, false, rawblow_core::SortOrder::Name);
+    assert_eq!(entries.len(), 1, "A.JPG+A.RW2는 한 항목");
+    let req = OrganizeRequest {
+        entries: &entries,
+        key: OrganizeKey::Camera,
+        action: transfer::Action::Copy,
+        dest_root: folder.to_path_buf(),
+        conflict: transfer::ConflictPolicy::AutoIncrement,
+    };
+    let report = organize::organize(&req);
+    assert_eq!(report.transferred, 2);
+    assert!(folder.join("unknown-camera").join("A.JPG").exists());
+    assert!(folder.join("unknown-camera").join("A.RW2").exists(), "페어는 같은 폴더로");
+}
+
+#[test]
+fn organize_skips_files_already_in_place() {
+    use rawblow_core::organize::{self, OrganizeKey, OrganizeRequest};
+    let tmp = tempfile::tempdir().unwrap();
+    let folder = tmp.path();
+    let jpg_dir = folder.join("JPG");
+    std::fs::create_dir_all(&jpg_dir).unwrap();
+    std::fs::write(jpg_dir.join("A.JPG"), b"a").unwrap();
+
+    // 이미 JPG/ 안에 있는 파일을 확장자 기준으로 다시 정리해도 다시 옮기지 않는다(in-place 안전).
+    let entries = scan::scan_folder(folder, true, rawblow_core::SortOrder::Name);
+    let req = OrganizeRequest {
+        entries: &entries,
+        key: OrganizeKey::Extension,
+        action: transfer::Action::Move,
+        dest_root: folder.to_path_buf(),
+        conflict: transfer::ConflictPolicy::AutoIncrement,
+    };
+    let report = organize::organize(&req);
+    assert_eq!(report.transferred, 0, "이미 제자리면 이동 없음");
+    assert!(jpg_dir.join("A.JPG").exists());
+}
