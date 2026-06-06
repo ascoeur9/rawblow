@@ -75,6 +75,22 @@ pub struct TransferReport {
     /// (원래 파일명 → 변경된 파일명)
     pub renamed: Vec<(String, String)>,
     pub bytes: u64,
+    /// 사용자가 진행 중 취소해 도중에 멈췄으면 true(#35). 이미 옮긴 파일은 그대로 둔다.
+    pub canceled: bool,
+}
+
+/// 전송/정리 진행 상황(#35). 백그라운드 스레드가 파일마다 콜백으로 보고하고,
+/// UI는 이를 받아 프로그레스바·현재 파일명을 표시한다.
+#[derive(Default, Debug, Clone)]
+pub struct Progress {
+    /// 처리(성공·건너뜀·실패) 완료한 파일 수.
+    pub done: usize,
+    /// 전체 대상 파일 수(분모).
+    pub total: usize,
+    /// 누적 전송 바이트.
+    pub bytes: u64,
+    /// 현재 처리 중인 파일명.
+    pub current: String,
 }
 
 /// 동반 범위에 따라 항목에서 전송할 멤버를 고른다.
@@ -109,7 +125,7 @@ pub fn plan(req: &TransferRequest) -> Vec<(PathBuf, Label, u8)> {
 }
 
 /// 대상 디렉토리에서 충돌을 피한 경로를 만든다. 이름이 바뀌면 새 파일명을 반환.
-fn unique_path(dir: &Path, file_name: &str, policy: ConflictPolicy) -> Option<(PathBuf, Option<String>)> {
+pub(crate) fn unique_path(dir: &Path, file_name: &str, policy: ConflictPolicy) -> Option<(PathBuf, Option<String>)> {
     let candidate = dir.join(file_name);
     if !candidate.exists() {
         return Some((candidate, None));
@@ -222,9 +238,26 @@ fn render_name(template: &str, ctx: &NameCtx) -> String {
 
 /// 전송을 실행한다. 항목(엔트리) 단위로 순회하며 #26 리네임(페어 동일 stem)·#27 태그 분기를 반영.
 pub fn execute(req: &TransferRequest) -> TransferReport {
+    execute_with_progress(req, &mut |_| true)
+}
+
+/// 진행 보고·취소를 받는 전송 실행(#35). `on_progress`는 파일을 처리하기 직전 호출되며,
+/// `false`를 반환하면 그 시점에서 중단한다(이미 옮긴 파일은 유지, `report.canceled=true`).
+/// 큰 폴더·느린 드라이브에서 UI가 멈춘 것처럼 보이지 않도록 백그라운드 스레드에서 호출한다.
+pub fn execute_with_progress(
+    req: &TransferRequest,
+    on_progress: &mut dyn FnMut(&Progress) -> bool,
+) -> TransferReport {
     let mut report = TransferReport::default();
     let mut grade_counter = [0usize; 6]; // 별점 0~5별 등급 내 순번
     let mut order = 0usize; // 전체 전송 순서
+    let total = plan(req).len();
+    let mut progress = Progress {
+        done: 0,
+        total,
+        bytes: 0,
+        current: String::new(),
+    };
 
     for e in req.entries {
         if !is_selected(req, e) {
@@ -277,9 +310,16 @@ pub fn execute(req: &TransferRequest) -> TransferReport {
                 Some(n) => n.to_string(),
                 None => {
                     report.failed.push((src.clone(), "invalid filename".into()));
+                    progress.done += 1;
                     continue;
                 }
             };
+            // 진행 보고 + 취소 확인(파일 처리 직전). 취소면 지금까지 결과로 즉시 반환.
+            progress.current = file_name.clone();
+            if !on_progress(&progress) {
+                report.canceled = true;
+                return report;
+            }
             // 새 이름 = 템플릿 stem + 원본 확장자(없으면 stem). 리네임 없으면 원본명 그대로.
             let out_name = match &new_stem {
                 Some(stem) => match src.extension().and_then(|s| s.to_str()) {
@@ -293,6 +333,7 @@ pub fn execute(req: &TransferRequest) -> TransferReport {
                 Some(v) => v,
                 None => {
                     report.skipped += 1;
+                    progress.done += 1;
                     continue;
                 }
             };
@@ -319,6 +360,8 @@ pub fn execute(req: &TransferRequest) -> TransferReport {
                 }
                 Err(err) => report.failed.push((src.clone(), err.to_string())),
             }
+            progress.done += 1;
+            progress.bytes = report.bytes;
         }
     }
 
@@ -377,7 +420,7 @@ pub fn rename_preview(req: &TransferRequest, limit: usize) -> Vec<(String, Strin
 }
 
 /// rename 우선, 교차 디바이스면 copy+remove로 이동.
-fn move_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+pub(crate) fn move_file(src: &Path, dst: &Path) -> std::io::Result<()> {
     match std::fs::rename(src, dst) {
         Ok(()) => Ok(()),
         Err(_) => {
