@@ -9,14 +9,18 @@ use egui::{Align, Align2, Color32, Layout, Pos2, Rect, Rounding, Sense, Stroke, 
 use rawblow_core::cache;
 use rawblow_core::config::{self, Config, Lang};
 use rawblow_core::meta::{read_exif, ExifInfo};
+use rawblow_core::organize::{self, OrganizeKey, OrganizeRequest};
 use rawblow_core::transfer::{
-    self, Action, Companions, ConflictPolicy, Numbering, RenameRule, TransferReport, TransferRequest,
+    self, Action, Companions, ConflictPolicy, Numbering, Progress, RenameRule, TransferReport,
+    TransferRequest,
 };
 use rawblow_core::{
     scan, sidecar, ColorTag, Entry, Filter, Label, MatchMode, SortOrder, StarFilter, TagFilter,
     ViewMode,
 };
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const TOOLBAR_H: f32 = 40.0;
@@ -117,6 +121,57 @@ impl Default for TransferDialogState {
     }
 }
 
+/// 폴더 자동 분류 다이얼로그 상태(#34). 셀렉 전송과 별개로, 폴더 안의 사진을 기준별로
+/// 하위폴더에 나눠 담는다.
+#[derive(Clone)]
+struct OrganizeDialogState {
+    key: OrganizeKey,
+    action: Action,
+    /// 분류 결과를 담을 루트(기본: 현재 폴더 — in-place로 하위폴더 생성).
+    dest: String,
+    conflict: ConflictPolicy,
+}
+
+impl Default for OrganizeDialogState {
+    fn default() -> Self {
+        OrganizeDialogState {
+            key: OrganizeKey::Date,
+            action: Action::Move, // 이슈 #34는 "폴더분류/이동"이 기본 의도.
+            dest: String::new(),
+            conflict: ConflictPolicy::AutoIncrement,
+        }
+    }
+}
+
+/// 백그라운드 파일 작업(전송/정리)에서 메인 스레드로 보내는 메시지(#35).
+enum JobMsg {
+    Progress(Progress),
+    Done(TransferReport),
+}
+
+/// 완료 후 폴더를 어떻게 다시 열지(#35/#34).
+#[derive(Clone, Copy)]
+enum ReopenMode {
+    /// 현재 폴더를 현재 설정대로 다시 스캔(Move 전송 후 사라진 항목 정리, #24).
+    Current,
+    /// 분류 결과(생성된 하위폴더)를 보도록 하위 폴더 포함으로 다시 연다(#34).
+    Recursive,
+}
+
+/// 진행 중인 백그라운드 파일 작업(전송/정리)(#35). 별도 스레드에서 실행하고 진행 상황을
+/// 채널로 받아 프로그레스바로 표시한다 — 큰 폴더·느린 드라이브에서 UI가 멈춘 것처럼 보이지 않게.
+struct ProgressJob {
+    /// 다이얼로그 제목(tr 키, 한국어 원문).
+    title: &'static str,
+    rx: crossbeam_channel::Receiver<JobMsg>,
+    cancel: Arc<AtomicBool>,
+    latest: Progress,
+    /// 완료 후 폴더 재오픈 방식.
+    reopen: Option<ReopenMode>,
+    /// 결과 다이얼로그의 "대상 폴더 열기"에 쓸 경로.
+    dest: Option<PathBuf>,
+}
+
 pub struct RawBlowApp {
     cfg: Config,
     folder: Option<PathBuf>,
@@ -164,6 +219,9 @@ pub struct RawBlowApp {
     last_save: Instant,
 
     transfer: Option<TransferDialogState>,
+    organize: Option<OrganizeDialogState>,
+    // 진행 중인 백그라운드 파일 작업(전송/정리)의 프로그레스바 상태(#35).
+    progress: Option<ProgressJob>,
     result: Option<TransferReport>,
     show_settings: bool,
     last_dest: Option<PathBuf>,
@@ -254,6 +312,8 @@ impl RawBlowApp {
             sidecar_dirty: false,
             last_save: Instant::now(),
             transfer: None,
+            organize: None,
+            progress: None,
             result: None,
             show_settings: false,
             last_dest: None,
@@ -903,9 +963,13 @@ impl eframe::App for RawBlowApp {
             self.ui_shell(ctx);
         }
 
-        // 모달.
-        if self.transfer.is_some() {
+        // 모달. 진행 중 작업(전송/정리)이 있으면 그 프로그레스바가 최우선 — 다른 모달을 가린다.
+        if self.progress.is_some() {
+            self.ui_progress(ctx);
+        } else if self.transfer.is_some() {
             self.ui_transfer_dialog(ctx);
+        } else if self.organize.is_some() {
+            self.ui_organize_dialog(ctx);
         }
         if self.result.is_some() {
             self.ui_transfer_result(ctx);
@@ -933,6 +997,8 @@ impl RawBlowApp {
         // show_settings 포함: 설정 화면이 떠 있을 때 1~5/QWER/백틱 등 단축키가 뒤의 '현재 항목'을
         // 몰래 바꾸거나 설정의 DragValue 입력과 충돌하지 않게 키 처리를 막는다.
         self.transfer.is_some()
+            || self.organize.is_some()
+            || self.progress.is_some()
             || self.result.is_some()
             || self.jump_open
             || self.bulk_open
@@ -1048,6 +1114,15 @@ impl RawBlowApp {
             st.dest = format!("{}_selected", folder.to_string_lossy());
         }
         self.transfer = Some(st);
+    }
+
+    /// 폴더 자동 분류 다이얼로그를 연다(#34). 기본 대상은 현재 폴더(in-place 하위폴더 생성).
+    fn open_organize(&mut self) {
+        let mut st = OrganizeDialogState::default();
+        if let Some(folder) = &self.folder {
+            st.dest = folder.to_string_lossy().to_string();
+        }
+        self.organize = Some(st);
     }
 
     // ── Open Folder 화면 ──────────────────────────────────
@@ -1190,6 +1265,10 @@ impl RawBlowApp {
                             .clicked()
                         {
                             self.open_transfer();
+                        }
+                        // 폴더 자동 분류(#34): 셀렉 전송과 별개로, 폴더 안 사진을 기준별 하위폴더로 정리.
+                        if toggle_btn(ui, tr(lang, "정리"), false).clicked() {
+                            self.open_organize();
                         }
                         if toggle_btn(ui, &format!("{} (G)", tr(lang, "점프")), false).clicked() {
                             self.jump_open = true;
@@ -2123,36 +2202,243 @@ impl RawBlowApp {
             return;
         }
         if do_start {
-            let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
-            let req = TransferRequest {
-                entries: &entries,
-                labels: st.labels.clone(),
-                stars: st.stars.clone(),
-                tags: st.tags.clone(),
-                action: st.action,
-                companions: st.companions,
-                dest: PathBuf::from(&st.dest),
-                split_by_label: st.split_by_label,
-                split_by_tag: st.split_by_tag,
-                conflict: st.conflict,
-                rename: st.rename_rule(),
-            };
-            let report = transfer::execute(&req);
-            let dest = PathBuf::from(&st.dest);
-            // 이동(Move)으로 원본이 사라진 경우, 폴더를 다시 스캔해 옮겨진 항목을 목록에서
-            // 제거한다(#24). 그러지 않으면 사라진 파일이 깨진 썸네일로 남는다. 복사는 불필요.
-            let was_move = matches!(st.action, Action::Move) && report.transferred > 0;
-            self.transfer = None;
-            if was_move {
-                if let Some(folder) = self.folder.clone() {
-                    self.open_folder(folder);
-                }
-            }
-            self.last_dest = Some(dest);
-            self.result = Some(report);
+            self.start_transfer(&st);
         } else {
             self.transfer = Some(st);
         }
+    }
+
+    /// 전송을 백그라운드 스레드에서 시작하고 진행 모달로 전환한다(#35). 큰 폴더에서
+    /// 메인 스레드가 막히지 않게 별도 스레드에서 `execute_with_progress`를 돌리고,
+    /// 진행 상황을 채널로 받는다(Move면 완료 후 폴더를 재스캔해 사라진 항목 정리, #24).
+    fn start_transfer(&mut self, st: &TransferDialogState) {
+        let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
+        let labels = st.labels.clone();
+        let stars = st.stars.clone();
+        let tags = st.tags.clone();
+        let action = st.action;
+        let companions = st.companions;
+        let dest = PathBuf::from(&st.dest);
+        let split_by_label = st.split_by_label;
+        let split_by_tag = st.split_by_tag;
+        let conflict = st.conflict;
+        let rename = st.rename_rule();
+
+        let (tx, rx) = crossbeam_channel::unbounded::<JobMsg>();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_t = cancel.clone();
+        let dest_t = dest.clone();
+        std::thread::spawn(move || {
+            let req = TransferRequest {
+                entries: &entries,
+                labels,
+                stars,
+                tags,
+                action,
+                companions,
+                dest: dest_t,
+                split_by_label,
+                split_by_tag,
+                conflict,
+                rename,
+            };
+            let mut on = |p: &Progress| {
+                let _ = tx.send(JobMsg::Progress(p.clone()));
+                !cancel_t.load(Ordering::Relaxed)
+            };
+            let report = transfer::execute_with_progress(&req, &mut on);
+            let _ = tx.send(JobMsg::Done(report));
+        });
+
+        // Move는 원본이 사라지므로 완료 후 재스캔 필요. Copy는 목록 불변이라 재오픈 불필요.
+        let reopen = matches!(action, Action::Move).then_some(ReopenMode::Current);
+        self.transfer = None;
+        self.progress = Some(ProgressJob {
+            title: "전송 중",
+            rx,
+            cancel,
+            latest: Progress::default(),
+            reopen,
+            dest: Some(dest),
+        });
+    }
+
+    /// 폴더 자동 분류를 백그라운드 스레드에서 시작하고 진행 모달로 전환한다(#34/#35).
+    /// 완료 후 분류 결과(하위폴더)를 보도록 하위 폴더 포함으로 폴더를 다시 연다.
+    fn start_organize(&mut self, st: &OrganizeDialogState) {
+        let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
+        let key = st.key;
+        let action = st.action;
+        let dest = PathBuf::from(&st.dest);
+        let conflict = st.conflict;
+
+        let (tx, rx) = crossbeam_channel::unbounded::<JobMsg>();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_t = cancel.clone();
+        let dest_t = dest.clone();
+        std::thread::spawn(move || {
+            let req = OrganizeRequest {
+                entries: &entries,
+                key,
+                action,
+                dest_root: dest_t,
+                conflict,
+            };
+            let mut on = |p: &Progress| {
+                let _ = tx.send(JobMsg::Progress(p.clone()));
+                !cancel_t.load(Ordering::Relaxed)
+            };
+            let report = organize::organize_with_progress(&req, &mut on);
+            let _ = tx.send(JobMsg::Done(report));
+        });
+
+        // 재오픈 방식: 현재 폴더 안에 분류(in-place)했는지로 갈린다.
+        //  - Move + in-place: 루트 파일이 하위폴더로 빠짐 → 하위폴더 포함 재스캔으로 결과 표시.
+        //  - Move + 외부 대상: 현재 폴더가 비워짐 → 현재 설정대로 재스캔(사라진 항목 정리).
+        //  - Copy: 원본이 그대로 남아 현재 보기가 유효 → 재오픈 불필요(복사본은 하위/외부에).
+        let in_place = self
+            .folder
+            .as_ref()
+            .map(|f| dest.starts_with(f))
+            .unwrap_or(false);
+        let reopen = match action {
+            Action::Move if in_place => Some(ReopenMode::Recursive),
+            Action::Move => Some(ReopenMode::Current),
+            Action::Copy => None,
+        };
+        self.organize = None;
+        self.progress = Some(ProgressJob {
+            title: "폴더 정리 중",
+            rx,
+            cancel,
+            latest: Progress::default(),
+            reopen,
+            dest: Some(dest),
+        });
+    }
+
+    /// 진행 모달(#35): 채널을 비워 진행률을 갱신하고, 완료(Done)면 후처리(재오픈+결과)로 전환.
+    fn ui_progress(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
+        let mut job = self.progress.take().unwrap();
+
+        // 채널 비우기: 진행 갱신은 마지막 값만 유지, 완료면 결과 확보.
+        let mut done_report: Option<TransferReport> = None;
+        let mut disconnected = false;
+        loop {
+            match job.rx.try_recv() {
+                Ok(JobMsg::Progress(p)) => job.latest = p,
+                Ok(JobMsg::Done(r)) => {
+                    done_report = Some(r);
+                    break;
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => break,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+
+        if let Some(report) = done_report {
+            let reopen = job.reopen;
+            let dest = job.dest.clone();
+            self.progress = None;
+            match reopen {
+                Some(ReopenMode::Current) => {
+                    if let Some(folder) = self.folder.clone() {
+                        self.open_folder(folder);
+                    }
+                }
+                Some(ReopenMode::Recursive) => {
+                    // 분류 결과(하위폴더)가 보이도록 재귀 스캔으로 전환·저장 후 재오픈.
+                    if report.transferred > 0 {
+                        self.cfg.recursive = true;
+                        let _ = config::save(&self.cfg);
+                    }
+                    if let Some(folder) = self.folder.clone() {
+                        self.open_folder(folder);
+                    }
+                }
+                None => {}
+            }
+            self.last_dest = dest;
+            self.result = Some(report);
+            return;
+        }
+        if disconnected {
+            // 작업 스레드가 결과 없이 종료(이례적 — 패닉 등). 진행 모달만 닫는다.
+            self.progress = None;
+            return;
+        }
+
+        // 작업이 도는 동안 결과 채널을 꾸준히 펌프(워커는 egui를 깨우지 못함).
+        ctx.request_repaint_after(Duration::from_millis(80));
+
+        let p = &job.latest;
+        let frac = if p.total > 0 {
+            (p.done as f32 / p.total as f32).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let mut do_cancel = false;
+
+        // 뒤 화면 어둡게 + 클릭 차단.
+        let screen = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("progress_dim"))
+            .order(egui::Order::Middle)
+            .fixed_pos(Pos2::ZERO)
+            .show(ctx, |ui| {
+                ui.painter().with_clip_rect(screen).rect_filled(screen, 0.0, Color32::from_black_alpha(180));
+                let _ = ui.allocate_rect(screen, Sense::click_and_drag());
+            });
+
+        egui::Window::new("progress_modal")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .fixed_size(Vec2::new(480.0, 0.0))
+            .frame(modal_frame())
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                modal_header(ui, tr(lang, job.title), "");
+                ui.add(egui::ProgressBar::new(frac).fill(theme::ACCENT).desired_height(10.0));
+                ui.add_space(10.0);
+                ui.label(
+                    egui::RichText::new(trf(lang, "{} / {} 파일", &[&p.done.to_string(), &p.total.to_string()]))
+                        .font(mono(12.0))
+                        .color(theme::INK),
+                );
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(format!("{:.1} MB", p.bytes as f64 / 1_048_576.0))
+                        .font(mono(10.5))
+                        .color(theme::INK3),
+                );
+                if !p.current.is_empty() {
+                    ui.add_space(2.0);
+                    ui.label(egui::RichText::new(&p.current).font(mono(10.0)).color(theme::INK4));
+                }
+                ui.add_space(14.0);
+                let r = ui.max_rect();
+                let y = ui.cursor().top();
+                ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0, theme::LINE));
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if toggle_btn(ui, tr(lang, "취소"), false).clicked() {
+                            do_cancel = true;
+                        }
+                    });
+                });
+            });
+
+        if do_cancel || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            // 취소 신호만 보내고 모달은 유지 — 작업 스레드가 다음 파일 직전에 멈춰 Done을 보낸다.
+            job.cancel.store(true, Ordering::Relaxed);
+        }
+        self.progress = Some(job);
     }
 
     fn ui_transfer_result(&mut self, ctx: &egui::Context) {
@@ -2169,6 +2455,10 @@ impl RawBlowApp {
             .frame(modal_frame())
             .show(ctx, |ui| {
                 modal_header(ui, tr(lang, "전송 완료"), "");
+                if report.canceled {
+                    ui.label(egui::RichText::new(tr(lang, "취소됨")).font(prop(12.0)).color(theme::WARN));
+                    ui.add_space(4.0);
+                }
                 ui.label(egui::RichText::new(trf(lang, "✓ {} 파일 전송 · {} 리네임 · {} 실패", &[&report.transferred.to_string(), &report.renamed.len().to_string(), &report.failed.len().to_string()])).font(prop(13.0)).color(theme::OK));
                 ui.add_space(6.0);
                 ui.label(egui::RichText::new(trf(lang, "RAW {} · 이미지 {} · {:.1} MB", &[&report.raw_count.to_string(), &report.image_count.to_string(), &format!("{:.1}", report.bytes as f64 / 1_048_576.0)])).font(mono(11.0)).color(theme::INK2));
@@ -2218,6 +2508,152 @@ impl RawBlowApp {
         }
         if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.result = None;
+        }
+    }
+
+    /// 폴더 자동 분류 다이얼로그(#34). 셀렉 전송과 별개로 폴더 안 사진을 기준별 하위폴더로 정리.
+    fn ui_organize_dialog(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
+        let mut st = self.organize.clone().unwrap();
+        let mut do_start = false;
+        let mut do_cancel = false;
+
+        // 대상 카운트(가벼움). 확장자 기준은 폴더 분포도 즉석 계산(EXIF 불필요).
+        let file_count: usize = self.items.iter().map(|i| i.entry.members.len()).sum();
+        let ext_breakdown: Vec<(String, usize)> = if st.key == OrganizeKey::Extension {
+            use std::collections::BTreeMap;
+            let mut m: BTreeMap<String, usize> = BTreeMap::new();
+            for it in &self.items {
+                for src in &it.entry.members {
+                    let e = src
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.to_ascii_uppercase())
+                        .unwrap_or_else(|| "—".into());
+                    *m.entry(e).or_default() += 1;
+                }
+            }
+            m.into_iter().collect()
+        } else {
+            Vec::new()
+        };
+
+        // 뒤 화면 어둡게 + 클릭 차단.
+        let screen = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("organize_dim"))
+            .order(egui::Order::Middle)
+            .fixed_pos(Pos2::ZERO)
+            .show(ctx, |ui| {
+                ui.painter().with_clip_rect(screen).rect_filled(screen, 0.0, Color32::from_black_alpha(180));
+                let _ = ui.allocate_rect(screen, Sense::click_and_drag());
+            });
+
+        egui::Window::new("organize_modal")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .fixed_size(Vec2::new(520.0, 0.0))
+            .frame(modal_frame())
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                modal_header(
+                    ui,
+                    tr(lang, "폴더 자동 분류"),
+                    tr(lang, "폴더 안 사진을 기준별 하위폴더로 정리 · 셀렉 전송과 별개"),
+                );
+
+                section_label(ui, "BY");
+                let keys: [(OrganizeKey, &str); 4] = [
+                    (OrganizeKey::Date, tr(lang, "촬영일")),
+                    (OrganizeKey::Camera, tr(lang, "카메라")),
+                    (OrganizeKey::Lens, tr(lang, "렌즈")),
+                    (OrganizeKey::Extension, tr(lang, "확장자")),
+                ];
+                ui.horizontal_wrapped(|ui| {
+                    for (k, label) in keys {
+                        if check_chip(ui, label, None, theme::ACCENT, st.key == k) {
+                            st.key = k;
+                        }
+                    }
+                });
+                ui.add_space(16.0);
+
+                section_label(ui, "ACTION");
+                let act_sel = if st.action == Action::Copy { 0 } else { 1 };
+                if let Some(i) = segmented(ui, &[("Copy", tr(lang, "원본 유지")), ("Move", tr(lang, "원본 이동"))], act_sel) {
+                    st.action = if i == 0 { Action::Copy } else { Action::Move };
+                }
+                ui.add_space(16.0);
+
+                section_label(ui, "DESTINATION");
+                ui.horizontal(|ui| {
+                    let rest = (ui.available_width() - 96.0).max(120.0);
+                    ui.add(egui::TextEdit::singleline(&mut st.dest).font(mono(12.0)).desired_width(rest));
+                    if toggle_btn(ui, "Browse…", false).clicked() {
+                        if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                            st.dest = d.to_string_lossy().to_string();
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(tr(lang, "대상 폴더 안에 기준별 하위폴더가 생성됩니다.")).font(mono(10.0)).color(theme::INK4));
+                ui.add_space(16.0);
+
+                section_label(ui, "ON FILENAME CONFLICT");
+                let conf_sel = if st.conflict == ConflictPolicy::AutoIncrement { 0 } else { 1 };
+                if let Some(i) = segmented(ui, &[(tr(lang, "자동 일련번호"), tr(lang, "_001 접미")), (tr(lang, "건너뛰기"), tr(lang, "기존 유지"))], conf_sel) {
+                    st.conflict = if i == 0 { ConflictPolicy::AutoIncrement } else { ConflictPolicy::Skip };
+                }
+                ui.add_space(16.0);
+
+                // 미리보기/안내: 확장자는 즉석 폴더 분포, EXIF 기준은 실행 중 분류 안내.
+                if st.key == OrganizeKey::Extension && !ext_breakdown.is_empty() {
+                    section_label(ui, "PREVIEW");
+                    for (folder, n) in ext_breakdown.iter().take(6) {
+                        ui.label(egui::RichText::new(format!("{}/  ·  {}", folder, n)).font(mono(10.5)).color(theme::INK3));
+                    }
+                    if ext_breakdown.len() > 6 {
+                        ui.label(egui::RichText::new(format!("… +{}", ext_breakdown.len() - 6)).font(mono(10.0)).color(theme::INK4));
+                    }
+                } else if st.key != OrganizeKey::Extension {
+                    ui.label(egui::RichText::new(tr(lang, "촬영일·카메라·렌즈 기준은 실행하며 EXIF를 읽어 분류합니다. RAW+JPG 페어는 같은 폴더로 유지됩니다.")).font(mono(10.0)).color(theme::INK4));
+                }
+
+                ui.add_space(14.0);
+                let r = ui.max_rect();
+                let y = ui.cursor().top();
+                ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0, theme::LINE));
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("WILL ORGANIZE").font(prop(10.0)).color(theme::INK3));
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new(file_count.to_string()).font(mono(13.0)).color(theme::ACCENT));
+                    ui.label(egui::RichText::new(tr(lang, "파일")).font(mono(10.0)).color(theme::INK3));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let can_start = file_count > 0 && !st.dest.trim().is_empty();
+                        if ui.add_enabled(can_start, egui::Button::new(egui::RichText::new(format!("  {}  ", tr(lang, "정리 시작"))).color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT)).clicked() {
+                            do_start = true;
+                        }
+                        ui.add_space(8.0);
+                        if toggle_btn(ui, tr(lang, "취소"), false).clicked() {
+                            do_cancel = true;
+                        }
+                    });
+                });
+            });
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            do_cancel = true;
+        }
+        if do_cancel {
+            self.organize = None;
+            return;
+        }
+        if do_start {
+            self.start_organize(&st);
+        } else {
+            self.organize = Some(st);
         }
     }
 

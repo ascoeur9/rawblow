@@ -59,6 +59,7 @@ fn fmt_lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "매칭 {}건" => ("{} matched", "一致 {} 件"),
         "{}건 → {}" => ("{} → {}", "{} 件 → {}"),
         "썸네일 캐시 사용량 · {}" => ("Thumbnail cache usage · {}", "サムネイルキャッシュ使用量 · {}"),
+        "{} / {} 파일" => ("{} / {} files", "{} / {} ファイル"),
         _ => return None,
     })
 }
@@ -222,6 +223,29 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
             "No targets — select labels, ratings, or tags above.",
             "対象なし — 上でラベル・評価・タグを選択してください。",
         ),
+        // #34 폴더 자동 분류 / #35 진행률
+        "정리" => ("Organize", "整理"),
+        "폴더 자동 분류" => ("Auto-Organize Folder", "フォルダ自動整理"),
+        "폴더 안 사진을 기준별 하위폴더로 정리 · 셀렉 전송과 별개" => (
+            "Sort photos into subfolders by a criterion · separate from Transfer",
+            "フォルダ内の写真を基準別サブフォルダに整理 · 転送とは別機能",
+        ),
+        "촬영일" => ("Capture Date", "撮影日"),
+        "카메라" => ("Camera", "カメラ"),
+        "렌즈" => ("Lens", "レンズ"),
+        "확장자" => ("Extension", "拡張子"),
+        "대상 폴더 안에 기준별 하위폴더가 생성됩니다." => (
+            "Subfolders are created inside the destination folder.",
+            "出力先フォルダ内に基準別サブフォルダが作成されます。",
+        ),
+        "촬영일·카메라·렌즈 기준은 실행하며 EXIF를 읽어 분류합니다. RAW+JPG 페어는 같은 폴더로 유지됩니다." => (
+            "Date/camera/lens read EXIF while running. RAW+JPG pairs stay in the same folder.",
+            "撮影日・カメラ・レンズは実行中にEXIFを読んで分類します。RAW+JPGペアは同じフォルダに保たれます。",
+        ),
+        "정리 시작" => ("Start Organize", "整理開始"),
+        "전송 중" => ("Transferring", "転送中"),
+        "폴더 정리 중" => ("Organizing", "整理中"),
+        "취소됨" => ("Canceled", "キャンセルされました"),
         _ => return None,
     })
 }
