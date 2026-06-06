@@ -20,8 +20,9 @@ A lightweight culling tool that lets you flip quickly through thousands of RAWs,
 - **ORIG (original view)** — Decodes the RAW at full resolution to check the actual detail (loading may take a moment). Used manually only when needed
 - **EXIF overlay (I)** · **RGB histogram (H)**
 - **Auto portrait/landscape rotation**, RAW+JPG pairing, RAW+ badge
-- **Transfer** — Copy/**move** only the chosen files (by label · **rating** · **color tag**, folders per label/tag, companion files, serial numbers on conflict). On **Move**, the moved items are automatically cleared from the list
+- **Transfer** — Copy/**move** only the chosen files (by label · **rating** · **color tag**, folders per label/tag, companion files, serial numbers on conflict). On **Move**, the moved items are automatically cleared from the list. Shows a **progress bar and cancel** during transfer — never looks frozen on large folders or slow drives
 - **Rename on transfer** — Copy or move while renaming by sequence number (1, 2, 3) / **rating grade (A1, B1…)** / a custom template (`{seq}` `{gradeseq}` `{stars}` `{tag}` `{orig}`, etc.) — with live preview, and identical names for RAW+JPG pairs
+- **Auto-organize folder** — The toolbar **Organize** button sorts the photos in a folder into subfolders by **capture date / camera / lens / extension** (move or copy). EXIF-based criteria keep RAW+JPG pairs in the same folder; after organizing, the result opens right away for culling (separate from Transfer)
 - **Multilingual** — 한국어 / English / 日本語 (auto-detected from OS language, changeable and saved in settings)
 - **Full screen** — Toggle OS-window full screen with **F11** or the toolbar button. Works from either single or grid view, and the flip / ORIG / zoom shortcuts all work in full screen too
 - **Non-destructive saving** — Saves and restores sorting, ratings, and color tags in `.rawblow/session.json` (+ a human-readable txt) inside the folder
