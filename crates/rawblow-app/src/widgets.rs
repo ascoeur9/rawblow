@@ -87,6 +87,62 @@ pub fn with_alpha(c: Color32, a: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
 }
 
+/// 폴더 아이콘(벡터, 컬러). 이모지 폰트(🗂)가 두부(□)로 깨지는 걸 피하려 직접 그린다(#33 후속).
+/// 뒤 탭 + 앞 몸통 두 색으로 입체감. `enabled=false`면 회색.
+pub fn draw_folder_icon(p: &egui::Painter, rect: Rect, enabled: bool) {
+    let (body, tab) = if enabled {
+        (Color32::from_rgb(0xf2, 0xb1, 0x3c), Color32::from_rgb(0xd9, 0x93, 0x1f)) // 앰버
+    } else {
+        (Color32::from_rgb(0x6b, 0x72, 0x80), Color32::from_rgb(0x55, 0x5d, 0x68)) // 회색(비활성)
+    };
+    let (w, h) = (rect.width(), rect.height());
+    let r = (w * 0.13).max(1.5);
+    // 뒤 탭(좌상단에서 살짝 보임).
+    let tab_r = Rect::from_min_size(
+        Pos2::new(rect.left() + w * 0.06, rect.top() + h * 0.12),
+        Vec2::new(w * 0.5, h * 0.30),
+    );
+    p.rect_filled(tab_r, Rounding::same(r), tab);
+    // 앞 몸통.
+    let body_r = Rect::from_min_max(
+        Pos2::new(rect.left() + w * 0.05, rect.top() + h * 0.26),
+        Pos2::new(rect.right() - w * 0.05, rect.bottom() - h * 0.10),
+    );
+    p.rect_filled(body_r, Rounding::same(r), body);
+}
+
+/// 4갈래 반짝임(스파클) 하나 — 세로·가로 얇은 마름모 두 개(둘 다 볼록 → convex_polygon 안전).
+fn star4(p: &egui::Painter, c: Pos2, r: f32, color: Color32) {
+    let k = r * 0.28; // 갈래 두께(작을수록 뾰족).
+    let vert = vec![
+        Pos2::new(c.x, c.y - r),
+        Pos2::new(c.x + k, c.y),
+        Pos2::new(c.x, c.y + r),
+        Pos2::new(c.x - k, c.y),
+    ];
+    let horz = vec![
+        Pos2::new(c.x - r, c.y),
+        Pos2::new(c.x, c.y - k),
+        Pos2::new(c.x + r, c.y),
+        Pos2::new(c.x, c.y + k),
+    ];
+    p.add(egui::Shape::convex_polygon(vert, color, Stroke::NONE));
+    p.add(egui::Shape::convex_polygon(horz, color, Stroke::NONE));
+}
+
+/// 축하 스파클 아이콘(벡터, 컬러). 이모지(🎉) 두부 회피용(#33). 따뜻한 3색이라 파랑 accent
+/// 배경 위에서도 잘 보인다. `rect`는 정사각 가정.
+pub fn draw_sparkles(p: &egui::Painter, rect: Rect) {
+    let gold = Color32::from_rgb(0xff, 0xcf, 0x3a);
+    let pink = Color32::from_rgb(0xff, 0x5c, 0x8a);
+    let orange = Color32::from_rgb(0xff, 0x8a, 0x3d);
+    let s = rect.height();
+    let c = rect.center();
+    star4(p, Pos2::new(c.x - s * 0.06, c.y + s * 0.04), s * 0.42, gold); // 큰 별(메인)
+    star4(p, Pos2::new(rect.left() + s * 0.85, rect.top() + s * 0.18), s * 0.20, pink); // 우상단 작은 별
+    star4(p, Pos2::new(rect.left() + s * 0.15, rect.top() + s * 0.76), s * 0.15, orange); // 좌하단 더 작은 별
+}
+
 /// 섹션 헤더(좌측 레일): 작은 대문자 라벨 + 우측 힌트.
 pub fn section_head(ui: &mut Ui, label: &str, hint: Option<&str>) {
     ui.add_space(8.0);

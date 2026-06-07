@@ -1624,43 +1624,83 @@ impl RawBlowApp {
                     ui.label(egui::RichText::new("SESSION · .rawblow/session.json").font(mono(10.0)).color(theme::INK4));
                     // 폴더 자동 분류(#34): 툴바에서 레일 하단으로 이동(테스트 피드백). 풀폭 버튼.
                     // bottom_up이라 SESSION 푸터 위쪽(레일 맨 아래)에 자리한다. 폴더가 비면 비활성.
-                    // 이모지 + 내용 가운데 정렬(#36 후속 피드백): centered_and_justified로 버튼을 셀에
-                    // 꽉 채우고 텍스트를 가운데로(레일은 bottom_up=좌측정렬이라 그냥 두면 왼쪽에 붙음).
+                    // 폴더 아이콘은 벡터(컬러)로 직접 그린다 — 이모지(🗂)가 폰트에서 두부(□)로 깨져서(#33 후속).
                     ui.add_space(10.0);
-                    ui.allocate_ui_with_layout(
+                    let org_enabled = !self.items.is_empty();
+                    let (org_rect, org_resp) = ui.allocate_exact_size(
                         Vec2::new(RAIL_W - 20.0, 32.0),
-                        Layout::centered_and_justified(egui::Direction::LeftToRight),
-                        |ui| {
-                            let organize_btn = egui::Button::new(
-                                egui::RichText::new(format!("🗂  {}", tr(lang, "정리"))).font(prop(12.0)).color(theme::INK),
-                            )
-                            .fill(theme::BG3)
-                            .stroke(Stroke::new(1.0, theme::LINE2));
-                            if ui.add_enabled(!self.items.is_empty(), organize_btn).clicked() {
-                                self.open_organize();
-                            }
-                        },
+                        if org_enabled { Sense::click() } else { Sense::hover() },
                     );
+                    {
+                        let p = ui.painter();
+                        let txt_col = if org_enabled { theme::INK } else { theme::INK4 };
+                        let fill = if org_enabled && org_resp.hovered() { theme::BG4 } else { theme::BG3 };
+                        p.rect(org_rect, Rounding::same(6.0), fill, Stroke::new(1.0, theme::LINE2));
+                        // 아이콘 + 글자 묶음을 셀 가운데에 배치(총 너비 계산 후 시작 x 산출).
+                        let icon = 16.0;
+                        let gap = 7.0;
+                        let font = prop(12.0);
+                        let label = tr(lang, "정리");
+                        let galley = p.layout_no_wrap(label.to_string(), font.clone(), txt_col);
+                        let x0 = org_rect.center().x - (icon + gap + galley.size().x) / 2.0;
+                        let icon_rect = Rect::from_min_size(
+                            Pos2::new(x0, org_rect.center().y - icon / 2.0),
+                            Vec2::splat(icon),
+                        );
+                        widgets::draw_folder_icon(p, icon_rect, org_enabled);
+                        p.text(Pos2::new(x0 + icon + gap, org_rect.center().y), Align2::LEFT_CENTER, label, font, txt_col);
+                    }
+                    if org_enabled {
+                        if org_resp.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if org_resp.clicked() {
+                            self.open_organize();
+                        }
+                    }
 
-                    // 새 릴리즈 안내(#33): 새 버전이 있으면 정리 버튼 **위에** 큰 강조 버튼으로 뜬다
-                    // (bottom_up이라 코드상 뒤가 위쪽). 클릭하면 Releases 페이지를 열고 배너를 닫는다.
+                    // 새 릴리즈 안내(#33): 정리 버튼 **위에** 강조 배너(bottom_up이라 코드상 뒤가 위).
+                    // 3줄 — 컬러 스파클 아이콘 / "새로운 버전이 있습니다" / 버전. 각각 한 줄씩 가운데 정렬.
+                    // 아이콘은 벡터(컬러)로 직접 그림(🎉 이모지 두부 회피). 클릭 시 Releases 열고 배너 닫음.
                     if let Some(ver) = self.update_available.clone() {
                         ui.add_space(8.0);
-                        ui.allocate_ui_with_layout(
-                            Vec2::new(RAIL_W - 20.0, 46.0),
-                            Layout::centered_and_justified(egui::Direction::LeftToRight),
-                            |ui| {
-                                let dark = Color32::from_rgb(0x0a, 0x14, 0x20);
-                                let label = format!("🎉  {}\n{}", tr(lang, "새로운 버전이 있습니다"), ver);
-                                let btn = egui::Button::new(egui::RichText::new(label).font(prop(12.0)).color(dark))
-                                    .fill(theme::ACCENT)
-                                    .stroke(Stroke::new(1.0, theme::ACCENT));
-                                if ui.add(btn).clicked() {
-                                    open_url("https://github.com/ascoeur9/rawblow/releases/latest");
-                                    self.update_available = None;
-                                }
-                            },
-                        );
+                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(RAIL_W - 20.0, 80.0), Sense::click());
+                        {
+                            let p = ui.painter();
+                            let dark = Color32::from_rgb(0x0a, 0x14, 0x20);
+                            let fill = if resp.hovered() { Color32::from_rgb(0x8e, 0xc9, 0xff) } else { theme::ACCENT };
+                            p.rect(rect, Rounding::same(8.0), fill, Stroke::new(1.0, theme::ACCENT));
+                            // 1줄: 컬러 스파클 아이콘(가운데 상단).
+                            let icon = 22.0;
+                            let icon_rect = Rect::from_center_size(
+                                Pos2::new(rect.center().x, rect.top() + 6.0 + icon / 2.0),
+                                Vec2::splat(icon),
+                            );
+                            widgets::draw_sparkles(p, icon_rect);
+                            // 2줄: 안내 문구.
+                            p.text(
+                                Pos2::new(rect.center().x, rect.top() + 42.0),
+                                Align2::CENTER_CENTER,
+                                tr(lang, "새로운 버전이 있습니다"),
+                                prop(12.0),
+                                dark,
+                            );
+                            // 3줄: 버전.
+                            p.text(
+                                Pos2::new(rect.center().x, rect.top() + 62.0),
+                                Align2::CENTER_CENTER,
+                                &ver,
+                                prop(12.5),
+                                dark,
+                            );
+                        }
+                        if resp.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if resp.clicked() {
+                            open_url("https://github.com/ascoeur9/rawblow/releases/latest");
+                            self.update_available = None;
+                        }
                     }
                 });
             });
