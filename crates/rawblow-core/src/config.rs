@@ -101,6 +101,10 @@ pub struct Config {
     /// 기본 색 이름을 표시한다(예: Green="템플릿"). 설정에서 편집.
     #[serde(default)]
     pub tag_names: [String; 5],
+    /// 사진 표시 화면(매팅) 배경색 [r,g,b](#36). `None`이면 앱 기본(near-black void).
+    /// 설정에서 프리셋 또는 HEX/RGB로 변경.
+    #[serde(default)]
+    pub photo_bg: Option<[u8; 3]>,
 }
 
 impl Default for Config {
@@ -118,6 +122,7 @@ impl Default for Config {
             cache_limit_mb: 1024, // 기본 1GB. 0이면 무제한.
             lang: None,           // OS 언어 자동(#30).
             tag_names: Default::default(), // 5색 모두 빈 이름(기본 색 이름 표시)(#27).
+            photo_bg: None,       // 앱 기본 배경(near-black void)(#36).
         }
     }
 }

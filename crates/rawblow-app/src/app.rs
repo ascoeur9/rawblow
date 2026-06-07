@@ -249,6 +249,9 @@ pub struct RawBlowApp {
 
     // UI 표시 언어(#30). cfg.lang(저장값) 또는 OS 감지값으로 시작 시 결정, 설정에서 변경.
     lang: Lang,
+
+    // 설정의 사진 배경색 HEX 입력 버퍼(#36). 설정을 열 때 현재 색으로 동기화.
+    bg_hex: String,
 }
 
 impl RawBlowApp {
@@ -331,6 +334,7 @@ impl RawBlowApp {
             toast: None,
             last_frame: Instant::now(),
             frame_ms: 0.0,
+            bg_hex: String::new(),
             cfg,
         };
 
@@ -1182,6 +1186,19 @@ impl RawBlowApp {
     }
 
     // ── Studio 셸: 툴바 + 좌측레일 + 필름스트립 + 상태바 + 중앙 ──
+    /// 사진 표시 화면(매팅) 배경색(#36). 설정값이 있으면 그 색, 없으면 앱 기본(near-black void).
+    fn photo_bg(&self) -> Color32 {
+        match self.cfg.photo_bg {
+            Some([r, g, b]) => Color32::from_rgb(r, g, b),
+            None => theme::BG0,
+        }
+    }
+
+    /// 현재 사진 배경 RGB(설정값 또는 기본) — 설정의 HEX/RGB 편집 시작값(#36).
+    fn photo_bg_rgb(&self) -> [u8; 3] {
+        self.cfg.photo_bg.unwrap_or(theme::BG0_RGB)
+    }
+
     fn ui_shell(&mut self, ctx: &egui::Context) {
         self.ui_toolbar(ctx);
         self.ui_status_bar(ctx);
@@ -1189,8 +1206,9 @@ impl RawBlowApp {
         if self.view == ViewMode::Single {
             self.ui_filmstrip(ctx);
         }
+        let bg = self.photo_bg();
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(theme::BG0))
+            .frame(egui::Frame::none().fill(bg))
             .show(ctx, |ui| match self.view {
                 ViewMode::Single => self.ui_single(ui),
                 ViewMode::Grid => self.ui_grid(ui),
@@ -1284,6 +1302,7 @@ impl RawBlowApp {
                         if toggle_btn(ui, "⚙", self.show_settings).clicked() {
                             self.show_settings = true;
                             self.cache_size = None; // 설정 열 때 캐시 용량 새로 계산.
+                            self.bg_hex = hex_str(self.photo_bg_rgb()); // 배경 HEX 입력 버퍼 동기화(#36).
                         }
                     });
                 });
@@ -1917,8 +1936,9 @@ impl RawBlowApp {
     }
 
     fn ui_fullscreen(&mut self, ctx: &egui::Context) {
+        let bg = self.photo_bg();
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(theme::BG0))
+            .frame(egui::Frame::none().fill(bg))
             .show(ctx, |ui| {
                 let rect = ui.max_rect();
                 if let Some(real) = self.current_real() {
@@ -2940,6 +2960,68 @@ impl RawBlowApp {
                             let _ = config::save(&self.cfg);
                         }
                     });
+                    // ── PHOTO BACKGROUND (#36): 사진 표시 화면 배경색 — 프리셋 + HEX/RGB ──
+                    ui.add_space(18.0);
+                    ui.label(egui::RichText::new("PHOTO BACKGROUND").font(prop(11.0)).color(theme::INK3));
+                    ui.add_space(2.0);
+                    ui.label(egui::RichText::new(tr(lang, "사진 표시 화면 배경색 — 프리셋 또는 HEX/RGB로 지정(Lightroom Develop 기본값은 50% 회색)")).font(mono(10.0)).color(theme::INK4));
+                    ui.add_space(6.0);
+                    // 프리셋: (라벨, Option<rgb>) — None은 앱 기본(near-black void).
+                    let presets: [(&str, Option<[u8; 3]>); 6] = [
+                        (tr(lang, "기본"), None),
+                        (tr(lang, "검정"), Some([0x00, 0x00, 0x00])),
+                        (tr(lang, "다크 그레이"), Some([0x1e, 0x1e, 0x1e])),
+                        (tr(lang, "중간 회색"), Some([0x80, 0x80, 0x80])),
+                        (tr(lang, "라이트 그레이"), Some([0xb3, 0xb3, 0xb3])),
+                        (tr(lang, "흰색"), Some([0xff, 0xff, 0xff])),
+                    ];
+                    ui.horizontal_wrapped(|ui| {
+                        for (label, val) in presets {
+                            let selected = self.cfg.photo_bg == val;
+                            let swatch_rgb = val.unwrap_or(theme::BG0_RGB);
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 3.0;
+                                if bg_swatch(ui, swatch_rgb, selected) {
+                                    self.cfg.photo_bg = val;
+                                    self.bg_hex = hex_str(self.photo_bg_rgb());
+                                    let _ = config::save(&self.cfg);
+                                }
+                                ui.label(egui::RichText::new(label).font(mono(9.0)).color(if selected { theme::INK2 } else { theme::INK4 }));
+                            });
+                            ui.add_space(6.0);
+                        }
+                    });
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        // 현재 색 미리보기.
+                        let cur = self.photo_bg_rgb();
+                        let (sr, _) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::hover());
+                        ui.painter().rect(sr, Rounding::same(4.0), Color32::from_rgb(cur[0], cur[1], cur[2]), Stroke::new(1.0, theme::LINE3));
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new("HEX").font(mono(10.0)).color(theme::INK3));
+                        let resp = ui.add(egui::TextEdit::singleline(&mut self.bg_hex).font(mono(12.0)).desired_width(84.0).hint_text("#101010"));
+                        if resp.changed() {
+                            if let Some(rgb) = parse_hex_rgb(&self.bg_hex) {
+                                self.cfg.photo_bg = Some(rgb);
+                                let _ = config::save(&self.cfg);
+                            }
+                        }
+                        ui.add_space(8.0);
+                        let mut rgb = self.photo_bg_rgb();
+                        let mut changed = false;
+                        ui.label(egui::RichText::new("R").font(mono(10.0)).color(theme::INK3));
+                        changed |= ui.add(egui::DragValue::new(&mut rgb[0]).range(0..=255)).changed();
+                        ui.label(egui::RichText::new("G").font(mono(10.0)).color(theme::INK3));
+                        changed |= ui.add(egui::DragValue::new(&mut rgb[1]).range(0..=255)).changed();
+                        ui.label(egui::RichText::new("B").font(mono(10.0)).color(theme::INK3));
+                        changed |= ui.add(egui::DragValue::new(&mut rgb[2]).range(0..=255)).changed();
+                        if changed {
+                            self.cfg.photo_bg = Some(rgb);
+                            self.bg_hex = hex_str(rgb);
+                            let _ = config::save(&self.cfg);
+                        }
+                    });
+
                     ui.add_space(16.0);
                     ui.label(egui::RichText::new("LABELS").font(prop(11.0)).color(theme::INK3));
                     let km = &self.cfg.keymap;
@@ -3040,6 +3122,37 @@ fn vsep(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(1.0, 18.0), Sense::hover());
     ui.painter().rect_filled(rect, Rounding::ZERO, theme::LINE);
     ui.add_space(4.0);
+}
+
+/// 사진 배경 색견본(클릭 가능, #36). 선택 시 accent 링을 두른다.
+fn bg_swatch(ui: &mut egui::Ui, rgb: [u8; 3], selected: bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::click());
+    let col = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+    ui.painter().rect(rect, Rounding::same(5.0), col, Stroke::new(1.0, theme::LINE3));
+    if selected {
+        ui.painter().rect_stroke(rect.expand(2.0), Rounding::same(7.0), Stroke::new(2.0, theme::ACCENT));
+    }
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp.clicked()
+}
+
+/// `#rrggbb` 또는 `rrggbb`(공백 허용) → [r,g,b](#36). 형식이 아니면 None.
+fn parse_hex_rgb(s: &str) -> Option<[u8; 3]> {
+    let h = s.trim().trim_start_matches('#');
+    if h.len() != 6 || !h.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let r = u8::from_str_radix(&h[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&h[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&h[4..6], 16).ok()?;
+    Some([r, g, b])
+}
+
+/// [r,g,b] → `#RRGGBB`(#36).
+fn hex_str(rgb: [u8; 3]) -> String {
+    format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2])
 }
 
 /// 모달 다이얼로그용 공통 프레임(앱 디자인에 맞춘 패널: 어두운 배경 + 테두리 + 둥근 모서리 + 여백).
@@ -3319,7 +3432,7 @@ fn reveal_in_file_manager(path: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::format_capture_datetime;
+    use super::{format_capture_datetime, hex_str, parse_hex_rgb};
 
     #[test]
     fn capture_datetime_uses_dots_for_date_keeps_colons_for_time() {
@@ -3329,5 +3442,20 @@ mod tests {
         assert_eq!(format_capture_datetime("2024:06:03"), "2024.06.03");
         // 이미 점/다른 형식이어도 깨지지 않음.
         assert_eq!(format_capture_datetime("2024.06.03 14:30:45"), "2024.06.03 14:30:45");
+    }
+
+    #[test]
+    fn hex_rgb_roundtrip_and_parsing() {
+        // #/무접두, 대소문자 허용.
+        assert_eq!(parse_hex_rgb("#808080"), Some([0x80, 0x80, 0x80]));
+        assert_eq!(parse_hex_rgb("808080"), Some([0x80, 0x80, 0x80]));
+        assert_eq!(parse_hex_rgb("  #FfFfFf "), Some([0xff, 0xff, 0xff]));
+        // 잘못된 형식은 None(부분 입력 중 색이 튀지 않게).
+        assert_eq!(parse_hex_rgb("#80808"), None);
+        assert_eq!(parse_hex_rgb("xyzxyz"), None);
+        assert_eq!(parse_hex_rgb(""), None);
+        // 왕복.
+        assert_eq!(hex_str([0x1e, 0x1e, 0x1e]), "#1E1E1E");
+        assert_eq!(parse_hex_rgb(&hex_str([0x06, 0x07, 0x0a])), Some([0x06, 0x07, 0x0a]));
     }
 }

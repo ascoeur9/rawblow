@@ -2,7 +2,9 @@
 
 use egui::Color32;
 
-pub const BG0: Color32 = Color32::from_rgb(0x06, 0x07, 0x0a); // photo void
+/// 사진 표시 배경(photo void) 기본 RGB. 설정에서 photo_bg 미지정 시 사용(#36).
+pub const BG0_RGB: [u8; 3] = [0x06, 0x07, 0x0a];
+pub const BG0: Color32 = Color32::from_rgb(BG0_RGB[0], BG0_RGB[1], BG0_RGB[2]); // photo void
 pub const BG1: Color32 = Color32::from_rgb(0x0b, 0x0d, 0x11); // app shell
 pub const BG2: Color32 = Color32::from_rgb(0x14, 0x17, 0x1c); // panels
 pub const BG3: Color32 = Color32::from_rgb(0x1b, 0x1f, 0x26); // elevated

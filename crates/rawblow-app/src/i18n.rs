@@ -246,6 +246,17 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "전송 중" => ("Transferring", "転送中"),
         "폴더 정리 중" => ("Organizing", "整理中"),
         "취소됨" => ("Canceled", "キャンセルされました"),
+        // #36 사진 배경색
+        "사진 표시 화면 배경색 — 프리셋 또는 HEX/RGB로 지정(Lightroom Develop 기본값은 50% 회색)" => (
+            "Photo viewer background — pick a preset or set HEX/RGB (Lightroom Develop default is 50% gray)",
+            "写真表示画面の背景色 — プリセットまたはHEX/RGBで指定（Lightroom Developの既定は50%グレー）",
+        ),
+        "기본" => ("Default", "デフォルト"),
+        "검정" => ("Black", "黒"),
+        "다크 그레이" => ("Dark Gray", "ダークグレー"),
+        "중간 회색" => ("Medium Gray", "ミディアムグレー"),
+        "라이트 그레이" => ("Light Gray", "ライトグレー"),
+        "흰색" => ("White", "白"),
         _ => return None,
     })
 }
