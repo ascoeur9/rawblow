@@ -257,6 +257,8 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "중간 회색" => ("Medium Gray", "ミディアムグレー"),
         "라이트 그레이" => ("Light Gray", "ライトグレー"),
         "흰색" => ("White", "白"),
+        // #33 새 릴리즈 안내
+        "새로운 버전이 있습니다" => ("A new version is available", "新しいバージョンがあります"),
         _ => return None,
     })
 }

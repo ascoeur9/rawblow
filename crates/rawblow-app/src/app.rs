@@ -252,6 +252,11 @@ pub struct RawBlowApp {
 
     // 설정의 사진 배경색 HEX 입력 버퍼(#36). 설정을 열 때 현재 색으로 동기화.
     bg_hex: String,
+
+    // 새 릴리즈 안내(#33): 실행 후 유휴 시 1회만 백그라운드로 확인.
+    update_checked: bool,                                            // 확인을 이미 시작했는지
+    update_rx: Option<crossbeam_channel::Receiver<Option<String>>>, // 결과 채널(Some(ver)=새 버전)
+    update_available: Option<String>,                               // 새 버전 표시 문자열(있으면 배너)
 }
 
 impl RawBlowApp {
@@ -335,6 +340,9 @@ impl RawBlowApp {
             last_frame: Instant::now(),
             frame_ms: 0.0,
             bg_hex: String::new(),
+            update_checked: false,
+            update_rx: None,
+            update_available: None,
             cfg,
         };
 
@@ -985,6 +993,9 @@ impl eframe::App for RawBlowApp {
             self.ui_bulk(ctx);
         }
 
+        // 새 릴리즈 안내(#33): 유휴 시 1회 백그라운드 확인. 결과 배너는 좌측 레일 정리 버튼 위에 뜬다.
+        self.maybe_check_update(ctx);
+
         // 토스트 만료.
         if let Some((_, t)) = &self.toast {
             if t.elapsed() > Duration::from_secs(3) {
@@ -1197,6 +1208,46 @@ impl RawBlowApp {
     /// 현재 사진 배경 RGB(설정값 또는 기본) — 설정의 HEX/RGB 편집 시작값(#36).
     fn photo_bg_rgb(&self) -> [u8; 3] {
         self.cfg.photo_bg.unwrap_or(theme::BG0_RGB)
+    }
+
+    /// 새 릴리즈 안내(#33): 실행 후 로딩이 끝나고 유휴 상태일 때 **세션당 1회** 백그라운드로
+    /// GitHub 최신 릴리즈를 확인한다(설정·시작 프롬프트 없이 자동). 결과는 채널로 받아 새 버전이면
+    /// `update_available`에 담아 좌측 레일 배너로 알린다. 네트워크 실패·rate limit은 조용히 무시.
+    fn maybe_check_update(&mut self, ctx: &egui::Context) {
+        // 진행 중이면 결과 수신.
+        if let Some(rx) = &self.update_rx {
+            match rx.try_recv() {
+                Ok(msg) => {
+                    self.update_available = msg;
+                    self.update_rx = None;
+                }
+                Err(crossbeam_channel::TryRecvError::Disconnected) => self.update_rx = None,
+                Err(crossbeam_channel::TryRecvError::Empty) => {
+                    // 결과 올 때까지 가끔 깨운다(네트워크 스레드는 egui를 못 깨움).
+                    ctx.request_repaint_after(Duration::from_secs(1));
+                }
+            }
+        }
+        if self.update_checked {
+            return;
+        }
+        // 유휴 조건: 초기 디코딩/프리페치·진행 작업·모달이 모두 없을 때 한 번만.
+        let idle = self.pending_preview.is_empty()
+            && self.pending_thumb.is_empty()
+            && self.pending_prefetch.is_empty()
+            && self.progress.is_none()
+            && !self.has_modal();
+        if !idle {
+            return;
+        }
+        self.update_checked = true;
+        let (tx, rx) = crossbeam_channel::unbounded::<Option<String>>();
+        std::thread::spawn(move || {
+            let res = fetch_latest_release_tag().and_then(|tag| newer_version(&tag));
+            let _ = tx.send(res);
+        });
+        self.update_rx = Some(rx);
+        ctx.request_repaint_after(Duration::from_secs(1));
     }
 
     fn ui_shell(&mut self, ctx: &egui::Context) {
@@ -1573,15 +1624,43 @@ impl RawBlowApp {
                     ui.label(egui::RichText::new("SESSION · .rawblow/session.json").font(mono(10.0)).color(theme::INK4));
                     // 폴더 자동 분류(#34): 툴바에서 레일 하단으로 이동(테스트 피드백). 풀폭 버튼.
                     // bottom_up이라 SESSION 푸터 위쪽(레일 맨 아래)에 자리한다. 폴더가 비면 비활성.
+                    // 이모지 + 내용 가운데 정렬(#36 후속 피드백): centered_and_justified로 버튼을 셀에
+                    // 꽉 채우고 텍스트를 가운데로(레일은 bottom_up=좌측정렬이라 그냥 두면 왼쪽에 붙음).
                     ui.add_space(10.0);
-                    let organize_btn = egui::Button::new(
-                        egui::RichText::new(tr(lang, "정리")).font(prop(12.0)).color(theme::INK),
-                    )
-                    .fill(theme::BG3)
-                    .stroke(Stroke::new(1.0, theme::LINE2))
-                    .min_size(Vec2::new(RAIL_W - 20.0, 30.0));
-                    if ui.add_enabled(!self.items.is_empty(), organize_btn).clicked() {
-                        self.open_organize();
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(RAIL_W - 20.0, 32.0),
+                        Layout::centered_and_justified(egui::Direction::LeftToRight),
+                        |ui| {
+                            let organize_btn = egui::Button::new(
+                                egui::RichText::new(format!("🗂  {}", tr(lang, "정리"))).font(prop(12.0)).color(theme::INK),
+                            )
+                            .fill(theme::BG3)
+                            .stroke(Stroke::new(1.0, theme::LINE2));
+                            if ui.add_enabled(!self.items.is_empty(), organize_btn).clicked() {
+                                self.open_organize();
+                            }
+                        },
+                    );
+
+                    // 새 릴리즈 안내(#33): 새 버전이 있으면 정리 버튼 **위에** 큰 강조 버튼으로 뜬다
+                    // (bottom_up이라 코드상 뒤가 위쪽). 클릭하면 Releases 페이지를 열고 배너를 닫는다.
+                    if let Some(ver) = self.update_available.clone() {
+                        ui.add_space(8.0);
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(RAIL_W - 20.0, 46.0),
+                            Layout::centered_and_justified(egui::Direction::LeftToRight),
+                            |ui| {
+                                let dark = Color32::from_rgb(0x0a, 0x14, 0x20);
+                                let label = format!("🎉  {}\n{}", tr(lang, "새로운 버전이 있습니다"), ver);
+                                let btn = egui::Button::new(egui::RichText::new(label).font(prop(12.0)).color(dark))
+                                    .fill(theme::ACCENT)
+                                    .stroke(Stroke::new(1.0, theme::ACCENT));
+                                if ui.add(btn).clicked() {
+                                    open_url("https://github.com/ascoeur9/rawblow/releases/latest");
+                                    self.update_available = None;
+                                }
+                            },
+                        );
                     }
                 });
             });
@@ -3178,6 +3257,52 @@ fn hex_str(rgb: [u8; 3]) -> String {
     format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2])
 }
 
+// ── 새 릴리즈 안내(#33) ─────────────────────────────────────────────
+
+/// GitHub 최신 릴리즈 tag_name을 가져온다(네트워크, update-check 기능 시). 실패 시 None.
+/// 동기 HTTP(ureq) — 호출부가 백그라운드 스레드에서 돌린다. User-Agent 필수(없으면 403).
+#[cfg(feature = "update-check")]
+fn fetch_latest_release_tag() -> Option<String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(5))
+        .timeout_read(Duration::from_secs(8))
+        .build();
+    let body = agent
+        .get("https://api.github.com/repos/ascoeur9/rawblow/releases/latest")
+        .set("User-Agent", concat!("RawBlow/", env!("CARGO_PKG_VERSION")))
+        .set("Accept", "application/vnd.github+json")
+        .call()
+        .ok()?
+        .into_string()
+        .ok()?;
+    let v: serde_json::Value = serde_json::from_str(&body).ok()?;
+    v.get("tag_name").and_then(|t| t.as_str()).map(|s| s.to_string())
+}
+
+/// update-check 기능을 끈 빌드(예: cc 없는 환경의 cargo check)에서는 항상 None.
+#[cfg(not(feature = "update-check"))]
+fn fetch_latest_release_tag() -> Option<String> {
+    None
+}
+
+/// `v1.2.3`/`1.2.3`(프리릴리스/빌드 메타 허용) → (major, minor, patch). 실패 시 None.
+fn parse_semver(s: &str) -> Option<(u32, u32, u32)> {
+    let t = s.trim().trim_start_matches(['v', 'V']);
+    let core = t.split(['-', '+']).next().unwrap_or(t);
+    let mut it = core.split('.');
+    let a = it.next()?.trim().parse().ok()?;
+    let b = it.next().unwrap_or("0").trim().parse().ok()?;
+    let c = it.next().unwrap_or("0").trim().parse().ok()?;
+    Some((a, b, c))
+}
+
+/// 최신 태그가 현재 버전보다 높으면 표시용 버전 문자열을 반환(아니면 None).
+fn newer_version(latest_tag: &str) -> Option<String> {
+    let cur = parse_semver(env!("CARGO_PKG_VERSION"))?;
+    let lat = parse_semver(latest_tag)?;
+    (lat > cur).then(|| latest_tag.trim().to_string())
+}
+
 /// 모달 다이얼로그용 공통 프레임(앱 디자인에 맞춘 패널: 어두운 배경 + 테두리 + 둥근 모서리 + 여백).
 /// egui 기본 윈도우 크롬 대신 이걸 쓰고 제목줄은 끈다(title_bar(false)).
 fn modal_frame() -> egui::Frame {
@@ -3455,7 +3580,7 @@ fn reveal_in_file_manager(path: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_capture_datetime, hex_str, parse_hex_rgb};
+    use super::{format_capture_datetime, hex_str, newer_version, parse_hex_rgb, parse_semver};
 
     #[test]
     fn capture_datetime_uses_dots_for_date_keeps_colons_for_time() {
@@ -3480,5 +3605,18 @@ mod tests {
         // 왕복.
         assert_eq!(hex_str([0x1e, 0x1e, 0x1e]), "#1E1E1E");
         assert_eq!(parse_hex_rgb(&hex_str([0x06, 0x07, 0x0a])), Some([0x06, 0x07, 0x0a]));
+    }
+
+    #[test]
+    fn semver_parse_and_compare() {
+        assert_eq!(parse_semver("v0.4.3"), Some((0, 4, 3)));
+        assert_eq!(parse_semver("0.4.3"), Some((0, 4, 3)));
+        assert_eq!(parse_semver("v1.2"), Some((1, 2, 0)));
+        assert_eq!(parse_semver("v0.6.0-rc1"), Some((0, 6, 0)));
+        assert_eq!(parse_semver("nope"), None);
+        // 현재 버전보다 높은 태그만 새 버전으로 인식.
+        assert!(newer_version("v999.0.0").is_some());
+        assert!(newer_version("v0.0.1").is_none());
+        assert!(newer_version(env!("CARGO_PKG_VERSION")).is_none(), "동일 버전은 안내 안 함");
     }
 }

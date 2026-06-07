@@ -11,6 +11,13 @@ build = "build.rs"
 name = "rawblow"
 path = "src/main.rs"
 
+[features]
+# 새 릴리즈 안내(#33): GitHub Releases API 확인용 HTTP(ureq/rustls). 기본 on.
+# rustls(ring)는 C 컴파일이 필요해 cc 없는 환경에선 `--no-default-features`로 끄고
+# 나머지를 cargo check 한다(실 빌드는 Windows에서 기능 켠 채 수행).
+default = ["update-check"]
+update-check = ["dep:ureq"]
+
 # Windows: 로고를 .exe 파일 아이콘(탐색기/작업표시줄)으로 임베드.
 [target.'cfg(windows)'.build-dependencies]
 ico = "0.3"
@@ -33,3 +40,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
 env_logger = "0.11"
+# 새 릴리즈 안내(#33): 가벼운 동기 HTTP + 순수 Rust TLS(rustls, 루트 인증서 번들).
+# 단독 바이너리 철학 유지(tokio 불필요). optional — update-check 기능에서만 빌드.
+ureq = { version = "2", default-features = false, features = ["tls"], optional = true }
