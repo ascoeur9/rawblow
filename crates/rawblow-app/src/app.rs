@@ -1284,10 +1284,7 @@ impl RawBlowApp {
                         {
                             self.open_transfer();
                         }
-                        // 폴더 자동 분류(#34): 셀렉 전송과 별개로, 폴더 안 사진을 기준별 하위폴더로 정리.
-                        if toggle_btn(ui, tr(lang, "정리"), false).clicked() {
-                            self.open_organize();
-                        }
+                        // 폴더 자동 분류(#34)는 좌측 레일 하단으로 이동(테스트 피드백) — 여긴 전송/점프/일괄만.
                         if toggle_btn(ui, &format!("{} (G)", tr(lang, "점프")), false).clicked() {
                             self.jump_open = true;
                         }
@@ -1574,6 +1571,18 @@ impl RawBlowApp {
                     let saved = if self.sidecar_dirty { "● saving…" } else { "● saved" };
                     ui.label(egui::RichText::new(saved).font(mono(10.0)).color(theme::OK));
                     ui.label(egui::RichText::new("SESSION · .rawblow/session.json").font(mono(10.0)).color(theme::INK4));
+                    // 폴더 자동 분류(#34): 툴바에서 레일 하단으로 이동(테스트 피드백). 풀폭 버튼.
+                    // bottom_up이라 SESSION 푸터 위쪽(레일 맨 아래)에 자리한다. 폴더가 비면 비활성.
+                    ui.add_space(10.0);
+                    let organize_btn = egui::Button::new(
+                        egui::RichText::new(tr(lang, "정리")).font(prop(12.0)).color(theme::INK),
+                    )
+                    .fill(theme::BG3)
+                    .stroke(Stroke::new(1.0, theme::LINE2))
+                    .min_size(Vec2::new(RAIL_W - 20.0, 30.0));
+                    if ui.add_enabled(!self.items.is_empty(), organize_btn).clicked() {
+                        self.open_organize();
+                    }
                 });
             });
     }
@@ -2975,20 +2984,34 @@ impl RawBlowApp {
                         (tr(lang, "라이트 그레이"), Some([0xb3, 0xb3, 0xb3])),
                         (tr(lang, "흰색"), Some([0xff, 0xff, 0xff])),
                     ];
+                    // 고정폭 셀 그리드: 라벨 길이가 달라도(검정/라이트 그레이/ミディアムグレー) 색견본과
+                    // 글자가 같은 열에 맞도록 각 프리셋을 동일 크기 셀에 가운데 정렬한다(테스트 피드백).
+                    const BG_CELL: Vec2 = Vec2::new(78.0, 50.0);
                     ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(6.0, 8.0);
                         for (label, val) in presets {
                             let selected = self.cfg.photo_bg == val;
                             let swatch_rgb = val.unwrap_or(theme::BG0_RGB);
-                            ui.vertical(|ui| {
-                                ui.spacing_mut().item_spacing.y = 3.0;
-                                if bg_swatch(ui, swatch_rgb, selected) {
-                                    self.cfg.photo_bg = val;
-                                    self.bg_hex = hex_str(self.photo_bg_rgb());
-                                    let _ = config::save(&self.cfg);
-                                }
-                                ui.label(egui::RichText::new(label).font(mono(9.0)).color(if selected { theme::INK2 } else { theme::INK4 }));
-                            });
-                            ui.add_space(6.0);
+                            let cell = ui.allocate_ui_with_layout(
+                                BG_CELL,
+                                Layout::top_down(Align::Center),
+                                |ui| {
+                                    ui.set_width(BG_CELL.x);
+                                    ui.spacing_mut().item_spacing.y = 4.0;
+                                    let clicked = bg_swatch(ui, swatch_rgb, selected);
+                                    ui.label(
+                                        egui::RichText::new(label)
+                                            .font(mono(9.0))
+                                            .color(if selected { theme::INK2 } else { theme::INK4 }),
+                                    );
+                                    clicked
+                                },
+                            );
+                            if cell.inner {
+                                self.cfg.photo_bg = val;
+                                self.bg_hex = hex_str(self.photo_bg_rgb());
+                                let _ = config::save(&self.cfg);
+                            }
                         }
                     });
                     ui.add_space(8.0);

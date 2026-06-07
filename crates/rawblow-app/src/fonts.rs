@@ -49,17 +49,21 @@ fn cjk_candidates(lang: Lang) -> Vec<&'static str> {
     }
 }
 
-/// 존재하는 CJK 폰트를 **여러 개**(폴백 체인용) (이름, 바이트)로 반환한다(최대 3개). 활성 언어의
+/// 존재하는 CJK 폰트를 **여러 개**(폴백 체인용) (이름, 바이트)로 반환한다(최대 4개). 활성 언어의
 /// 폰트가 primary(첫 번째)가 되어 그 언어 글리프를 모두 커버하므로 폴백이 거의 안 일어나
 /// 글자 어긋남이 없다. 단일 폰트만 쓰면 한국어 폰트(Windows malgun)에 일본어 신자체(黄/緑/青)가
 /// 없어 두부(□)로 깨지므로, 폴백 체인은 그대로 둔다(타 언어 stray 글자 대비).
+///
+/// 상한이 4인 이유: 일본어 UI 후보가 [YuGoth, meiryo, msgothic, malgun]로 한국어 폰트(malgun)가
+/// 맨 뒤다. 상한이 3이면 일본어 폰트 3개에서 잘려 malgun이 안 실리고, 설정 언어 메뉴의
+/// "한국어"(native_name)가 두부(□)로 깨졌다. 4로 올려 일본어 UI에서도 한국어 글리프를 커버한다.
 fn load_cjk_fonts(lang: Lang) -> Vec<(String, Vec<u8>)> {
     let mut out: Vec<(String, Vec<u8>)> = Vec::new();
     for path in cjk_candidates(lang) {
         if let Ok(bytes) = std::fs::read(path) {
             if !bytes.is_empty() && !out.iter().any(|(_, b)| b.len() == bytes.len()) {
                 out.push((format!("cjk{}", out.len()), bytes));
-                if out.len() >= 3 {
+                if out.len() >= 4 {
                     break;
                 }
             }
