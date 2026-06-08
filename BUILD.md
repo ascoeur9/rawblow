@@ -94,6 +94,14 @@ gh release create vX.Y.Z "RawBlow-vX.Y.Z-<os>.exe" \
 
 ## 변경 이력 (Changelog)
 
+### v0.4.4
+- **오픈소스 라이센스 고지(#39)** — 설정 화면 ABOUT의 **"오픈소스 라이센스 고지"**를 누르면 전체 서드파티
+  컴포넌트 목록 + 라이센스 전문이 뜨는 별도 화면으로 전환(돌아가기로 설정 복귀). 수백 KB 고지문은
+  `ScrollArea::show_rows`로 보이는 줄만 렌더해 성능 확보. 고지 대상은 실제 배포(Win/Mac/Linux, normal)
+  의존성으로 한정. 임베드본은 임시 수집본이며, 정식판은 `cargo about generate about.hbs`로 재생성한다.
+- **LICENSE 보강** — RAW 디코더(rawloader/imagepipe/multicache)가 LGPL임을 명시하고, 해당 컴포넌트에
+  대한 LGPL 재링크 권리를 본 독점 라이센스가 제한하지 않음을 분명히 함.
+
 ### v0.4.3
 - **새 릴리즈 안내(#33)** — 실행 후 모든 로딩이 끝나고 유휴 상태일 때 **세션당 1회** 백그라운드로
   GitHub 최신 릴리즈를 확인(설정·시작 프롬프트 없이 자동). 새 버전이 있으면 **좌측 레일 정리 버튼 위에**
