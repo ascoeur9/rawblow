@@ -1,0 +1,50 @@
+# cargo-about 설정 — 서드파티 라이센스 고지 생성.
+#
+# 정식·완전판 고지는 Windows 빌드 PC에서 cargo-about로 생성한다(이 개발기는 cc 링커가
+# 없어 cargo-about 설치/실행 불가). 임시 고지는 registry 캐시의 라이센스 파일을 직접 모아
+# crates/rawblow-app/THIRD-PARTY-LICENSES.txt 로 만들어 두었으며, 아래 명령으로 덮어쓴다:
+#
+#   cargo install cargo-about            # 최초 1회
+#   cargo about generate about.hbs -o crates/rawblow-app/THIRD-PARTY-LICENSES.txt
+#
+# cargo-about는 crates.io에서 라이센스 텍스트를 받아오므로, 패키지에 라이센스 파일이
+# 없는 crate(egui 계열 등)의 저작권·전문까지 정확히 채워준다(임시 수집본의 한계 보완).
+
+# 실제 배포 타겟만 고려(안드로이드/iOS/wasm 의존성 고지 제외).
+targets = [
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+]
+
+# 빌드 전용 의존성은 배포 바이너리에 링크되지 않으므로 고지 대상에서 제외.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+# 워크스페이스 자체 크레이트(rawblow-*)는 고지 대상 아님.
+private = { ignore = true }
+
+# 허용 라이센스 목록(실제 의존성에서 등장하는 SPDX). 목록에 없는 라이센스가 새로
+# 들어오면 cargo-about가 실패하므로, 의존성 추가 시 여기서 점검하게 된다.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "BSL-1.0",
+    "MPL-2.0",
+    "OFL-1.1",
+    "Unlicense",
+    "CDLA-Permissive-2.0",
+    # RAW 디코더(rawloader / imagepipe / multicache) — copyleft지만 정적 링크 사용 가능.
+    # LGPL 의무(소스 입수처·재링크 가능성)는 README/LICENSE 및 고지로 이행.
+    "LGPL-2.1",
+    "LGPL-2.1-or-later",
+    "LGPL-3.0",
+    "LGPL-3.0-only",
+]

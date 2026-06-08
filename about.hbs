@@ -1,0 +1,27 @@
+RawBlow — Third-Party Open Source Licenses
+================================================================
+
+RawBlow bundles the open source components listed below. Each is provided
+under its own license; the full license texts follow the component list.
+
+NOTE: RawBlow's RAW decoding stack (rawloader, imagepipe, multicache) is
+licensed under the GNU LGPL. Under the LGPL you may obtain the source of
+those libraries and relink RawBlow with a modified version; RawBlow's own
+source is published at https://github.com/ascoeur9/rawblow .
+
+Components: {{#each licenses}}{{#each used_by}}{{crate.name}} {{crate.version}}{{#unless @last}}, {{/unless}}{{/each}}{{#unless @last}}, {{/unless}}{{/each}}
+
+================================================================
+LICENSE TEXTS
+================================================================
+{{#each licenses}}
+----------------------------------------------------------------
+{{name}}
+----------------------------------------------------------------
+Used by:
+{{#each used_by}}  - {{crate.name}} {{crate.version}}
+{{/each}}
+
+{{text}}
+
+{{/each}}

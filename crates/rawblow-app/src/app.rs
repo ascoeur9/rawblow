@@ -257,6 +257,9 @@ pub struct RawBlowApp {
     update_checked: bool,                                            // 확인을 이미 시작했는지
     update_rx: Option<crossbeam_channel::Receiver<Option<String>>>, // 결과 채널(Some(ver)=새 버전)
     update_available: Option<String>,                               // 새 버전 표시 문자열(있으면 배너)
+
+    // 오픈소스 라이센스 고지 화면(#39). 설정의 "오픈소스 라이센스"에서 열림.
+    show_licenses: bool,
 }
 
 impl RawBlowApp {
@@ -343,6 +346,7 @@ impl RawBlowApp {
             update_checked: false,
             update_rx: None,
             update_available: None,
+            show_licenses: false,
             cfg,
         };
 
@@ -967,6 +971,9 @@ impl eframe::App for RawBlowApp {
         // 화면 분기.
         if self.folder.is_none() {
             self.ui_open(ctx);
+        } else if self.show_licenses {
+            // 라이센스 고지(#39)는 설정 위에서 열리므로 설정보다 먼저 분기한다.
+            self.ui_licenses(ctx);
         } else if self.show_settings {
             self.ui_settings(ctx);
         } else if self.fullscreen {
@@ -1018,6 +1025,7 @@ impl RawBlowApp {
             || self.jump_open
             || self.bulk_open
             || self.show_settings
+            || self.show_licenses
     }
 
     // ── 입력 ──────────────────────────────────────────────
@@ -3193,6 +3201,22 @@ impl RawBlowApp {
                     ui.add_space(6.0);
                     link_label(ui, tr(lang, "최신 버전 받기 · GitHub Releases"), "https://github.com/ascoeur9/rawblow/releases");
                     link_label(ui, tr(lang, "버그 제보 · GitHub Issues"), "https://github.com/ascoeur9/rawblow/issues");
+                    // 오픈소스 라이센스 고지(#39): URL이 아니라 앱 내 화면으로 전환.
+                    let lic = ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(tr(lang, "오픈소스 라이센스 고지"))
+                                .font(prop(11.5))
+                                .color(theme::ACCENT)
+                                .underline(),
+                        )
+                        .sense(Sense::click()),
+                    );
+                    if lic.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if lic.clicked() {
+                        self.show_licenses = true;
+                    }
                     ui.add_space(10.0);
                     ui.label(egui::RichText::new(tr(lang, "만든 사람 · 하레 (Hare)")).font(prop(11.5)).color(theme::INK2));
                     ui.horizontal(|ui| {
@@ -3208,6 +3232,44 @@ impl RawBlowApp {
         self.grid_cols = self.cfg.grid_cols.clamp(4, 12);
         self.show_exif = self.cfg.show_exif;
         self.show_hist = self.cfg.show_histogram;
+    }
+
+    /// 오픈소스 라이센스 고지 화면(#39). 설정의 "오픈소스 라이센스 고지"에서 열린다.
+    /// 고지문이 수백 KB라 ScrollArea::show_rows로 보이는 행만 그려 성능을 확보한다.
+    fn ui_licenses(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
+        egui::TopBottomPanel::top("licenses_top")
+            .exact_height(TOOLBAR_H)
+            .frame(egui::Frame::none().fill(theme::BG1).inner_margin(egui::Margin::symmetric(12.0, 6.0)))
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    if ui.button(format!("← {}", tr(lang, "돌아가기"))).clicked() {
+                        self.show_licenses = false;
+                    }
+                    ui.label(egui::RichText::new(tr(lang, "오픈소스 라이센스")).font(prop(14.0)).color(theme::INK));
+                });
+            });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(theme::BG1).inner_margin(egui::Margin::same(16.0)))
+            .show(ctx, |ui| {
+                let lines = license_lines();
+                let font = mono(10.0);
+                let row_h = ui.fonts(|f| f.row_height(&font));
+                ui.spacing_mut().item_spacing.y = 0.0;
+                egui::ScrollArea::both().auto_shrink([false, false]).show_rows(
+                    ui,
+                    row_h,
+                    lines.len(),
+                    |ui, range| {
+                        // 보이는 줄만 합쳐 한 번에 그린다(빈 줄도 멀티라인 높이를 유지해 정렬이 맞음).
+                        let chunk = lines[range].join("\n");
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(chunk).font(mono(10.0)).color(theme::INK3))
+                                .selectable(true),
+                        );
+                    },
+                );
+            });
     }
 }
 
@@ -3530,6 +3592,16 @@ fn open_url(url: &str) {
 }
 
 /// 설정 화면용 클릭 가능한 링크(accent 밑줄). 클릭하면 브라우저로 이동(#18).
+/// 서드파티 오픈소스 라이센스 고지(#39). 빌드 시 바이너리에 임베드.
+/// 정식·최신판은 Windows에서 `cargo about generate about.hbs`로 재생성한다(about.toml 참조).
+const LICENSES: &str = include_str!("../THIRD-PARTY-LICENSES.txt");
+
+/// 고지문을 줄 단위로 1회만 분할해 캐시(매 프레임 재분할 회피). ScrollArea::show_rows용.
+fn license_lines() -> &'static [&'static str] {
+    static LINES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    LINES.get_or_init(|| LICENSES.lines().collect())
+}
+
 fn link_label(ui: &mut egui::Ui, text: &str, url: &str) {
     let resp = ui.add(
         egui::Label::new(

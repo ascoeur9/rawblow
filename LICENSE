@@ -11,7 +11,14 @@ software or any portion of it, except with the prior written permission of the
 copyright holder.
 
 Third-party dependencies retain their own licenses; this notice applies only
-to the original source code of RawBlow in this repository.
+to the original source code of RawBlow in this repository. In particular,
+RawBlow's RAW decoding libraries (rawloader, imagepipe, multicache) are
+licensed under the GNU Lesser General Public License (LGPL). Nothing in this
+license restricts the rights granted to you under the LGPL for those
+components, including obtaining their source and modifying and relinking them
+with RawBlow for your own use. A complete list of third-party components and
+their full license texts is available within the application
+(Settings -> Open source licenses) and in THIRD-PARTY-LICENSES.txt.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
