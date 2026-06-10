@@ -2155,7 +2155,15 @@ impl RawBlowApp {
                                 });
                             });
                         hline_full(ui);
-                        // ── BODY ──
+                        // ── BODY ── 노트북 등 낮은 해상도에서 카드가 화면을 넘으면 본문만
+                        // 스크롤시켜 헤더·푸터(전송 시작 버튼)가 항상 보이게 한다(#41).
+                        // 124 = 헤더(~68) + 푸터(~54) + 구분선 2.
+                        let body_max = (screen.height() - card_pos.y - 8.0 - 124.0).max(140.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt("transfer_body_scroll")
+                            .max_height(body_max)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
                         egui::Frame::none()
                             .inner_margin(egui::Margin::symmetric(22.0, 18.0))
                             .show(ui, |ui| {
@@ -2300,6 +2308,7 @@ impl RawBlowApp {
                                         }
                                     }
                                 }
+                            });
                             });
                         hline_full(ui);
                         // ── FOOTER ──
