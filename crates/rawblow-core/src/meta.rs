@@ -20,6 +20,17 @@ pub struct ExifInfo {
     pub white_balance: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    /// 촬영 위치(#38). 표준 EXIF GPS IFD에서 추출. 없으면 None(대부분의 RAW).
+    pub gps: Option<GpsCoord>,
+}
+
+/// GPS 좌표(#38). 위경도는 십진수(deg), 남위/서경은 음수.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GpsCoord {
+    pub lat: f64,
+    pub lon: f64,
+    /// 고도(m). GPSAltitudeRef=1(해수면 아래)이면 음수.
+    pub alt: Option<f64>,
 }
 
 impl ExifInfo {
@@ -32,6 +43,7 @@ impl ExifInfo {
             && self.iso.is_none()
             && self.datetime.is_none()
             && self.width.is_none()
+            && self.gps.is_none()
     }
 }
 
@@ -240,5 +252,57 @@ fn build(exif: &Exif) -> ExifInfo {
         white_balance: disp(exif, Tag::WhiteBalance),
         width: uint(exif, Tag::PixelXDimension).or_else(|| uint(exif, Tag::ImageWidth)),
         height: uint(exif, Tag::PixelYDimension).or_else(|| uint(exif, Tag::ImageLength)),
+        gps: gps_coord(exif),
     }
+}
+
+/// GPS IFD에서 위경도/고도를 십진수로 추출(#38). 위경도는 도/분/초 rational ×3 +
+/// 반구 기호(N/S, E/W). 어느 하나라도 깨져 있으면 None(조용히 미표시).
+fn gps_coord(exif: &Exif) -> Option<GpsCoord> {
+    fn dms(exif: &Exif, tag: Tag) -> Option<f64> {
+        let f = exif.get_field(tag, In::PRIMARY)?;
+        if let Value::Rational(r) = &f.value {
+            let d = r.first()?.to_f64();
+            let m = r.get(1).map(|v| v.to_f64()).unwrap_or(0.0);
+            let s = r.get(2).map(|v| v.to_f64()).unwrap_or(0.0);
+            let v = d + m / 60.0 + s / 3600.0;
+            return v.is_finite().then_some(v);
+        }
+        None
+    }
+    fn hemi(exif: &Exif, tag: Tag) -> Option<char> {
+        let f = exif.get_field(tag, In::PRIMARY)?;
+        if let Value::Ascii(parts) = &f.value {
+            return parts.first().and_then(|p| p.first()).map(|b| (*b as char).to_ascii_uppercase());
+        }
+        None
+    }
+    let mut lat = dms(exif, Tag::GPSLatitude)?;
+    let mut lon = dms(exif, Tag::GPSLongitude)?;
+    if hemi(exif, Tag::GPSLatitudeRef) == Some('S') {
+        lat = -lat;
+    }
+    if hemi(exif, Tag::GPSLongitudeRef) == Some('W') {
+        lon = -lon;
+    }
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+        return None;
+    }
+    // (0,0)은 대서양 한복판 — 실촬영이 아니라 GPS 미수신 기본값일 확률이 압도적이라 버린다.
+    if lat == 0.0 && lon == 0.0 {
+        return None;
+    }
+    let alt = exif.get_field(Tag::GPSAltitude, In::PRIMARY).and_then(|f| {
+        if let Value::Rational(r) = &f.value {
+            let v = r.first()?.to_f64();
+            let below = exif
+                .get_field(Tag::GPSAltitudeRef, In::PRIMARY)
+                .and_then(|f| f.value.get_uint(0))
+                == Some(1);
+            v.is_finite().then_some(if below { -v } else { v })
+        } else {
+            None
+        }
+    });
+    Some(GpsCoord { lat, lon, alt })
 }

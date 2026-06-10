@@ -105,6 +105,12 @@ pub struct Config {
     /// 설정에서 프리셋 또는 HEX/RGB로 변경.
     #[serde(default)]
     pub photo_bg: Option<[u8; 3]>,
+    /// GPS 촬영 위치 미니 지도 표시(#38). `M`으로 토글, 저장. 기본 off.
+    #[serde(default)]
+    pub show_map: bool,
+    /// AF 포인트 오버레이 표시(#37). `A`로 토글, 저장. 기본 off.
+    #[serde(default)]
+    pub show_af: bool,
 }
 
 impl Default for Config {
@@ -123,6 +129,8 @@ impl Default for Config {
             lang: None,           // OS 언어 자동(#30).
             tag_names: Default::default(), // 5색 모두 빈 이름(기본 색 이름 표시)(#27).
             photo_bg: None,       // 앱 기본 배경(near-black void)(#36).
+            show_map: false,      // GPS 미니 지도(#38). 기본 off.
+            show_af: false,       // AF 포인트 오버레이(#37). 기본 off.
         }
     }
 }

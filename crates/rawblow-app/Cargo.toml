@@ -30,6 +30,8 @@ objc = "0.2"
 
 [dependencies]
 rawblow-core = { path = "../rawblow-core" }
+# GPS 미니 지도(#38): OSM 타일 PNG 디코드용(코어와 같은 image, png만).
+image = { version = "0.25", default-features = false, features = ["png"] }
 # glow(OpenGL 백엔드)는 빼고 wgpu만. winit 백엔드(x11/wayland)는 반드시 포함해야 함.
 eframe = { version = "0.29", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
 egui = "0.29"

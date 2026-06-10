@@ -1,6 +1,8 @@
 # 개발 기획 — AF 포인트 표시 가능여부 검토 (#37)
 
-> 상태: **검토 중 (미구현)**. 본 문서는 구현 전 사전 조사 결과 + **Windows 빌드 PC에서 진행할 검증 체크리스트**임.
+> 상태: **구현 완료 (오너 육안 QA 대기)** — 2026-06-11, `rawblow-core/src/af.rs` + `A` 토글 오버레이.
+> Canon AFInfo·AFInfo2 / Panasonic AFPointPosition+AFAreaSize / Sony FocusLocation 지원,
+> 실파일 좌표는 ExifTool 13.59와 교차검증(통합 테스트 3종). 남은 것: §4-3 "실제 초점과 일치?" 육안 대조.
 > 작성: 2026-06-08. 조사 환경: Linux 개발기(cc 링커 없음, 샘플은 파나소닉 RW2 위주 + Sony ARW 1장).
 
 ## 0. 이슈 요약

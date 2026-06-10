@@ -50,6 +50,11 @@ struct Item {
     entry: Entry,
     exif: Option<ExifInfo>,
     exif_loaded: bool,
+    /// AF 포인트(#37). 오버레이가 켜진 항목에서만 지연 파싱(prefix 2MB 재독).
+    af: Option<rawblow_core::af::AfInfo>,
+    af_loaded: bool,
+    /// EXIF Orientation(1..8). AF 좌표(센서 기준)를 표시 좌표로 돌릴 때 필요.
+    orient: Option<u16>,
 }
 
 /// 전송 다이얼로그 리네임 모드(#26). 프리셋 3종 + 자유 템플릿.
@@ -259,6 +264,23 @@ pub struct RawBlowApp {
     update_checked: bool,                                            // 확인을 이미 시작했는지
     update_rx: Option<crossbeam_channel::Receiver<Option<String>>>, // 결과 채널(Some(ver)=새 버전)
     update_available: Option<String>,                               // 새 버전 표시 문자열(있으면 배너)
+
+    // GPS 미니 지도(#38) / AF 포인트 오버레이(#37). cfg 저장값으로 시작, M/A로 토글.
+    show_map: bool,
+    show_af: bool,
+    map_state: Option<MapState>, // 현재 항목·줌의 지도 패널 상태(항목 바뀌면 교체).
+    map_zoom: u8,                // 지도 줌(패널 ±버튼). 세션 한정.
+}
+
+/// GPS 미니 지도(#38) 패널 상태. (항목, 줌)당 하나 — 바뀌면 새로 만든다.
+struct MapState {
+    real: usize,
+    zoom: u8,
+    lat: f64,
+    lon: f64,
+    rx: Option<crossbeam_channel::Receiver<Option<crate::map::MapImage>>>,
+    tex: Option<egui::TextureHandle>,
+    failed: bool,
 }
 
 impl RawBlowApp {
@@ -346,6 +368,10 @@ impl RawBlowApp {
             update_checked: false,
             update_rx: None,
             update_available: None,
+            show_map: cfg.show_map,
+            show_af: cfg.show_af,
+            map_state: None,
+            map_zoom: 13, // 동네 수준 컨텍스트. 패널 ±로 3~17 조절.
             cfg,
         };
 
@@ -378,6 +404,9 @@ impl RawBlowApp {
                 entry,
                 exif: None,
                 exif_loaded: false,
+                af: None,
+                af_loaded: false,
+                orient: None,
             })
             .collect();
 
@@ -495,6 +524,19 @@ impl RawBlowApp {
             if !it.exif_loaded {
                 it.exif = read_exif(&it.entry.display);
                 it.exif_loaded = true;
+            }
+        }
+    }
+
+    /// AF 포인트(#37)·Orientation 지연 파싱. 오버레이가 켜진 항목에서만 호출(prefix 2MB).
+    fn ensure_af(&mut self, real: usize) {
+        if let Some(it) = self.items.get_mut(real) {
+            if !it.af_loaded {
+                it.af = rawblow_core::af::parse_af(&it.entry.display);
+                it.af_loaded = true;
+            }
+            if it.orient.is_none() {
+                it.orient = Some(rawblow_core::meta::orientation(&it.entry.display));
             }
         }
     }
@@ -1083,6 +1125,17 @@ impl RawBlowApp {
                         }
                         Key::I => self.show_exif = !self.show_exif,
                         Key::H => self.show_hist = !self.show_hist,
+                        // GPS 미니 지도(#38) / AF 포인트(#37): 토글 즉시 저장(요구: 설정 유지).
+                        Key::M => {
+                            self.show_map = !self.show_map;
+                            self.cfg.show_map = self.show_map;
+                            let _ = config::save(&self.cfg);
+                        }
+                        Key::A => {
+                            self.show_af = !self.show_af;
+                            self.cfg.show_af = self.show_af;
+                            let _ = config::save(&self.cfg);
+                        }
                         Key::Space | Key::Z => {
                             // 창맞춤 ↔ 1:1 토글.
                             if self.fit {
@@ -1804,6 +1857,7 @@ impl RawBlowApp {
         if !self.has_modal() {
             let suffix = if self.full_raw { "ORIG · sRGB" } else { "FIT · sRGB" };
             self.paint_hud(ui, rect, real, suffix);
+            self.ui_map_overlay(ui, rect, real);
         }
     }
 
@@ -1904,6 +1958,39 @@ impl RawBlowApp {
         let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
         let target = Rect::from_center_size(area.center() + self.pan, scaled);
         ui.painter().with_clip_rect(area).image(tex, target, uv, Color32::WHITE);
+
+        // AF 포인트 오버레이(#37): 측거점 사각형을 사진 위에 그린다. 좌표는 센서(미회전)
+        // 기준 0..1 정규화이므로 EXIF orientation으로 표시 좌표계로 돌린다. 데이터 없는
+        // 바디·MF는 af가 None → 조용히 미표시.
+        if self.show_af {
+            self.ensure_af(real);
+            if let Some(it) = self.items.get(real) {
+                if let Some(af) = &it.af {
+                    let orient = it.orient.unwrap_or(1);
+                    let p = ui.painter().with_clip_rect(area);
+                    for pt in &af.points {
+                        let (cx, cy, w, h) = af_display_coords(pt, orient);
+                        let center = Pos2::new(
+                            target.min.x + cx as f32 * target.width(),
+                            target.min.y + cy as f32 * target.height(),
+                        );
+                        // 크기 미기록(0.0)은 고정 비율 박스 폴백(구형 캐논 단일점·소니 위치점).
+                        let bw = if w > 0.0 { w as f32 * target.width() } else { 0.045 * target.width().min(target.height()) };
+                        let bh = if h > 0.0 { h as f32 * target.height() } else { bw };
+                        let r = Rect::from_center_size(center, Vec2::new(bw.max(8.0), bh.max(8.0)));
+                        // 합초점은 초록 굵게, 선택만 된 점은 밝게, 나머지는 흐리게(DPP 스타일).
+                        let (color, width) = if pt.in_focus {
+                            (theme::OK, 2.0)
+                        } else if pt.selected {
+                            (theme::INK2, 1.2)
+                        } else {
+                            (theme::INK4, 1.0)
+                        };
+                        p.rect_stroke(r, Rounding::same(2.0), Stroke::new(width, color));
+                    }
+                }
+            }
+        }
 
         // 이동 가능하면 손 커서.
         if !self.fit && (max_px > 0.0 || max_py > 0.0) {
@@ -2069,6 +2156,137 @@ impl RawBlowApp {
         });
     }
 
+    /// GPS 미니 지도 패널(#38). 우상단 코너, 현재 항목에 GPS가 있을 때만. 합성은
+    /// 백그라운드 스레드(타일: 디스크 캐시 → OSM), 시작은 사진 디코딩이 유휴일 때만.
+    /// 클릭하면 브라우저에서 OSM으로 크게 보기, ±로 줌(3~17).
+    fn ui_map_overlay(&mut self, ui: &mut egui::Ui, area: Rect, real: usize) {
+        if !self.show_map {
+            self.map_state = None;
+            return;
+        }
+        let lang = self.lang;
+        self.ensure_exif(real);
+        let Some(gps) = self.items.get(real).and_then(|it| it.exif.as_ref()).and_then(|e| e.gps) else {
+            self.map_state = None;
+            return; // GPS 없는 사진은 자동 미표시.
+        };
+        const MW: u32 = 220;
+        const MH: u32 = 150;
+        let zoom = self.map_zoom;
+        // 항목·줌이 바뀌면 새로 합성. 단, 시작은 디코딩 유휴 시에만(사진 표시가 우선, #33 패턴).
+        let stale = self.map_state.as_ref().map(|m| m.real != real || m.zoom != zoom).unwrap_or(true);
+        if stale {
+            let idle = self.pending_preview.is_empty() && self.pending_thumb.is_empty();
+            if idle {
+                let (tx, rx) = crossbeam_channel::bounded(1);
+                let cache = crate::map::cache_dir();
+                let (lat, lon) = (gps.lat, gps.lon);
+                std::thread::spawn(move || {
+                    let _ = tx.send(crate::map::compose(lat, lon, zoom, MW, MH, &cache));
+                });
+                self.map_state = Some(MapState {
+                    real,
+                    zoom,
+                    lat: gps.lat,
+                    lon: gps.lon,
+                    rx: Some(rx),
+                    tex: None,
+                    failed: false,
+                });
+            } else {
+                // 디코딩 끝나면 시작하도록 다음 프레임 재확인.
+                ui.ctx().request_repaint_after(Duration::from_millis(200));
+                if self.map_state.is_none() {
+                    return;
+                }
+            }
+        }
+        // 결과 수신 → 텍스처 업로드(네트워크 스레드는 egui를 못 깨우므로 폴링).
+        if let Some(st) = &mut self.map_state {
+            if let Some(rx) = &st.rx {
+                match rx.try_recv() {
+                    Ok(Some(img)) => {
+                        let ci = egui::ColorImage::from_rgba_unmultiplied([img.w as usize, img.h as usize], &img.rgba);
+                        st.tex = Some(ui.ctx().load_texture(
+                            format!("map_{}_{}", st.real, st.zoom),
+                            ci,
+                            egui::TextureOptions::LINEAR,
+                        ));
+                        st.rx = None;
+                    }
+                    Ok(None) => {
+                        st.failed = true; // 오프라인 + 캐시 없음.
+                        st.rx = None;
+                    }
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                        st.failed = true;
+                        st.rx = None;
+                    }
+                    Err(crossbeam_channel::TryRecvError::Empty) => {
+                        ui.ctx().request_repaint_after(Duration::from_millis(300));
+                    }
+                }
+            }
+        }
+        let Some(st) = &self.map_state else { return };
+        let (tex_id, failed, lat, lon) = (st.tex.as_ref().map(|t| t.id()), st.failed, st.lat, st.lon);
+
+        // 패널: 우상단 카운터 아래.
+        let panel = Rect::from_min_size(
+            Pos2::new(area.right() - MW as f32 - 18.0, area.top() + 64.0),
+            Vec2::new(MW as f32, MH as f32),
+        );
+        let p = ui.painter();
+        p.rect_filled(panel.expand(4.0), Rounding::same(6.0), Color32::from_black_alpha(150));
+        if let Some(tid) = tex_id {
+            p.image(tid, panel, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+            // 위치 마커(패널 정중앙 = 촬영 좌표).
+            let c = panel.center();
+            p.circle_filled(c, 5.0, theme::REJECT);
+            p.circle_stroke(c, 5.0, Stroke::new(1.5, Color32::WHITE));
+            // OSM attribution(타일 정책 필수). 지도 위 가독성용 어두운 띠.
+            let att = panel.with_min_y(panel.bottom() - 13.0);
+            p.rect_filled(att, Rounding::ZERO, Color32::from_black_alpha(120));
+            p.text(
+                att.right_center() + Vec2::new(-4.0, 0.0),
+                Align2::RIGHT_CENTER,
+                "© OpenStreetMap contributors",
+                mono(8.0),
+                Color32::from_gray(0xdd),
+            );
+        } else {
+            let msg = if failed { tr(lang, "지도를 불러올 수 없음 (오프라인?)") } else { tr(lang, "지도 로딩…") };
+            p.text(panel.center(), Align2::CENTER_CENTER, msg, mono(10.0), theme::INK3);
+        }
+        // 좌표 라벨(패널 아래).
+        p.text(
+            panel.left_bottom() + Vec2::new(0.0, 8.0),
+            Align2::LEFT_TOP,
+            format!("{:.5}, {:.5}", lat, lon),
+            mono(9.0),
+            theme::INK3,
+        );
+        // 클릭 → 브라우저로 크게 보기.
+        let resp = ui.interact(panel, ui.id().with("map_panel"), Sense::click());
+        if resp.clicked() {
+            open_url(&crate::map::osm_url(lat, lon, zoom.max(15)));
+        }
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        // 줌 ±(패널 좌상단).
+        for (i, (label, delta)) in [("+", 1i16), ("−", -1i16)].iter().enumerate() {
+            let br = Rect::from_min_size(panel.left_top() + Vec2::new(4.0 + i as f32 * 22.0, 4.0), Vec2::splat(18.0));
+            let r = ui.interact(br, ui.id().with(("map_zoom_btn", i)), Sense::click());
+            let pb = ui.painter();
+            pb.rect_filled(br, Rounding::same(4.0), Color32::from_black_alpha(170));
+            pb.text(br.center(), Align2::CENTER_CENTER, *label, mono(12.0), if r.hovered() { theme::INK } else { theme::INK2 });
+            if r.clicked() {
+                self.map_zoom = (self.map_zoom as i16 + delta).clamp(3, 17) as u8;
+            }
+        }
+    }
+
     fn ui_fullscreen(&mut self, ctx: &egui::Context) {
         let bg = self.photo_bg();
         egui::CentralPanel::default()
@@ -2078,6 +2296,7 @@ impl RawBlowApp {
                 if let Some(real) = self.current_real() {
                     self.photo_view(ui, rect, real);
                     self.paint_hud(ui, rect, real, "FULLSCREEN · ESC");
+                    self.ui_map_overlay(ui, rect, real);
                 }
             });
     }
@@ -3194,6 +3413,8 @@ impl RawBlowApp {
                     ui.label(egui::RichText::new(tr(lang, "단축키 재바인딩 UI는 v1.1 예정 — 현재 기본값 QWER 고정 표시")).font(mono(10.0)).color(theme::INK4));
                     ui.add_space(6.0);
                     ui.label(egui::RichText::new(tr(lang, "별점 1~5 지정 · ` (백틱)으로 해제 — 라벨(QWER)과 독립으로 동시에 매겨집니다")).font(mono(10.0)).color(theme::INK4));
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(tr(lang, "M = 촬영 위치 미니 지도(GPS 있는 사진) · A = AF 포인트 표시 — 토글 상태는 저장됩니다")).font(mono(10.0)).color(theme::INK4));
 
                     // ── COLOR TAGS (#27): 색별 커스텀 이름. 비우면 기본 색 이름 표시 ──
                     ui.add_space(18.0);
@@ -3384,6 +3605,22 @@ fn bg_swatch(ui: &mut egui::Ui, rgb: [u8; 3], selected: bool) -> bool {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     resp.clicked()
+}
+
+/// AF 정규화 좌표(센서 기준, 원점 좌상단)를 EXIF orientation이 적용된 표시
+/// 좌표계로 변환한다(#37). 90/270도 회전은 폭/높이도 맞바꾼다.
+fn af_display_coords(pt: &rawblow_core::af::AfPoint, orient: u16) -> (f64, f64, f64, f64) {
+    let (x, y, w, h) = (pt.cx, pt.cy, pt.w, pt.h);
+    match orient {
+        2 => (1.0 - x, y, w, h),         // 좌우 미러
+        3 => (1.0 - x, 1.0 - y, w, h),   // 180°
+        4 => (x, 1.0 - y, w, h),         // 상하 미러
+        5 => (y, x, h, w),               // 전치
+        6 => (1.0 - y, x, h, w),         // 90° CW
+        7 => (1.0 - y, 1.0 - x, h, w),   // 전치 + 180°
+        8 => (y, 1.0 - x, h, w),         // 90° CCW
+        _ => (x, y, w, h),
+    }
 }
 
 /// `#rrggbb` 또는 `rrggbb`(공백 허용) → [r,g,b](#36). 형식이 아니면 None.

@@ -6,6 +6,7 @@ mod fonts;
 mod i18n;
 mod licenses;
 mod logo;
+mod map;
 #[cfg(target_os = "macos")]
 mod macos_locale;
 mod theme;

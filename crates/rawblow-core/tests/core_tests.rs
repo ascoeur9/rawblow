@@ -967,3 +967,137 @@ fn organize_skips_files_already_in_place() {
     assert_eq!(report.transferred, 0, "이미 제자리면 이동 없음");
     assert!(jpg_dir.join("A.JPG").exists());
 }
+
+// ── AF 포인트 추출(#37) — 실파일 교차검증(ExifTool 13.59 덤프 기준, plan-af-points §4-3) ──
+
+/// 샘플이 없으면 조용히 건너뛴다(soft-skip). AF 테스트는 합성 단위테스트(af.rs)가
+/// 기본 가드이고, 이 테스트는 실파일 좌표가 ExifTool과 일치하는지 추가 확인용.
+fn sample_file(rel: &str) -> Option<PathBuf> {
+    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sample").join(rel);
+    p.exists().then_some(p)
+}
+
+#[test]
+fn af_panasonic_rw2_matches_exiftool() {
+    let Some(p) = sample_file("P1186492.RW2") else {
+        eprintln!("skip: sample/P1186492.RW2 없음");
+        return;
+    };
+    let af = rawblow_core::af::parse_af(&p).expect("RW2 AF 추출");
+    assert_eq!(af.source, "panasonic");
+    assert_eq!(af.points.len(), 1);
+    let pt = af.points[0];
+    // ExifTool: AFPointPosition "0.65 0.46", AFAreaSize "0.0498046875 0.07421875".
+    assert!((pt.cx - 0.65).abs() < 0.005, "cx={}", pt.cx);
+    assert!((pt.cy - 0.46).abs() < 0.005, "cy={}", pt.cy);
+    assert!((pt.w - 0.0498046875).abs() < 1e-6, "w={}", pt.w);
+    assert!((pt.h - 0.07421875).abs() < 1e-6, "h={}", pt.h);
+}
+
+#[test]
+fn af_canon_cr2_matches_exiftool() {
+    let Some(p) = sample_file("IMG_0005.CR2") else {
+        eprintln!("skip: sample/IMG_0005.CR2 없음");
+        return;
+    };
+    let af = rawblow_core::af::parse_af(&p).expect("CR2 AF 추출");
+    assert_eq!(af.source, "canon-afinfo2");
+    // ExifTool: NumAFPoints 9, AFImageWidth/Height 5616/3744,
+    // AFAreaXPositions -1173 -561 0 561 1173 561 0 -561 0, InFocus 1,2,8, Selected 0~8.
+    assert_eq!(af.points.len(), 9);
+    let inf: Vec<usize> = af.points.iter().enumerate().filter(|(_, p)| p.in_focus).map(|(i, _)| i).collect();
+    assert_eq!(inf, vec![1, 2, 8]);
+    assert!(af.points.iter().all(|p| p.selected));
+    let p1 = af.points[1];
+    assert!((p1.cx - (0.5 - 561.0 / 5616.0)).abs() < 1e-9, "cx={}", p1.cx);
+    // Y=280(위로 양수) → cy = 0.5 - 280/3744.
+    assert!((p1.cy - (0.5 - 280.0 / 3744.0)).abs() < 1e-9, "cy={}", p1.cy);
+    // 모든 점이 0..1 안.
+    assert!(af.points.iter().all(|p| (0.0..=1.0).contains(&p.cx) && (0.0..=1.0).contains(&p.cy)));
+}
+
+#[test]
+fn af_sony_arw_matches_exiftool() {
+    let Some(p) = sample_file("organize_test/_DSC0504.ARW") else {
+        eprintln!("skip: sample/organize_test/_DSC0504.ARW 없음");
+        return;
+    };
+    let af = rawblow_core::af::parse_af(&p).expect("ARW AF 추출");
+    assert_eq!(af.source, "sony");
+    let pt = af.points[0];
+    // ExifTool: FocusLocation "7952 5304 5976 2552".
+    assert!((pt.cx - 5976.0 / 7952.0).abs() < 1e-9, "cx={}", pt.cx);
+    assert!((pt.cy - 2552.0 / 5304.0).abs() < 1e-9, "cy={}", pt.cy);
+}
+
+// ── GPS 추출(#38) — 합성 TIFF(GPS IFD)로 결정적 검증(샘플 불필요) ──────────
+
+#[test]
+fn gps_extraction_from_synthetic_tiff() {
+    // LE TIFF: IFD0[GPSInfoIFDPointer] → GPS IFD[LatRef,Lat,LonRef,Lon,AltRef,Alt].
+    fn put16(b: &mut Vec<u8>, v: u16) { b.extend_from_slice(&v.to_le_bytes()); }
+    fn put32(b: &mut Vec<u8>, v: u32) { b.extend_from_slice(&v.to_le_bytes()); }
+    fn rat(b: &mut Vec<u8>, n: u32, d: u32) { put32(b, n); put32(b, d); }
+
+    let mut b = Vec::new();
+    b.extend_from_slice(b"II");
+    put16(&mut b, 42);
+    put32(&mut b, 8);
+    // IFD0: 엔트리 1(GPS IFD 포인터 0x8825). 8+2+12+4 = 26.
+    put16(&mut b, 1);
+    put16(&mut b, 0x8825);
+    put16(&mut b, 4);
+    put32(&mut b, 1);
+    put32(&mut b, 26);
+    put32(&mut b, 0);
+    // GPS IFD: 엔트리 6개 → 26+2+6*12+4 = 104 부터 데이터.
+    assert_eq!(b.len(), 26);
+    put16(&mut b, 6);
+    // 0x01 GPSLatitudeRef = "S" (남위 → 음수).
+    put16(&mut b, 0x0001); put16(&mut b, 2); put32(&mut b, 2); b.extend_from_slice(b"S\0\0\0");
+    // 0x02 GPSLatitude = 33° 52' 4.8" (시드니 근방) @ offset 104.
+    put16(&mut b, 0x0002); put16(&mut b, 5); put32(&mut b, 3); put32(&mut b, 104);
+    // 0x03 GPSLongitudeRef = "E".
+    put16(&mut b, 0x0003); put16(&mut b, 2); put32(&mut b, 2); b.extend_from_slice(b"E\0\0\0");
+    // 0x04 GPSLongitude = 151° 12' 36" @ offset 128.
+    put16(&mut b, 0x0004); put16(&mut b, 5); put32(&mut b, 3); put32(&mut b, 128);
+    // 0x05 GPSAltitudeRef = 1 (해수면 아래).
+    put16(&mut b, 0x0005); put16(&mut b, 1); put32(&mut b, 1); put32(&mut b, 1);
+    // 0x06 GPSAltitude = 12.5m @ offset 152.
+    put16(&mut b, 0x0006); put16(&mut b, 5); put32(&mut b, 1); put32(&mut b, 152);
+    put32(&mut b, 0); // next IFD.
+    assert_eq!(b.len(), 104);
+    rat(&mut b, 33, 1); rat(&mut b, 52, 1); rat(&mut b, 48, 10); // 33°52'4.8"
+    rat(&mut b, 151, 1); rat(&mut b, 12, 1); rat(&mut b, 36, 1); // 151°12'36"
+    rat(&mut b, 125, 10); // 12.5m
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gps.tif");
+    std::fs::write(&path, &b).unwrap();
+    let info = rawblow_core::meta::read_exif(&path).expect("EXIF 읽기");
+    let gps = info.gps.expect("GPS 추출");
+    assert!((gps.lat - -(33.0 + 52.0 / 60.0 + 4.8 / 3600.0)).abs() < 1e-9, "lat={}", gps.lat);
+    assert!((gps.lon - (151.0 + 12.0 / 60.0 + 36.0 / 3600.0)).abs() < 1e-9, "lon={}", gps.lon);
+    assert_eq!(gps.alt, Some(-12.5));
+}
+
+#[test]
+fn gps_extraction_from_real_tagged_jpg() {
+    // ExifTool로 지오태깅한 QA 샘플(sample/gps_test/, gitignored). 없으면 skip.
+    let Some(p) = sample_file("gps_test/GPS_SEOUL.JPG") else {
+        eprintln!("skip: sample/gps_test/GPS_SEOUL.JPG 없음");
+        return;
+    };
+    let gps = rawblow_core::meta::read_exif(&p).and_then(|i| i.gps).expect("GPS 추출");
+    assert!((gps.lat - 37.5665).abs() < 1e-4, "lat={}", gps.lat);
+    assert!((gps.lon - 126.978).abs() < 1e-4, "lon={}", gps.lon);
+    // 남반구 부호.
+    if let Some(p2) = sample_file("gps_test/GPS_SYDNEY.JPG") {
+        let g2 = rawblow_core::meta::read_exif(&p2).and_then(|i| i.gps).expect("GPS 추출");
+        assert!(g2.lat < 0.0 && (g2.lat + 33.8568).abs() < 1e-4, "lat={}", g2.lat);
+    }
+    // GPS 없는 파일은 None.
+    if let Some(p3) = sample_file("gps_test/GPS_NONE.JPG") {
+        assert!(rawblow_core::meta::read_exif(&p3).map_or(true, |i| i.gps.is_none()));
+    }
+}

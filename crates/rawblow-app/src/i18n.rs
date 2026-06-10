@@ -260,6 +260,13 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "흰색" => ("White", "白"),
         // #33 새 릴리즈 안내
         "새로운 버전이 있습니다" => ("A new version is available", "新しいバージョンがあります"),
+        // #37 AF 포인트 / #38 GPS 지도
+        "지도 로딩…" => ("Loading map…", "地図を読み込み中…"),
+        "지도를 불러올 수 없음 (오프라인?)" => ("Couldn't load map (offline?)", "地図を読み込めません（オフライン？）"),
+        "M = 촬영 위치 미니 지도(GPS 있는 사진) · A = AF 포인트 표시 — 토글 상태는 저장됩니다" => (
+            "M = location mini-map (geotagged photos) · A = AF point overlay — toggle state is saved",
+            "M = 撮影位置ミニマップ（GPS付き写真） · A = AFポイント表示 — トグル状態は保存されます",
+        ),
         // #39 오픈소스 라이센스 고지
         "오픈소스 라이센스" => ("Open Source Licenses", "オープンソースライセンス"),
         "이 프로그램이 포함한 오픈소스 구성요소 목록과 라이센스 전문" => (

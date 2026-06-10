@@ -2792,6 +2792,7 @@ dependencies = [
  "egui",
  "env_logger",
  "ico",
+ "image 0.25.10",
  "log",
  "objc",
  "rawblow-core",

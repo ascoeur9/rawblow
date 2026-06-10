@@ -94,6 +94,19 @@ gh release create vX.Y.Z "RawBlow-vX.Y.Z-<os>.exe" \
 
 ## 변경 이력 (Changelog)
 
+### 미릴리즈 (다음 버전)
+- **AF 포인트 오버레이(#37)** — `A` 토글(저장됨). 촬영 시 카메라가 잡은 측거점을 사진 위에 사각형으로
+  표시: 합초점은 초록 굵게, 선택점은 밝게, 나머지는 흐리게(DPP 스타일). MakerNote를 직접 파싱
+  (`rawblow-core/src/af.rs`, ExifTool 레이아웃 기준): Canon AFInfo·AFInfo2(좌표+크기+합초/선택 비트),
+  Panasonic AFPointPosition+AFAreaSize(0~1 정규화), Sony FocusLocation(위치점). 크기 미기록 바디는
+  고정 크기 박스 폴백. EXIF orientation(미러 포함 1~8) 보정, 줌/팬 추종. 데이터 없는 사진·MF·미지원
+  바디는 조용히 미표시. 실파일 좌표는 ExifTool 13.59와 교차검증(테스트 3종 + 합성 2종).
+- **GPS 촬영 위치 미니 지도(#38)** — `M` 토글(저장됨). GPS가 있는 사진에서 우상단에 OSM 정적 지도
+  패널(마커·좌표·"© OpenStreetMap contributors")을 표시. 타일은 디스크 캐시(`map-cache`) → 네트워크
+  (ureq, `update-check` 기능과 의존성 공유) 순으로 얻고, **사진 디코딩이 유휴일 때만** 합성 시작(#33
+  패턴 — 사진 표시 속도 영향 0). 패널 ±로 줌(3~17), 클릭하면 브라우저에서 OSM으로 크게 보기.
+  오프라인·GPS 없음은 조용히 처리. GPS 추출은 표준 EXIF GPS IFD(kamadak-exif, 남위/서경 부호 처리).
+
 ### v0.4.4
 - **내보내기(전송) 창 잘림 수정(#41)** — 노트북 등 낮은 해상도에서 Ctrl+E 파일 전송 카드가 화면을 넘어
   "전송 시작" 버튼을 누를 수 없던 문제. 본문만 스크롤되게 하고 헤더·푸터(버튼)는 항상 화면 안에 보이도록 수정.
