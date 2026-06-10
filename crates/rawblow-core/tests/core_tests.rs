@@ -73,9 +73,11 @@ fn extract_embedded_jpeg_from_real_rw2() {
     let jpeg = decode::extract_embedded_jpeg(&bytes).expect("RW2에서 임베디드 JPEG 추출");
     assert_eq!(&jpeg[0..3], &[0xFF, 0xD8, 0xFF], "JPEG SOI로 시작");
 
-    // 실제로 디코딩되어 합리적 해상도가 나오는지.
+    // 실제로 디코딩되어 합리적 해상도가 나오는지. 세로 촬영 샘플도 통과하도록
+    // 장변/단변 기준(방향 무관)으로 검사한다.
     let img = decode::decode_file(&rw2, decode::DecodeOptions::default()).expect("RW2 디코딩");
-    assert!(img.width >= 1920 && img.height >= 1080, "프리뷰가 충분히 큼: {}x{}", img.width, img.height);
+    let (long, short) = (img.width.max(img.height), img.width.min(img.height));
+    assert!(long >= 1920 && short >= 1080, "프리뷰가 충분히 큼: {}x{}", img.width, img.height);
     assert_eq!(img.rgba.len(), (img.width * img.height * 4) as usize);
 }
 
