@@ -60,6 +60,7 @@ fn fmt_lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "{}건 → {}" => ("{} → {}", "{} 件 → {}"),
         "썸네일 캐시 사용량 · {}" => ("Thumbnail cache usage · {}", "サムネイルキャッシュ使用量 · {}"),
         "{} / {} 파일" => ("{} / {} files", "{} / {} ファイル"),
+        "{} 구성요소" => ("{} components", "{} コンポーネント"),
         _ => return None,
     })
 }
@@ -259,6 +260,16 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "흰색" => ("White", "白"),
         // #33 새 릴리즈 안내
         "새로운 버전이 있습니다" => ("A new version is available", "新しいバージョンがあります"),
+        // #39 오픈소스 라이센스 고지
+        "오픈소스 라이센스" => ("Open Source Licenses", "オープンソースライセンス"),
+        "이 프로그램이 포함한 오픈소스 구성요소 목록과 라이센스 전문" => (
+            "List of bundled open source components and their full license texts",
+            "本アプリに含まれるオープンソースコンポーネントの一覧とライセンス全文",
+        ),
+        "이 프로그램은 아래의 오픈소스 소프트웨어를 포함합니다. LGPL 구성요소(rawloader · imagepipe · multicache)의 소스코드는 각 항목의 저장소 링크에서 구할 수 있습니다." => (
+            "This application includes the open source software listed below. Source code for the LGPL components (rawloader · imagepipe · multicache) is available at each component's repository link.",
+            "本アプリは以下のオープンソースソフトウェアを含みます。LGPLコンポーネント（rawloader · imagepipe · multicache）のソースコードは各項目のリポジトリリンクから入手できます。",
+        ),
         _ => return None,
     })
 }

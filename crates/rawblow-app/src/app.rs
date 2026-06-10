@@ -224,6 +224,8 @@ pub struct RawBlowApp {
     progress: Option<ProgressJob>,
     result: Option<TransferReport>,
     show_settings: bool,
+    // 오픈소스 라이센스 페이지(#39). 설정에서 열며, Some이면 설정 대신 이 페이지를 그린다.
+    licenses: Option<crate::licenses::LicensesPage>,
     last_dest: Option<PathBuf>,
     // 설정 화면에 표시할 썸네일 캐시 사용량(#22). 설정을 열 때 한 번 계산해 캐싱.
     cache_size: Option<u64>,
@@ -324,6 +326,7 @@ impl RawBlowApp {
             progress: None,
             result: None,
             show_settings: false,
+            licenses: None,
             last_dest: None,
             cache_size: None,
             last_trim: Instant::now(),
@@ -967,6 +970,8 @@ impl eframe::App for RawBlowApp {
         // 화면 분기.
         if self.folder.is_none() {
             self.ui_open(ctx);
+        } else if self.licenses.is_some() {
+            self.ui_licenses(ctx);
         } else if self.show_settings {
             self.ui_settings(ctx);
         } else if self.fullscreen {
@@ -1018,6 +1023,7 @@ impl RawBlowApp {
             || self.jump_open
             || self.bulk_open
             || self.show_settings
+            || self.licenses.is_some()
     }
 
     // ── 입력 ──────────────────────────────────────────────
@@ -3242,6 +3248,12 @@ impl RawBlowApp {
                     ui.add_space(6.0);
                     link_label(ui, tr(lang, "최신 버전 받기 · GitHub Releases"), "https://github.com/ascoeur9/rawblow/releases");
                     link_label(ui, tr(lang, "버그 제보 · GitHub Issues"), "https://github.com/ascoeur9/rawblow/issues");
+                    // 오픈소스 라이센스 고지(#39): 포함된 구성요소 목록 + 전문 페이지.
+                    ui.add_space(8.0);
+                    if toggle_btn(ui, tr(lang, "오픈소스 라이센스"), false).clicked() {
+                        self.licenses = Some(crate::licenses::LicensesPage::new());
+                    }
+                    ui.label(egui::RichText::new(tr(lang, "이 프로그램이 포함한 오픈소스 구성요소 목록과 라이센스 전문")).font(mono(10.0)).color(theme::INK4));
                     ui.add_space(10.0);
                     ui.label(egui::RichText::new(tr(lang, "만든 사람 · 하레 (Hare)")).font(prop(11.5)).color(theme::INK2));
                     ui.horizontal(|ui| {
@@ -3257,6 +3269,91 @@ impl RawBlowApp {
         self.grid_cols = self.cfg.grid_cols.clamp(4, 12);
         self.show_exif = self.cfg.show_exif;
         self.show_hist = self.cfg.show_histogram;
+    }
+
+    /// 오픈소스 라이센스 페이지(#39): 좌측 구성요소 목록(검색 가능) + 우측 라이센스 전문.
+    /// 설정의 ABOUT에서 열며, 돌아가기/Esc로 설정 화면에 복귀한다.
+    fn ui_licenses(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
+        let mut close = false;
+        let (total, generated) = self
+            .licenses
+            .as_ref()
+            .map(|p| (p.doc.crates.len(), p.doc.generated.clone()))
+            .unwrap_or((0, String::new()));
+        egui::TopBottomPanel::top("licenses_top")
+            .exact_height(TOOLBAR_H)
+            .frame(egui::Frame::none().fill(theme::BG1).inner_margin(egui::Margin::symmetric(12.0, 6.0)))
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    if ui.button(format!("← {}", tr(lang, "돌아가기"))).clicked() {
+                        close = true;
+                    }
+                    ui.label(egui::RichText::new(tr(lang, "오픈소스 라이센스")).font(prop(14.0)).color(theme::INK));
+                    ui.label(egui::RichText::new(trf(lang, "{} 구성요소", &[&total.to_string()])).font(mono(10.5)).color(theme::INK3));
+                    if !generated.is_empty() {
+                        ui.label(egui::RichText::new(format!("· {}", generated)).font(mono(10.5)).color(theme::INK4));
+                    }
+                });
+            });
+        let page = self.licenses.as_mut().unwrap();
+        egui::SidePanel::left("licenses_list")
+            .exact_width(320.0)
+            .resizable(false)
+            .frame(egui::Frame::none().fill(theme::BG1).inner_margin(egui::Margin::same(10.0)))
+            .show(ctx, |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut page.filter)
+                        .font(mono(12.0))
+                        .hint_text(tr(lang, "검색"))
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    let f = page.filter.to_lowercase();
+                    for (i, c) in page.doc.crates.iter().enumerate() {
+                        if !f.is_empty() && !c.n.to_lowercase().contains(&f) && !c.l.to_lowercase().contains(&f) {
+                            continue;
+                        }
+                        if ui.selectable_label(page.selected == i, format!("{} {}", c.n, c.v)).clicked() {
+                            page.selected = i;
+                        }
+                    }
+                });
+            });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(theme::BG2).inner_margin(egui::Margin::same(18.0)))
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(tr(lang, "이 프로그램은 아래의 오픈소스 소프트웨어를 포함합니다. LGPL 구성요소(rawloader · imagepipe · multicache)의 소스코드는 각 항목의 저장소 링크에서 구할 수 있습니다."))
+                        .font(mono(10.0))
+                        .color(theme::INK4),
+                );
+                ui.add_space(12.0);
+                if let Some(c) = page.doc.crates.get(page.selected) {
+                    ui.label(egui::RichText::new(format!("{} v{}", c.n, c.v)).font(prop(14.0)).color(theme::INK));
+                    ui.label(egui::RichText::new(c.l.as_str()).font(mono(11.0)).color(theme::INK3));
+                    if let Some(r) = &c.r {
+                        link_label(ui, r, r);
+                    }
+                    ui.add_space(10.0);
+                    // 전문은 항목별 ScrollArea — selected를 id에 섞어 항목 전환 시 스크롤이 맨 위로.
+                    egui::ScrollArea::vertical()
+                        .id_salt(("license_text", page.selected))
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            for &ti in &c.t {
+                                if let Some(t) = page.doc.texts.get(ti) {
+                                    ui.label(egui::RichText::new(t.as_str()).font(mono(10.5)).color(theme::INK2));
+                                    ui.add_space(16.0);
+                                }
+                            }
+                        });
+                }
+            });
+        if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.licenses = None;
+        }
     }
 }
 

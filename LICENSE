@@ -11,7 +11,19 @@ software or any portion of it, except with the prior written permission of the
 copyright holder.
 
 Third-party dependencies retain their own licenses; this notice applies only
-to the original source code of RawBlow in this repository.
+to the original source code of RawBlow in this repository. The full list of
+bundled open source components and their license texts is available in the
+application (Settings > Open Source Licenses).
+
+LGPL components. Distributed binaries of RawBlow statically link the
+LGPL-licensed libraries rawloader (LGPL-2.1), imagepipe (LGPL-3.0), and
+multicache (LGPL-3.0). Notwithstanding the restrictions above, and as required
+by those licenses, you are permitted to: (a) obtain the complete source code
+of RawBlow from this repository, (b) modify the LGPL-licensed portions and
+relink/rebuild the application with a modified version of those libraries for
+your own use, and (c) reverse engineer the binary to the extent necessary to
+debug such modifications. Nothing in this notice restricts any rights granted
+by the LGPL with respect to those libraries themselves.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
