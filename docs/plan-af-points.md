@@ -76,11 +76,20 @@ exiftool -a -G1 -s -makernotes "사진파일"     # MakerNote 전체(원시 확�
 ### 4-3. 검증 매트릭스 (Windows에서 채워서 회신)
 바디별로 아래 표를 채우면 구현 우선순위·범위가 확정됨.
 
+> **✅ 2026-06-10 Windows 빌드 PC에서 검증 완료** (ExifTool 13.59, 저장소 sample/ 실파일).
+> 결론: **보유 3개 제조사 모두 AF 좌표가 실제 기록됨** — B안(네이티브 파서) 착수 가능.
+
 | 제조사/바디 | 포맷 | AF 좌표 태그 나옴? | 좌표계(원점/기준해상도) | 실제 초점과 일치? | 비고 |
 |---|---|:---:|---|:---:|---|
-| (예) Canon EOS R6 | CR3 | Y | AFImageW/H 기준, 중심원점 | 확인필요 | |
-| Panasonic S1R II | RW2 | ? | ? | ? | 임베디드JPEG에 MN 있음 |
-| … | | | | | |
+| Canon EOS 5D | CR2 | **Y** (15점) | `AFAreaX/YPositions` 중심 원점, `AFImageWidth/Height`(4992×3328) 기준 | 육안 대조 필요 | `AFAreaWidths/Heights` 미기록 → 고정 크기 박스 폴백 |
+| Canon EOS 5D Mark II | CR2 | **Y** (9점) | 좌표 + **폭/높이 완비**, 중심 원점, `AFImageWidth/Height`(5616×3744) 기준 | 육안 대조 필요 | `AFPointsInFocus`로 합초점 구분까지 가능 — 가장 완전 |
+| Panasonic S1R II (DC-S1RM2) | RW2 | **Y** | `AFPointPosition`(0~1 정규화 중심) + `AFAreaSize`(0~1 폭/높이) | 육안 대조 필요 | `AFSubjectDetection`(Human Eye/Face/Body)도 기록 |
+| Panasonic S1 II (DC-S1M2) | RW2 | **Y** | 상동 | 육안 대조 필요 | 세로 사진도 동일 기록 — orientation 보정 검증 필요 |
+| Sony A7R III (ILCE-7RM3) | ARW | **부분** | `FocusLocation` = (이미지W, H, X, Y) 픽셀 좌표 1점 | 육안 대조 필요 | §3의 "가장 어려움" 판정 완화 — 점 1개 표시는 가능, 영역 크기 없음 |
+
+- 시사점: 캐논(요청자)·파나소닉(오너) 모두 데이터 완비 → §6 권장안 그대로 진행 가능.
+  파나소닉 신형도 ExifTool 13.59가 완전 디코딩(정규화 좌표라 변환 가장 단순).
+- 남은 선행 과제는 "실제 초점과 일치?" 열의 **육안 대조**(오너 확인 필요)뿐.
 
 - "AF 좌표 태그 나옴?" = `AFAreaXPositions`류가 **숫자로** 출력되는지(빈값·Unknown이면 N).
 - "실제 초점과 일치?" = 사진을 보면서 초점 맞은 위치와 좌표가 대략 맞는지 육안 대조.
