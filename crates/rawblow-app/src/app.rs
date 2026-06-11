@@ -186,6 +186,10 @@ pub struct RawBlowApp {
     fullscreen: bool,
     /// OS 창 풀스크린이 `fullscreen`에 반영된 상태(#31). 변할 때만 ViewportCommand 전송.
     fs_applied: bool,
+    /// 시작 창 크기(1440pt)가 모니터보다 클 때 1회 축소했는지. eframe의 시작 클램프는
+    /// 모니터 열거가 비정상인 환경(일부 원격 세션)에서 무력해, 창이 화면 밖으로 넘쳐
+    /// 우측 앵커 UI(GPS 지도 패널 등)가 안 보이게 된다 — 런타임 monitor_size로 보강.
+    size_clamped: bool,
     filter: Filter,
     star_filter: StarFilter, // 별점 필터(라벨 필터와 독립 AND).
     tag_filter: TagFilter,   // 컬러 태그 필터(라벨·별점 필터와 독립 AND)(#27).
@@ -311,6 +315,7 @@ impl RawBlowApp {
             view: ViewMode::Single,
             fullscreen: false,
             fs_applied: false,
+            size_clamped: false,
             filter: Filter::All,
             star_filter: StarFilter::Any,
             tag_filter: TagFilter::Any,
@@ -977,6 +982,23 @@ impl eframe::App for RawBlowApp {
 
         if !self.has_modal() {
             self.handle_keys(ctx);
+        }
+
+        // 창이 모니터보다 크면 작업 영역 안으로 1회 축소(+좌상단 이동). eframe의 시작
+        // 클램프가 모니터 열거 실패(일부 원격 세션)로 빠질 수 있고, 작은 모니터 쪽에
+        // 열린 멀티모니터 케이스도 있어 런타임 값으로 보강한다. monitor_size가 창보다
+        // 충분히 크거나 미보고면 아무것도 하지 않는다.
+        if !self.size_clamped && !self.fullscreen {
+            let (inner, monitor) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().monitor_size));
+            if let (Some(inner), Some(mon)) = (inner, monitor) {
+                self.size_clamped = true; // 값이 보고된 프레임에 1회만 판단(첫 프레임 미보고 대비).
+                if mon.x > 1.0 && mon.y > 1.0 && (inner.width() > mon.x || inner.height() > mon.y) {
+                    // 타이틀바·테두리 여유분(점 단위, 보수적으로 살짝 안쪽).
+                    let want = Vec2::new(inner.width().min(mon.x - 16.0), inner.height().min(mon.y - 56.0));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(Pos2::new(0.0, 0.0)));
+                }
+            }
         }
 
         // OS 창 풀스크린을 self.fullscreen에 동기화(#31). 토글 출처(F11·버튼·Esc) 무관하게 한 곳에서
