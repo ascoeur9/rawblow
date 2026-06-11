@@ -59,6 +59,35 @@ fn pairing_prefers_image_and_flags_raw_badge() {
 }
 
 #[test]
+fn pairing_merges_raw_and_jpg_split_across_folders() {
+    // RAW는 루트, JPG는 하위 "새 폴더" — 폴더만 다른 동반 페어는 한 항목으로.
+    let root = std::env::temp_dir().join("rb_split_pair_test");
+    let _ = std::fs::remove_dir_all(&root);
+    let sub = root.join("새 폴더");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(root.join("P1000001.RW2"), b"x").unwrap();
+    std::fs::write(sub.join("P1000001.JPG"), b"x").unwrap();
+    std::fs::write(root.join("P1000002.RW2"), b"x").unwrap(); // RAW 단독은 그대로
+    std::fs::write(root.join("P1000003.RW2"), b"x").unwrap(); // 같은 stem이 양쪽 다 RAW면
+    std::fs::write(sub.join("P1000003.RW2"), b"x").unwrap(); //   (다른 촬영일 수 있음) 별개 유지
+
+    let entries = scan::scan_folder(&root, true, rawblow_core::SortOrder::Name);
+    let find = |s: &str| {
+        entries
+            .iter()
+            .filter(|e| e.stem.eq_ignore_ascii_case(s))
+            .collect::<Vec<_>>()
+    };
+    let p1 = find("P1000001");
+    assert_eq!(p1.len(), 1, "폴더 분리 RAW+JPG는 한 항목");
+    assert!(p1[0].has_raw && p1[0].has_image && p1[0].shows_raw_badge());
+    assert_eq!(p1[0].display.extension().unwrap(), "JPG", "이미지를 우선 표시");
+    assert_eq!(find("P1000002").len(), 1);
+    assert_eq!(find("P1000003").len(), 2, "양쪽 다 RAW면 별개 항목 유지");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn extract_embedded_jpeg_from_real_rw2() {
     let dir = sample_dir();
     // 루트의 RW2 하나를 찾는다.

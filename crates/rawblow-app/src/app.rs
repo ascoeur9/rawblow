@@ -274,6 +274,22 @@ pub struct RawBlowApp {
     show_af: bool,
     map_state: Option<MapState>, // 현재 항목·줌의 지도 패널 상태(항목 바뀌면 교체).
     map_zoom: u8,                // 지도 줌(패널 ±버튼). 세션 한정.
+
+    // 메타데이터(EXIF·AF·orientation) 백그라운드 로더. 예전엔 현재 항목의 EXIF/AF를
+    // UI 스레드에서 동기로 읽어(NAS면 프리픽스 read가 수백 ms) 사진 넘김이 걸렸다 —
+    // 표시 먼저, 메타는 도착하는 대로. 동시 1건만(현재 보는 항목 우선), 폴더가 바뀌면
+    // generation 불일치로 결과 폐기.
+    meta_rx: crossbeam_channel::Receiver<MetaResult>,
+    meta_tx: crossbeam_channel::Sender<MetaResult>,
+    meta_inflight: bool,
+}
+
+/// 백그라운드 메타 로더 결과. 요청 시점에 없던 조각(exif/af)만 채워 보낸다.
+struct MetaResult {
+    generation: u64,
+    real: usize,
+    exif: Option<Option<ExifInfo>>, // 바깥 Option=이번에 읽었는지, 안쪽=파일에 있었는지
+    af: Option<(Option<rawblow_core::af::AfInfo>, u16)>, // (AF, orientation)
 }
 
 /// GPS 미니 지도(#38) 패널 상태. (항목, 줌)당 하나 — 바뀌면 새로 만든다.
@@ -309,6 +325,8 @@ impl RawBlowApp {
         let lang = crate::i18n::effective_lang(&cfg);
         // 폰트는 활성 언어의 폰트를 primary로 설치(#32 후속: 일본어 글자 세로 어긋남 방지).
         crate::fonts::install(&cc.egui_ctx, lang);
+
+        let (meta_tx, meta_rx) = crossbeam_channel::unbounded();
 
         let mut app = RawBlowApp {
             lang,
@@ -377,6 +395,9 @@ impl RawBlowApp {
             show_af: cfg.show_af,
             map_state: None,
             map_zoom: 13, // 동네 수준 컨텍스트. 패널 ±로 3~17 조절.
+            meta_rx,
+            meta_tx,
+            meta_inflight: false,
             cfg,
         };
 
@@ -524,25 +545,66 @@ impl RawBlowApp {
         f.get(self.index.min(f.len().saturating_sub(1))).copied()
     }
 
-    fn ensure_exif(&mut self, real: usize) {
-        if let Some(it) = self.items.get_mut(real) {
-            if !it.exif_loaded {
-                it.exif = read_exif(&it.entry.display);
-                it.exif_loaded = true;
-            }
+    /// 현재 항목의 메타(EXIF, show_af면 AF·orientation까지)를 백그라운드로 요청한다.
+    /// UI 스레드에서 파일을 읽지 않는다 — NAS에서 프리픽스 read가 수백 ms 걸려도
+    /// 사진 넘김이 멈추지 않게(표시 먼저, 오버레이는 도착하는 대로). 동시 1건만 띄워
+    /// 빠른 연속 넘김 때 건너뛴 항목들이 큐로 쌓여 현재 항목을 막는 일을 차단한다.
+    fn request_meta(&mut self, ctx: &egui::Context) {
+        if self.meta_inflight {
+            return;
         }
+        let Some(real) = self.current_real() else { return };
+        let Some(it) = self.items.get(real) else { return };
+        let need_exif = !it.exif_loaded;
+        let need_af = self.show_af && !it.af_loaded;
+        if !need_exif && !need_af {
+            return;
+        }
+        self.meta_inflight = true;
+        let tx = self.meta_tx.clone();
+        let path = it.entry.display.clone();
+        let generation = self.generation;
+        std::thread::spawn(move || {
+            // 파서가 패닉해도(손상 파일 등) 결과를 보내 inflight 고착을 막는다.
+            let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let exif = need_exif.then(|| read_exif(&path));
+                let af = need_af.then(|| {
+                    (
+                        rawblow_core::af::parse_af(&path),
+                        rawblow_core::meta::orientation(&path),
+                    )
+                });
+                (exif, af)
+            }));
+            let (exif, af) =
+                parsed.unwrap_or((need_exif.then_some(None), need_af.then(|| (None, 1))));
+            let _ = tx.send(MetaResult { generation, real, exif, af });
+        });
+        // 워커 스레드는 egui를 못 깨우므로 결과 수신을 짧은 리페인트로 폴링.
+        ctx.request_repaint_after(Duration::from_millis(80));
     }
 
-    /// AF 포인트(#37)·Orientation 지연 파싱. 오버레이가 켜진 항목에서만 호출(prefix 2MB).
-    fn ensure_af(&mut self, real: usize) {
-        if let Some(it) = self.items.get_mut(real) {
-            if !it.af_loaded {
-                it.af = rawblow_core::af::parse_af(&it.entry.display);
-                it.af_loaded = true;
+    /// 메타 로더 결과 반영. 폴더가 바뀐(generation 불일치) 결과는 버린다.
+    fn drain_meta(&mut self, ctx: &egui::Context) {
+        while let Ok(res) = self.meta_rx.try_recv() {
+            self.meta_inflight = false;
+            if res.generation != self.generation {
+                continue;
             }
-            if it.orient.is_none() {
-                it.orient = Some(rawblow_core::meta::orientation(&it.entry.display));
+            if let Some(it) = self.items.get_mut(res.real) {
+                if let Some(exif) = res.exif {
+                    it.exif = exif;
+                    it.exif_loaded = true;
+                }
+                if let Some((af, orient)) = res.af {
+                    it.af = af;
+                    it.af_loaded = true;
+                    it.orient = Some(orient);
+                }
             }
+        }
+        if self.meta_inflight {
+            ctx.request_repaint_after(Duration::from_millis(80));
         }
     }
 
@@ -1008,9 +1070,9 @@ impl eframe::App for RawBlowApp {
             self.fs_applied = self.fullscreen;
         }
 
-        if let Some(real) = self.current_real() {
-            self.ensure_exif(real);
-        }
+        // 현재 항목 메타(EXIF·AF)는 백그라운드 로드 — 사진 넘김을 막지 않는다.
+        self.drain_meta(ctx);
+        self.request_meta(ctx);
         self.request_preload();
         self.request_prefetch_window(); // 현재 위치 주변만 디스크 캐시 워밍(폴더 전체 플러드 금지).
         self.save_sidecar_if_due();
@@ -1985,7 +2047,7 @@ impl RawBlowApp {
         // 기준 0..1 정규화이므로 EXIF orientation으로 표시 좌표계로 돌린다. 데이터 없는
         // 바디·MF는 af가 None → 조용히 미표시.
         if self.show_af {
-            self.ensure_af(real);
+            // AF·orientation은 백그라운드 메타 로더(request_meta)가 채운다 — 도착 전엔 미표시.
             if let Some(it) = self.items.get(real) {
                 if let Some(af) = &it.af {
                     let orient = it.orient.unwrap_or(1);
@@ -2187,7 +2249,7 @@ impl RawBlowApp {
             return;
         }
         let lang = self.lang;
-        self.ensure_exif(real);
+        // EXIF는 백그라운드 메타 로더(request_meta)가 채운다 — GPS가 도착하면 그 프레임부터 표시.
         let Some(gps) = self.items.get(real).and_then(|it| it.exif.as_ref()).and_then(|e| e.gps) else {
             self.map_state = None;
             return; // GPS 없는 사진은 자동 미표시.

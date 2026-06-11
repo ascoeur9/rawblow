@@ -1,6 +1,6 @@
 //! 폴더 스캔, stem 페어링, 자연 정렬 (F3).
 
-use crate::model::{is_supported, Entry, SortOrder};
+use crate::model::{is_supported, kind_of, Entry, Kind, SortOrder};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -9,7 +9,12 @@ use walkdir::WalkDir;
 /// 폴더를 스캔해 동일 stem을 묶은 Entry 목록을 정렬해 반환한다.
 ///
 /// 페어링 키는 `(부모 디렉토리, 소문자 stem)` — 다른 하위 폴더의 동일 번호는
-/// 별개 항목으로 취급한다. RAW+JPG/HEIC가 같은 폴더·같은 stem이면 한 항목.
+/// 원칙적으로 별개 항목이다. RAW+JPG/HEIC가 같은 폴더·같은 stem이면 한 항목.
+///
+/// 예외(폴더 분리 동반 페어): 같은 stem이 **정확히 두 폴더**에 있고 한쪽은 RAW만,
+/// 다른쪽은 이미지만일 때는 한 항목으로 합친다 — 카메라/사용자가 RAW와 JPG를
+/// `루트 + "새 폴더"`, `RAW/ + JPG/`처럼 나눠 둔 흔한 구조. 세 폴더 이상이거나
+/// 양쪽 종류가 섞이면 모호하므로 합치지 않는다(서로 다른 촬영의 번호 충돌 보호).
 pub fn scan_folder(folder: &Path, recursive: bool, sort: SortOrder) -> Vec<Entry> {
     let max_depth = if recursive { usize::MAX } else { 1 };
     let mut groups: BTreeMap<(PathBuf, String), Vec<PathBuf>> = BTreeMap::new();
@@ -36,9 +41,29 @@ pub fn scan_folder(folder: &Path, recursive: bool, sort: SortOrder) -> Vec<Entry
         }
     }
 
-    let mut entries: Vec<Entry> = groups
+    // 폴더 분리 동반 페어 병합: stem 기준으로 재묶고, RAW만/이미지만 1:1이면 합친다.
+    let mut by_stem: BTreeMap<String, Vec<Vec<PathBuf>>> = BTreeMap::new();
+    for ((_, stem_l), members) in groups {
+        by_stem.entry(stem_l).or_default().push(members);
+    }
+    let mut merged: Vec<Vec<PathBuf>> = Vec::new();
+    for (_, mut sets) in by_stem {
+        let only = |ms: &[PathBuf], k: Kind| ms.iter().all(|p| kind_of(p) == Some(k));
+        if sets.len() == 2
+            && ((only(&sets[0], Kind::Raw) && only(&sets[1], Kind::Image))
+                || (only(&sets[0], Kind::Image) && only(&sets[1], Kind::Raw)))
+        {
+            let mut all = sets.pop().unwrap();
+            all.extend(sets.pop().unwrap());
+            merged.push(all);
+        } else {
+            merged.append(&mut sets);
+        }
+    }
+
+    let mut entries: Vec<Entry> = merged
         .into_iter()
-        .map(|(_, members)| {
+        .map(|members| {
             // 표시용 stem은 첫 멤버의 실제(원본 대소문자) stem을 사용.
             let stem = members[0]
                 .file_stem()
