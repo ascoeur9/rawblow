@@ -1084,8 +1084,11 @@ fn gps_extraction_from_synthetic_tiff() {
 #[test]
 fn gps_extraction_from_real_tagged_jpg() {
     // ExifTool로 지오태깅한 QA 샘플(sample/gps_test/, gitignored). 없으면 skip.
-    let Some(p) = sample_file("gps_test/GPS_SEOUL.JPG") else {
-        eprintln!("skip: sample/gps_test/GPS_SEOUL.JPG 없음");
+    // 오너 QA용으로 A_ 접두사가 붙은 사본도 허용(정렬 우선용 리네임으로 skip되던 문제).
+    let Some(p) = sample_file("gps_test/GPS_SEOUL.JPG")
+        .or_else(|| sample_file("gps_test/A_GPS_SEOUL.JPG"))
+    else {
+        eprintln!("skip: sample/gps_test/(A_)GPS_SEOUL.JPG 없음");
         return;
     };
     let gps = rawblow_core::meta::read_exif(&p).and_then(|i| i.gps).expect("GPS 추출");
