@@ -1,12 +1,12 @@
-[workspace]
+﻿[workspace]
 resolver = "2"
 members = ["crates/rawblow-core", "crates/rawblow-app"]
 
 [workspace.package]
-version = "0.4.4"
+version = "0.4.5"
 edition = "2021"
 authors = ["Hare"]
-# 독점(All rights reserved). 표준 OSS 라이선스 아님 — LICENSE 파일 참조. crates.io 미게시.
+# ?낆젏(All rights reserved). ?쒖? OSS ?쇱씠?좎뒪 ?꾨떂 ??LICENSE ?뚯씪 李몄“. crates.io 誘멸쾶??
 
 [profile.release]
 opt-level = 3
@@ -14,6 +14,6 @@ lto = "thin"
 codegen-units = 1
 strip = true
 
-# 디코딩 의존성은 dev 빌드에서도 빠르게 돌도록 최적화
+# ?붿퐫???섏〈?깆? dev 鍮뚮뱶?먯꽌??鍮좊Ⅴ寃??뚮룄濡?理쒖쟻??
 [profile.dev.package."*"]
 opt-level = 2
