@@ -111,6 +111,11 @@ pub struct Config {
     /// AF 포인트 오버레이 표시(#37). `A`로 토글, 저장. 기본 off.
     #[serde(default)]
     pub show_af: bool,
+    /// 스트립·그리드 셀의 표기(선택 표시·별점·색상 태그)를 크게 표시(#44). true=크게(기본), false=작게(이전 크기).
+    /// 필드 레벨 `#[serde(default)]`를 **달지 않는다**: 컨테이너 `#[serde(default)]`가 누락 필드를
+    /// `Config::default()`(=true)로 채우게 해야 한다. 필드 레벨을 달면 bool 기본값 false가 되어
+    /// 기존 사용자가 '작게'로 켜진다.
+    pub large_badges: bool,
 }
 
 impl Default for Config {
@@ -131,6 +136,7 @@ impl Default for Config {
             photo_bg: None,       // 앱 기본 배경(near-black void)(#36).
             show_map: false,      // GPS 미니 지도(#38). 기본 off.
             show_af: false,       // AF 포인트 오버레이(#37). 기본 off.
+            large_badges: true,   // 스트립·그리드 표기 크게가 기본(#44).
         }
     }
 }

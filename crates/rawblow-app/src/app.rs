@@ -1391,6 +1391,15 @@ impl RawBlowApp {
         self.cfg.photo_bg.unwrap_or(theme::BG0_RGB)
     }
 
+    /// 스트립·그리드 셀 표기(선택 표시·별점·색상 태그)의 크기 배율(#44). 설정에 따라 크게(1.8)/작게(1.0).
+    fn badge_scale(&self) -> f32 {
+        if self.cfg.large_badges {
+            1.8
+        } else {
+            1.0
+        }
+    }
+
     /// 새 릴리즈 안내(#33): 실행 후 로딩이 끝나고 유휴 상태일 때 **세션당 1회** 백그라운드로
     /// GitHub 최신 릴리즈를 확인한다(설정·시작 프롬프트 없이 자동). 결과는 채널로 받아 새 버전이면
     /// `update_available`에 담아 좌측 레일 배너로 알린다. 네트워크 실패·rate limit은 조용히 무시.
@@ -1954,7 +1963,7 @@ impl RawBlowApp {
                             stars: it.entry.stars,
                             tag: it.entry.tag,
                         };
-                        draw_thumb(ui, rect, tex, tsize, &info);
+                        draw_thumb(ui, rect, tex, tsize, &info, self.badge_scale());
                         if resp.clicked() {
                             self.index = fi;
                         }
@@ -2245,7 +2254,7 @@ impl RawBlowApp {
                             stars: it.entry.stars,
                             tag: it.entry.tag,
                         };
-                        draw_thumb(ui, rect, tex, tsize, &info);
+                        draw_thumb(ui, rect, tex, tsize, &info, self.badge_scale());
                         if resp.clicked() {
                             // Ctrl/⌘+클릭 = 토글, Shift+클릭 = 앵커~클릭 범위, 그냥 클릭 = 단일.
                             let m = ui.input(|i| i.modifiers);
@@ -3420,6 +3429,18 @@ impl RawBlowApp {
                     ui.horizontal(|ui| {
                         ui.label(tr(lang, "그리드 열 수"));
                         ui.add(egui::DragValue::new(&mut self.cfg.grid_cols).range(4..=12));
+                    });
+                    // 스트립·그리드 표기 크기(#44): 셀 위 선택 표시·별점·색상 태그를 크게(기본)/작게.
+                    ui.horizontal(|ui| {
+                        ui.label(tr(lang, "스트립·그리드 표기 크기"));
+                        if ui.selectable_label(self.cfg.large_badges, tr(lang, "크게")).clicked() {
+                            self.cfg.large_badges = true;
+                            let _ = config::save(&self.cfg);
+                        }
+                        if ui.selectable_label(!self.cfg.large_badges, tr(lang, "작게")).clicked() {
+                            self.cfg.large_badges = false;
+                            let _ = config::save(&self.cfg);
+                        }
                     });
                     // 언어 선택(#30): 시스템(자동)/한국어/English/日本語. 변경 즉시 적용·저장.
                     ui.horizontal(|ui| {

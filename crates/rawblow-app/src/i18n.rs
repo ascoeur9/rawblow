@@ -172,6 +172,9 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "히스토그램 기본 표시" => ("Show histogram by default", "ヒストグラムをデフォルト表示"),
         "프리로드 ±" => ("Preload ±", "プリロード ±"),
         "그리드 열 수" => ("Grid Columns", "グリッド列数"),
+        "스트립·그리드 표기 크기" => ("Strip/grid badge size", "ストリップ・グリッド表示サイズ"),
+        "크게" => ("Large", "大きく"),
+        "작게" => ("Small", "小さく"),
         "단축키 재바인딩 UI는 v1.1 예정 — 현재 기본값 QWER 고정 표시" => (
             "Shortcut rebinding UI is planned for v1.1 — currently fixed to default QWER",
             "ショートカット再割り当てUIはv1.1予定 — 現在はデフォルトのQWER固定",

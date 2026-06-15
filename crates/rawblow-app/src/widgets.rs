@@ -176,7 +176,9 @@ pub struct ThumbInfo {
 }
 
 /// 주어진 rect에 썸네일을 그린다. 텍스처가 있으면 이미지를, 없으면 플레이스홀더.
-pub fn draw_thumb(ui: &Ui, rect: Rect, tex: Option<egui::TextureId>, size: Vec2, info: &ThumbInfo) {
+/// `scale`(#44): 셀 위 표기(선택 테두리·라벨 점·RAW/별점 배지·색상 태그)의 크기 배율. 1.0=이전 크기(작게),
+/// 1.8 등=크게. 셀 자체/이미지는 영향받지 않고 오버레이만 비례 확대된다.
+pub fn draw_thumb(ui: &Ui, rect: Rect, tex: Option<egui::TextureId>, size: Vec2, info: &ThumbInfo, scale: f32) {
     let p = ui.painter();
     p.rect_filled(rect, Rounding::same(3.0), theme::BG1);
     if let Some(id) = tex {
@@ -200,9 +202,9 @@ pub fn draw_thumb(ui: &Ui, rect: Rect, tex: Option<egui::TextureId>, size: Vec2,
     if info.selected {
         p.rect_filled(rect, Rounding::same(3.0), with_alpha(theme::ACCENT, 64));
     }
-    // 테두리(active/selected > focused > 기본).
+    // 테두리(active/selected > focused > 기본). 선택/활성 강조는 표기 크기 설정에 따라 굵게(#44).
     let stroke = if info.active || info.selected {
-        Stroke::new(2.0, theme::ACCENT)
+        Stroke::new(2.0 * scale, theme::ACCENT)
     } else if info.focused {
         Stroke::new(1.5, theme::LINE3)
     } else {
@@ -212,47 +214,47 @@ pub fn draw_thumb(ui: &Ui, rect: Rect, tex: Option<egui::TextureId>, size: Vec2,
     // 라벨 점(TL).
     if !matches!(info.label, Label::Unrated) {
         p.circle_filled(
-            Pos2::new(rect.left() + 7.0, rect.top() + 7.0),
-            3.0,
+            Pos2::new(rect.left() + 7.0 * scale, rect.top() + 7.0 * scale),
+            3.0 * scale,
             theme::label_color(info.label),
         );
     }
     // RAW 배지(TR).
     if info.raw_badge || info.raw_only {
         let txt = if info.raw_only { "RAW" } else { "RAW+" };
-        let font = mono(8.0);
+        let font = mono(8.0 * scale);
         let g = p.layout_no_wrap(txt.to_string(), font.clone(), Color32::WHITE);
-        let bw = g.size().x + 6.0;
+        let bw = g.size().x + 6.0 * scale;
         let badge = Rect::from_min_size(
-            Pos2::new(rect.right() - bw - 4.0, rect.top() + 4.0),
-            Vec2::new(bw, 12.0),
+            Pos2::new(rect.right() - bw - 4.0 * scale, rect.top() + 4.0 * scale),
+            Vec2::new(bw, 12.0 * scale),
         );
         let (bg, fg) = if info.raw_only {
             (theme::HOLD, Color32::from_rgb(0x20, 0x18, 0x00))
         } else {
             (Color32::from_black_alpha(180), Color32::WHITE)
         };
-        p.rect_filled(badge, Rounding::same(2.0), bg);
+        p.rect_filled(badge, Rounding::same(2.0 * scale), bg);
         p.text(badge.center(), Align2::CENTER_CENTER, txt, font, fg);
     }
     // 별점 배지(BL, #23): ★N. 라벨 점(TL)·RAW 배지(TR)와 위치가 겹치지 않는다.
     if info.stars > 0 {
         let txt = format!("★{}", info.stars);
-        let font = mono(8.5);
+        let font = mono(8.5 * scale);
         let g = p.layout_no_wrap(txt.clone(), font.clone(), theme::HOLD);
-        let bw = g.size().x + 6.0;
+        let bw = g.size().x + 6.0 * scale;
         let badge = Rect::from_min_size(
-            Pos2::new(rect.left() + 4.0, rect.bottom() - 14.0),
-            Vec2::new(bw, 11.0),
+            Pos2::new(rect.left() + 4.0 * scale, rect.bottom() - 14.0 * scale),
+            Vec2::new(bw, 11.0 * scale),
         );
-        p.rect_filled(badge, Rounding::same(2.0), Color32::from_black_alpha(170));
+        p.rect_filled(badge, Rounding::same(2.0 * scale), Color32::from_black_alpha(170));
         p.text(badge.center(), Align2::CENTER_CENTER, &txt, font, theme::HOLD);
     }
     // 컬러 태그 점(BR, #27): 라벨(TL)·RAW(TR)·별점(BL)과 위치가 겹치지 않는다.
     if let Some(rgb) = info.tag.color_rgb() {
-        let c = Pos2::new(rect.right() - 8.0, rect.bottom() - 8.0);
-        p.circle_filled(c, 4.0, Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
-        p.circle_stroke(c, 4.0, Stroke::new(1.0, Color32::from_black_alpha(120)));
+        let c = Pos2::new(rect.right() - 8.0 * scale, rect.bottom() - 8.0 * scale);
+        p.circle_filled(c, 4.0 * scale, Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+        p.circle_stroke(c, 4.0 * scale, Stroke::new(1.0, Color32::from_black_alpha(120)));
     }
 }
 
