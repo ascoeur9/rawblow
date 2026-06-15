@@ -28,13 +28,11 @@ fn main() -> eframe::Result<()> {
     };
     let opts = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
-        // 이슈 #43: 일부 Windows + 구형 AMD GPU에서 시작 직후 크래시(0xc0000005, atio6axx.dll).
-        // egui-wgpu의 기본 백엔드는 PRIMARY|GL이라 AMD OpenGL ICD(atio6axx.dll)까지 로드·초기화하는데,
-        // 구형 드라이버에서 어댑터 열거 도중 액세스 위반이 났다. GL을 빼고 DX12/Vulkan만 쓰면 그 ICD를
-        // 아예 로드하지 않아 크래시를 피한다. 진단·우회가 필요하면 WGPU_BACKEND 환경변수로 강제 지정한다.
+        // 렌더 백엔드 선택(#43 + 구형 PC OpenGL 폴백) — 규칙은 select_backends() 주석 참고.
+        // 모던 GPU(DX12/Vulkan)가 있으면 그것만 써서 구형 AMD OpenGL ICD(atio6axx.dll) 로드로 인한
+        // #43 크래시를 피하고, 모던 GPU가 없으면 OpenGL을 폴백으로 켜 구형 PC도 최대한 실행되게 한다.
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
-            supported_backends: eframe::wgpu::util::backend_bits_from_env()
-                .unwrap_or(eframe::wgpu::Backends::PRIMARY),
+            supported_backends: select_backends(),
             ..Default::default()
         },
         viewport: egui::ViewportBuilder::default()
@@ -49,6 +47,40 @@ fn main() -> eframe::Result<()> {
         opts,
         Box::new(|cc| Ok(Box::new(RawBlowApp::new(cc)))),
     )
+}
+
+/// 렌더 백엔드 선택(#43 + 구형 PC OpenGL 폴백).
+///
+/// 1) `WGPU_BACKEND` 환경변수가 있으면 그 지정을 최우선으로 따른다(진단·강제용. 예: `WGPU_BACKEND=gl`로
+///    OpenGL 경로를 강제 — Vulkan/DX12가 되는 PC에서도 폴백 동작을 테스트할 수 있다).
+/// 2) 없으면 **OpenGL을 제외한** 모던 백엔드(DX12/Vulkan/Metal = PRIMARY)로 그래픽 어댑터가 있는지 먼저
+///    조용히 탐지한다. 이 탐지 단계는 OpenGL ICD(AMD `atio6axx.dll` 등)를 절대 로드하지 않으므로, #43 같은
+///    구형 OpenGL 드라이버 크래시를 건드리지 않는다.
+/// 3) 모던 GPU가 있으면 그것만 쓴다(OpenGL 미로드 → #43 회피). 없으면(아주 구형 PC) OpenGL을 폴백으로
+///    추가해 최대한 실행되게 한다. 단 OpenGL 3.3 미만(예: Sandy Bridge HD 3000)은 wgpu가 지원하지 않아
+///    이 폴백으로도 실행되지 않을 수 있다.
+fn select_backends() -> eframe::wgpu::Backends {
+    use eframe::wgpu;
+    // (1) 사용자가 환경변수로 강제하면 그대로 따른다.
+    if let Some(forced) = wgpu::util::backend_bits_from_env() {
+        return forced;
+    }
+    // (2) OpenGL 없이 모던 GPU만 탐지(GL ICD를 로드하지 않는다).
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::PRIMARY,
+        ..Default::default()
+    });
+    let has_modern_gpu = instance
+        .enumerate_adapters(wgpu::Backends::PRIMARY)
+        .iter()
+        .any(|a| a.get_info().device_type != wgpu::DeviceType::Cpu);
+    // (3) 모던 GPU가 있으면 PRIMARY만, 없으면 OpenGL 폴백을 더한다.
+    if has_modern_gpu {
+        wgpu::Backends::PRIMARY
+    } else {
+        log::warn!("DX12/Vulkan 어댑터를 찾지 못해 OpenGL 폴백을 활성화합니다(구형 GPU).");
+        wgpu::Backends::PRIMARY | wgpu::Backends::GL
+    }
 }
 
 /// 패닉(크래시)을 **바탕화면**의 `rawblow_crash.log`에 기록한다. 릴리스 빌드는 콘솔이
