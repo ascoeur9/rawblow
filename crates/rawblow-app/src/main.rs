@@ -28,6 +28,15 @@ fn main() -> eframe::Result<()> {
     };
     let opts = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
+        // 이슈 #43: 일부 Windows + 구형 AMD GPU에서 시작 직후 크래시(0xc0000005, atio6axx.dll).
+        // egui-wgpu의 기본 백엔드는 PRIMARY|GL이라 AMD OpenGL ICD(atio6axx.dll)까지 로드·초기화하는데,
+        // 구형 드라이버에서 어댑터 열거 도중 액세스 위반이 났다. GL을 빼고 DX12/Vulkan만 쓰면 그 ICD를
+        // 아예 로드하지 않아 크래시를 피한다. 진단·우회가 필요하면 WGPU_BACKEND 환경변수로 강제 지정한다.
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            supported_backends: eframe::wgpu::util::backend_bits_from_env()
+                .unwrap_or(eframe::wgpu::Backends::PRIMARY),
+            ..Default::default()
+        },
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([900.0, 600.0])

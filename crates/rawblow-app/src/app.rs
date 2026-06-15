@@ -1042,6 +1042,9 @@ impl eframe::App for RawBlowApp {
 
         self.drain_results(ctx);
 
+        // 탐색기/Finder에서 폴더(또는 파일)를 창에 끌어다 놓으면 그 폴더를 연다(#42).
+        self.handle_drops(ctx);
+
         if !self.has_modal() {
             self.handle_keys(ctx);
         }
@@ -1153,6 +1156,41 @@ impl RawBlowApp {
     }
 
     // ── 입력 ──────────────────────────────────────────────
+    /// 탐색기·Finder에서 폴더(또는 파일)를 창에 드래그앤드롭하면 그 폴더를 연다(#42).
+    /// 폴더를 끌면 그 폴더를, 파일을 끌면 파일이 든 폴더를 연다. 여러 항목을 끌면 폴더를
+    /// 우선 채택한다. 전송/정리가 진행 중일 때는 폴더 전환을 막아 작업 도중 상태가 뒤집히지 않게 한다.
+    fn handle_drops(&mut self, ctx: &egui::Context) {
+        if self.progress.is_some() {
+            return;
+        }
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        if dropped.is_empty() {
+            return;
+        }
+        let mut folder: Option<PathBuf> = None;
+        for f in &dropped {
+            let Some(p) = f.path.as_ref() else { continue };
+            if p.is_dir() {
+                folder = Some(p.clone());
+                break; // 폴더를 만나면 그걸 우선 채택.
+            }
+            // 파일이면 그 파일이 든 폴더를 후보로 둔다(이후 폴더를 만나면 덮어쓴다).
+            if folder.is_none() {
+                if let Some(parent) = p.parent() {
+                    if parent.is_dir() {
+                        folder = Some(parent.to_path_buf());
+                    }
+                }
+            }
+        }
+        if let Some(folder) = folder {
+            // 같은 폴더를 다시 열어 재스캔·인덱스 리셋하지 않는다.
+            if self.folder.as_deref() != Some(folder.as_path()) {
+                self.open_folder(folder);
+            }
+        }
+    }
+
     fn handle_keys(&mut self, ctx: &egui::Context) {
         let (keys, modifiers, scroll) = ctx.input(|i| {
             (
