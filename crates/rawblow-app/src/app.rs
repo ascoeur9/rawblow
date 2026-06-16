@@ -1808,17 +1808,15 @@ impl RawBlowApp {
                 }
 
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                    ui.add_space(8.0);
-                    let saved = if self.sidecar_dirty { "● saving…" } else { "● saved" };
-                    ui.label(egui::RichText::new(saved).font(mono(10.0)).color(theme::OK));
-                    ui.label(egui::RichText::new("SESSION · .rawblow/session.json").font(mono(10.0)).color(theme::INK4));
                     // 폴더 자동 분류(#34): 툴바에서 레일 하단으로 이동(테스트 피드백). 풀폭 버튼.
-                    // bottom_up이라 SESSION 푸터 위쪽(레일 맨 아래)에 자리한다. 폴더가 비면 비활성.
+                    // 자동저장(saved/SESSION) 상태표시는 하단 상태바로 이동 — 여기선 제거.
                     // 폴더 아이콘은 벡터(컬러)로 직접 그린다 — 이모지(🗂)가 폰트에서 두부(□)로 깨져서(#33 후속).
-                    ui.add_space(10.0);
+                    ui.add_space(10.0); // 레일 하단 여백(bottom_up이라 버튼 아래쪽 패딩).
                     let org_enabled = !self.items.is_empty();
+                    // 폭은 항상 사이드바 가용 너비에 맞춘다 — 환경(스크롤바 등)에 따라 좌측으로
+                    // 쏠리던 문제 방지. 내용(아이콘+글자)은 셀 중앙 기준이라 자동으로 가운데 정렬.
                     let (org_rect, org_resp) = ui.allocate_exact_size(
-                        Vec2::new(RAIL_W - 20.0, 32.0),
+                        Vec2::new(ui.available_width(), 32.0),
                         if org_enabled { Sense::click() } else { Sense::hover() },
                     );
                     {
@@ -1854,7 +1852,7 @@ impl RawBlowApp {
                     // 아이콘은 벡터(컬러)로 직접 그림(🎉 이모지 두부 회피). 클릭 시 Releases 열고 배너 닫음.
                     if let Some(ver) = self.update_available.clone() {
                         ui.add_space(8.0);
-                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(RAIL_W - 20.0, 80.0), Sense::click());
+                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 80.0), Sense::click());
                         {
                             let p = ui.painter();
                             let dark = Color32::from_rgb(0x0a, 0x14, 0x20);
@@ -1908,17 +1906,23 @@ impl RawBlowApp {
                     ui.label(egui::RichText::new("●").color(theme::OK).size(8.0));
                     ui.label(egui::RichText::new(format!("READY · {} ITEMS · {}/{}", self.items.len(), (self.index + 1).min(f_len.max(1)), f_len)).font(mono(10.5)).color(theme::INK3));
                     ui.label(egui::RichText::new(format!("· P {pick} H {hold} X {reject} · {unrated}")).font(mono(10.5)).color(theme::INK3));
+                    // 로딩·프레임 통계: 우측 → 좌측으로 이동(테스트 피드백).
+                    ui.label(egui::RichText::new(format!("· {:.1}ms · {:.0} FPS · GPU wgpu · PRELOAD ±{}", self.frame_ms, fps, self.cfg.preload)).font(mono(10.5)).color(theme::INK4));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        // 맨 오른쪽: 배율(단일/전체화면에서만 의미). right_to_left이므로 먼저 추가 = 최우측.
+                        // 맨 오른쪽: 자동저장 상태(레일에서 이동). right_to_left이므로 먼저 추가 = 최우측.
+                        // 글자(우) 왼쪽에 상태 점을 둬 "● saved"/"● saving…"로 보이게 한다.
+                        let (dot, txt) = if self.sidecar_dirty { (theme::HOLD, "saving…") } else { (theme::OK, "saved") };
+                        ui.label(egui::RichText::new(txt).font(mono(10.5)).color(theme::INK3));
+                        ui.label(egui::RichText::new("●").color(dot).size(8.0));
+                        // 그 왼쪽: 배율(단일/전체화면에서만 의미).
                         if self.view == ViewMode::Single || self.fullscreen {
+                            ui.label(egui::RichText::new("·").font(mono(10.5)).color(theme::INK4));
                             ui.label(
                                 egui::RichText::new(format!("{:.0}%", self.zoom * 100.0))
                                     .font(mono(10.5))
                                     .color(theme::INK2),
                             );
-                            ui.label(egui::RichText::new("·").font(mono(10.5)).color(theme::INK4));
                         }
-                        ui.label(egui::RichText::new(format!("{:.1}ms · {:.0} FPS · GPU wgpu · PRELOAD ±{}", self.frame_ms, fps, self.cfg.preload)).font(mono(10.5)).color(theme::INK4));
                     });
                 });
             });

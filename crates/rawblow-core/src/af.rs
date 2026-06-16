@@ -2,7 +2,8 @@
 //! 직접 파싱한다(kamadak-exif는 MakerNote 내부를 풀지 않음). 레이아웃은 ExifTool의
 //! Canon.pm / Panasonic.pm / Sony.pm 정의를 따르며, Windows 실파일 검증 결과는
 //! `docs/plan-af-points.md` §4-3 참조. 지원: Canon CR2/JPG(AFInfo·AFInfo2),
-//! Panasonic RW2/JPG(AFPointPosition·AFAreaSize), Sony ARW(FocusLocation).
+//! Panasonic RW2/JPG(AFPointPosition·AFAreaSize), Sony ARW(FocusLocation),
+//! Nikon Z8/Z9 NEF(AFInfo2 V0400 — 오토에어리어 측거 존 비트마스크/단일점, #45).
 //! 미지원 바디·태그 없음·파싱 실패는 전부 None — 호출부는 조용히 미표시한다.
 
 use std::path::Path;
@@ -214,6 +215,11 @@ fn parse_tiff(tiff: &[u8]) -> Option<AfInfo> {
     if head.starts_with(b"SONY DSC") || head.starts_with(b"SONY CAM") || head.starts_with(b"SONY MOBILE") {
         return sony_af(&t, mn_off + 12);
     }
+    if head.starts_with(b"Nikon\x00") {
+        // Nikon Type3 MakerNote: "Nikon\0"+버전(2)+"\0\0" 뒤(오프셋 10)부터 자체 TIFF 헤더.
+        // 내부 오프셋이 그 TIFF 베이스 기준이라 해당 지점부터 서브슬라이스로 파싱한다.
+        return nikon_af(tiff.get(mn_off + 10..)?);
+    }
     if make.starts_with("Canon") {
         // Canon MakerNote는 헤더 없이 바로 IFD. 값 오프셋은 TIFF 베이스 기준.
         return canon_af(&t, mn_off, &model);
@@ -368,6 +374,72 @@ fn sony_af(t: &Tiff, ifd: usize) -> Option<AfInfo> {
         points: vec![AfPoint { cx: x / w, cy: y / h, w: 0.0, h: 0.0, in_focus: true, selected: true }],
         source: "sony",
     })
+}
+
+// ── Nikon: AFInfo2 V0400 — Z8/Z9(Expeed 7) (#45) ────────────────────────────
+// 인자는 Nikon Type3 MakerNote의 임베드 TIFF(오프셋 10부터)다. 레이아웃은 ExifTool
+// Nikon.pm `AFInfo2V0400`:
+//   off 0   AFInfo2Version (ASCII[4]) — "0400"이 Z8/Z9.
+//   off 5   AFAreaMode (197=Auto, 207=3D-tracking … 카메라가 측거 존 선택).
+//   off 7   AFCoordinatesAvailable (0=AFPointsUsed 비트마스크 사용, 1=AFAreaX/YPosition 픽셀).
+//   off 10  AFPointsUsed: 51바이트(408비트) 비트마스크, **LSB-first**, afPoints405 순서
+//           (15행 A–O × 27열 1–27). 켜진 비트 = 활성 측거점(존).
+//   off 0x3e/0x40  AFImageWidth/Height(int16u).  off 0x42/0x44  AFAreaX/YPosition(좌상단 원점, px).
+// 그리드→이미지 매핑: ExifTool 분리값(가로 260px·세로 286px)과 전체 PDAF 29×17,
+// 8256×5504 기준으로 도출 → 405점은 그 안쪽 27×15(가장자리 1줄 제외), 중심=프레임 중앙.
+fn nikon_af(nikon_tiff: &[u8]) -> Option<AfInfo> {
+    let t = Tiff::new(nikon_tiff)?;
+    let ifd0 = t.u32(4)? as usize;
+    let (off, len) = t.data(&t.find(ifd0, 0x00b7)?)?; // AFInfo2(0x00b7)
+    if len < 0x46 || nikon_tiff.get(off..off + 4)? != b"0400" {
+        return None; // Z8/Z9(0400)만 — 다른 Z 바디(0401/0402)는 그리드가 달라 별도.
+    }
+    let coords_avail = *nikon_tiff.get(off + 7)?;
+
+    // 단일점(좌표 사용 가능): AFAreaX/YPosition(px, 좌상단 원점) ÷ AFImageWidth/Height.
+    if coords_avail == 1 {
+        let (iw, ih) = (t.u16(off + 0x3e)? as f64, t.u16(off + 0x40)? as f64);
+        let (ax, ay) = (t.u16(off + 0x42)? as f64, t.u16(off + 0x44)? as f64);
+        if iw < 1.0 || ih < 1.0 {
+            return None;
+        }
+        let pt = AfPoint {
+            cx: (ax / iw).clamp(0.0, 1.0),
+            cy: (ay / ih).clamp(0.0, 1.0),
+            w: (260.0 / iw).min(0.1), // 박스 ≈ 인접 측거점 간격.
+            h: (286.0 / ih).min(0.1),
+            in_focus: true,
+            selected: true,
+        };
+        return Some(AfInfo { points: vec![pt], source: "nikon-point" });
+    }
+
+    // 오토에어리어/3D 추적: 51바이트 비트마스크 → afPoints405(15행×27열) 활성 점들(존).
+    let mask = nikon_tiff.get(off + 10..off + 10 + 51)?;
+    const COLS: usize = 27;
+    const ROWS: usize = 15;
+    // 전체 PDAF(29열×17행)가 프레임 가로 91.3%·세로 88.3% 커버 → 한 칸 간격/여백.
+    let (step_x, step_y) = (0.913 / 29.0, 0.883 / 17.0);
+    let (x0, y0) = ((1.0 - 0.913) / 2.0, (1.0 - 0.883) / 2.0);
+    let mut points = Vec::new();
+    for r in 0..ROWS {
+        for c in 0..COLS {
+            let i = r * COLS + c;
+            if mask[i / 8] >> (i % 8) & 1 == 0 {
+                continue;
+            }
+            // 405 그리드는 전체 29×17의 안쪽(열·행 각 +1) → 중심점이 정확히 0.5.
+            points.push(AfPoint {
+                cx: x0 + (c as f64 + 1.5) * step_x,
+                cy: y0 + (r as f64 + 1.5) * step_y,
+                w: step_x * 0.82,
+                h: step_y * 0.82,
+                in_focus: true,
+                selected: false,
+            });
+        }
+    }
+    (!points.is_empty()).then_some(AfInfo { points, source: "nikon-zone" })
 }
 
 #[cfg(test)]
@@ -561,5 +633,62 @@ mod tests {
             }
         }
         b
+    }
+
+    /// Nikon 임베드 TIFF(LE): IFD0에 AFInfo2(0x00b7=undef[blob]) 하나만 둔 최소 구조.
+    /// nikon_af의 입력(= Type3 MakerNote의 오프셋 10부터)과 동일한 형태.
+    fn nikon_embedded_tiff(blob: &[u8]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"II*\0");
+        b.extend_from_slice(&8u32.to_le_bytes()); // IFD0 at 8
+        b.extend_from_slice(&1u16.to_le_bytes()); // 1 entry
+        let val_off = 8 + 2 + 12 + 4; // header+count+entry+next-ifd
+        b.extend_from_slice(&0x00b7u16.to_le_bytes()); // AFInfo2
+        b.extend_from_slice(&7u16.to_le_bytes()); // undef
+        b.extend_from_slice(&(blob.len() as u32).to_le_bytes());
+        b.extend_from_slice(&(val_off as u32).to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes()); // next IFD
+        b.extend_from_slice(blob);
+        b
+    }
+
+    /// Nikon Z8 AFInfo2 V0400 — 오토에어리어 비트마스크(존)와 단일점·버전 게이트 검증(#45).
+    #[test]
+    fn nikon_v0400_zone_and_point() {
+        // 오토에어리어: 측거점 (r0,c0)·(r1,c1) 두 개를 LSB-first 비트마스크로 세팅.
+        let mut blob = vec![0u8; 80];
+        blob[0..4].copy_from_slice(b"0400");
+        blob[5] = 197; // AFAreaMode=Auto
+        blob[7] = 0; // AFCoordinatesAvailable=0 → 비트마스크 사용
+        for i in [0usize, 27 + 1] {
+            blob[10 + i / 8] |= 1 << (i % 8);
+        }
+        let info = nikon_af(&nikon_embedded_tiff(&blob)).expect("nikon zone");
+        assert_eq!(info.source, "nikon-zone");
+        assert_eq!(info.points.len(), 2);
+        let (sx, sy) = (0.913 / 29.0, 0.883 / 17.0);
+        let (x0, y0) = ((1.0 - 0.913) / 2.0, (1.0 - 0.883) / 2.0);
+        let p0 = info.points[0];
+        assert!((p0.cx - (x0 + 1.5 * sx)).abs() < 1e-9 && (p0.cy - (y0 + 1.5 * sy)).abs() < 1e-9);
+        assert!(p0.in_focus);
+
+        // 단일점: 좌표 사용 가능 → AFAreaX/YPosition ÷ AFImageWidth/Height.
+        let mut blob = vec![0u8; 80];
+        blob[0..4].copy_from_slice(b"0400");
+        blob[7] = 1; // coords available
+        let put = |b: &mut [u8], o: usize, v: u16| b[o..o + 2].copy_from_slice(&v.to_le_bytes());
+        put(&mut blob, 0x3e, 8256); // AFImageWidth
+        put(&mut blob, 0x40, 5504); // AFImageHeight
+        put(&mut blob, 0x42, 4128); // X = 중앙
+        put(&mut blob, 0x44, 2752); // Y = 중앙
+        let info = nikon_af(&nikon_embedded_tiff(&blob)).expect("nikon point");
+        assert_eq!(info.source, "nikon-point");
+        assert_eq!(info.points.len(), 1);
+        assert!((info.points[0].cx - 0.5).abs() < 1e-6 && (info.points[0].cy - 0.5).abs() < 1e-6);
+
+        // 버전 게이트: 0401(Z6III/Zf 등)은 그리드가 달라 None.
+        let mut other = vec![0u8; 80];
+        other[0..4].copy_from_slice(b"0401");
+        assert!(nikon_af(&nikon_embedded_tiff(&other)).is_none());
     }
 }

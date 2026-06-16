@@ -210,7 +210,11 @@ pub fn draw_thumb(ui: &Ui, rect: Rect, tex: Option<egui::TextureId>, size: Vec2,
     } else {
         Stroke::new(1.0, theme::LINE)
     };
-    p.rect_stroke(rect, Rounding::same(3.0), stroke);
+    // 스트로크는 경로 중심 기준이라 절반이 rect 밖으로 나간다 — 그리드 좌/우 끝 셀에서는
+    // 스크롤 영역 클립 경계에 걸려 그 절반이 잘려 보인다. 절반폭만큼 안쪽으로 들여 그려
+    // 어느 가장자리에서도 테두리가 온전히 보이게 한다.
+    let inset = stroke.width / 2.0;
+    p.rect_stroke(rect.shrink(inset), Rounding::same(3.0), stroke);
     // 라벨 점(TL).
     if !matches!(info.label, Label::Unrated) {
         p.circle_filled(
