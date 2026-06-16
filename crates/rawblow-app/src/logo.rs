@@ -35,18 +35,32 @@ pub fn draw_mark(painter: &egui::Painter, rect: Rect) {
 }
 
 /// 창 아이콘용 RGBA8(straight alpha) 버퍼. SDF 기반 안티에일리어싱.
+/// macOS 앱 아이콘 표준 여백(각 변, 캔버스 대비 비율). Apple 그리드 기준
+/// 1024 캔버스에서 본체 824 → 가장자리 100px. 이 여백이 없으면 cmd+Tab·Dock에서
+/// 다른 앱보다 아이콘이 커 보인다.
+pub const MACOS_ICON_MARGIN: f32 = 100.0 / 1024.0;
+
+/// 창 아이콘용 RGBA8(straight alpha) 버퍼. 마크를 캔버스에 꽉 채운다(풀블리드).
 pub fn icon_rgba(size: u32) -> Vec<u8> {
+    icon_rgba_inset(size, 0.0)
+}
+
+/// 마크를 `margin`(각 변, 캔버스 대비 비율)만큼 안쪽으로 그린 RGBA8(SDF AA).
+/// `margin == 0.0` 이면 풀블리드(창/작업표시줄 아이콘용), macOS `.icns` 는
+/// [`MACOS_ICON_MARGIN`] 을 써서 표준 여백을 둔다.
+pub fn icon_rgba_inset(size: u32, margin: f32) -> Vec<u8> {
     let n = size as usize;
     let mut buf = vec![0u8; n * n * 4];
-    let s = size as f32 / 64.0;
+    let off = size as f32 * margin; // 안쪽 박스 좌상단 오프셋(px).
+    let inner = size as f32 * (1.0 - 2.0 * margin); // 마크가 차지하는 안쪽 정사각 변(px).
+    let s = inner / 64.0;
     let r_box = 14.0 * s;
     let stroke_r = 2.0 * s; // 4px 스트로크의 반.
-    let sz = size as f32;
-    // 셰브론 세그먼트(픽셀 좌표) 2개씩.
+    // 셰브론 세그먼트(픽셀 좌표) 2개씩 — 안쪽 박스 기준으로 off 만큼 이동.
     let seg = |x: f32| {
         [
-            (x * s, 20.0 * s, (x + 12.0) * s, 32.0 * s),
-            ((x + 12.0) * s, 32.0 * s, x * s, 44.0 * s),
+            (off + x * s, off + 20.0 * s, off + (x + 12.0) * s, off + 32.0 * s),
+            (off + (x + 12.0) * s, off + 32.0 * s, off + x * s, off + 44.0 * s),
         ]
     };
     let chevs = [seg(CHEV_X[0]), seg(CHEV_X[1]), seg(CHEV_X[2])];
@@ -55,8 +69,8 @@ pub fn icon_rgba(size: u32) -> Vec<u8> {
         for px in 0..n {
             let fx = px as f32 + 0.5;
             let fy = py as f32 + 0.5;
-            // 둥근 사각 박스(채움).
-            let cov_box = (0.5 - sdf_round_rect(fx, fy, sz, sz, r_box)).clamp(0.0, 1.0);
+            // 둥근 사각 박스(채움) — 안쪽 정사각 로컬 좌표로 SDF 평가.
+            let cov_box = (0.5 - sdf_round_rect(fx - off, fy - off, inner, inner, r_box)).clamp(0.0, 1.0);
             let (mut r, mut g, mut b) = (BOX_FILL.r() as f32, BOX_FILL.g() as f32, BOX_FILL.b() as f32);
             let mut a = cov_box;
             // 셰브론(위에 알파 over 블렌딩).
