@@ -88,11 +88,35 @@ gh release create vX.Y.Z "RawBlow-vX.Y.Z-<os>.exe" \
 ```
 
 - `.exe` 파일 아이콘은 `crates/rawblow-app/build.rs`가 로고를 Windows 리소스로 임베드(빌드 시 자동).
+- macOS 앱 아이콘(`.icns`)은 `bash scripts/gen-macos-icon.sh`로 생성한다(`logo.rs` 기하 + macOS
+  표준 여백 824/1024). cmd+Tab·Dock에서 다른 앱과 같은 크기로 보이게 하는 여백이 들어간다.
+  결과(`packaging/RawBlow.icns`)는 로컬 전용이며 `build-macos.sh`가 번들에 넣는다.
 - 크래시 로그는 실행 중 패닉 시 **바탕화면 `rawblow_crash.log`**에 기록됩니다.
 
 ---
 
 ## 변경 이력 (Changelog)
+
+### v0.4.7
+- **Nikon Z8/Z9 AF 포인트 표시(#45)** — Z8 NEF에서 측거점이 안 보이던 문제. AF 파서에 Nikon을 추가
+  (기존 Canon/Panasonic/Sony에 더해). Nikon Type3 MakerNote(임베드 TIFF, 베이스 상대 오프셋)를 풀고
+  ExifTool `AFInfo2V0400`(Expeed 7) 레이아웃을 따른다: **오토에어리어/3D 추적**은 51바이트 측거점
+  비트마스크(afPoints405 = 15행×27열)를 디코드해 **활성 측거 존**을 그리드로 표시, **단일점**은
+  AFAreaXPosition/YPosition(픽셀)을 AFImageWidth/Height로 정규화해 표시. 그리드→이미지 매핑은 ExifTool
+  분리값(가로 260px·세로 286px)·전체 PDAF 29×17 기준으로 도출(중심=프레임 중앙). 실파일(Z8 NEF 3종)로
+  비트마스크 디코드·존 위치 검증, 합성 단위 테스트 추가. 데이터 없는 컷·다른 Nikon 바디(AFInfo2 0401/0402)는
+  조용히 미표시.
+- **그리드 선택 테두리 잘림 수정** — 그리드 맨 왼쪽/오른쪽 셀에서 선택 강조 테두리의 좌/우 변이 스크롤
+  영역 경계에 걸려 잘려 보이던 문제. 테두리를 스트로크 절반폭만큼 셀 안쪽으로 들여 그려 어느 가장자리에서도
+  온전히 보이게 함.
+- **좌측 레일 정리 버튼 정렬** — 환경(스크롤바 등)에 따라 '정리' 버튼이 왼쪽으로 쏠리던 문제. 항상
+  사이드바 가용 폭에 맞춰 풀폭으로 배치(내용 중앙정렬).
+- **상태바 재배치** — 자동저장 표시(`● saved`/`saving…`)를 좌측 레일에서 **하단 상태바 오른쪽**으로 이동,
+  로딩·프레임 통계(ms·FPS·GPU·PRELOAD)는 하단 상태바 **왼쪽**으로 이동.
+- **macOS 앱 아이콘 여백(cmd+Tab 크기 정상화)** — 아이콘이 캔버스를 꽉 채우는 풀블리드라 macOS
+  cmd+Tab·Dock에서 다른 앱보다 크게 보이던 문제. Apple 표준대로 본체를 824/1024(여백 100px)로 줄여
+  재생성. `logo.rs`에 `icon_rgba_inset`(여백 인자)을 추가하고 `icon_rgba`(창/작업표시줄·Windows 런타임
+  아이콘)는 풀블리드 그대로 유지. `scripts/gen-macos-icon.sh` + `examples/gen_macos_icon.rs`로 재현 가능.
 
 ### v0.4.6
 - **Windows 시작 크래시 수정 + OpenGL 폴백(#43)** — 일부 Windows + 구형 AMD GPU에서 실행 직후 크래시
