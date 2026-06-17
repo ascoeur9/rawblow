@@ -21,8 +21,16 @@ fn main() -> eframe::Result<()> {
     install_panic_log();
     #[cfg(target_os = "macos")]
     macos_locale::align_with_system();
+    // 런타임 앱 아이콘. macOS에선 eframe이 `setApplicationIconImage`로 이 아이콘을 Dock·cmd+Tab에
+    // 런타임 적용하며, 이게 `.app` 번들의 `.icns`(표준 여백 적용본)를 덮어쓴다. 따라서 여기서도 풀블리드면
+    // .icns 여백이 무효가 돼 다른 앱보다 크게 보인다(#46 — v0.4.7에서 .icns만 고쳐선 안 잡힌 이유).
+    // macOS만 .icns와 동일한 표준 여백을 두고, Windows 작업표시줄·Linux는 풀블리드(꽉 채움)가 표준이라 유지.
+    #[cfg(target_os = "macos")]
+    let icon_rgba = logo::icon_rgba_inset(256, logo::MACOS_ICON_MARGIN);
+    #[cfg(not(target_os = "macos"))]
+    let icon_rgba = logo::icon_rgba(256);
     let icon = egui::IconData {
-        rgba: logo::icon_rgba(256),
+        rgba: icon_rgba,
         width: 256,
         height: 256,
     };
