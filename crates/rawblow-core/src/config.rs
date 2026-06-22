@@ -235,6 +235,6 @@ pub fn load() -> Config {
 pub fn save(config: &Config) -> std::io::Result<()> {
     std::fs::create_dir_all(config_dir())?;
     let json = serde_json::to_string_pretty(config)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
     std::fs::write(config_path(), json)
 }

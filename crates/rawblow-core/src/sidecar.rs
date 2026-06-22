@@ -84,7 +84,7 @@ pub fn save(folder: &Path, entries: &[Entry]) -> std::io::Result<()> {
 
     std::fs::create_dir_all(sidecar_dir(folder))?;
     let json = serde_json::to_string_pretty(&session)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
     std::fs::write(sidecar_path(folder), json)?;
     std::fs::write(sidecar_txt_path(folder), render_txt(&session))?;
     Ok(())

@@ -447,6 +447,7 @@ impl RawBlowApp {
             for (it, e) in items.iter_mut().zip(tmp) {
                 it.entry.label = e.label;
                 it.entry.stars = e.stars;
+                it.entry.tag = e.tag;
             }
         }
 

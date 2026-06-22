@@ -293,7 +293,7 @@ fn canon_af_info2(t: &Tiff, off: usize, words: usize, y_up: bool) -> Option<AfIn
 /// 측거점 크기는 단일값(aw/ah)이 전 측거점 공통.
 fn canon_af_info1(t: &Tiff, off: usize, words: usize, y_up: bool) -> Option<AfInfo> {
     let v = t.shorts(off, words.min(4096))?;
-    let num = *v.get(0)? as usize;
+    let num = *v.first()? as usize;
     let valid = (*v.get(1)? as usize).min(num);
     let (afw, afh) = (*v.get(4)? as f64, *v.get(5)? as f64);
     if num == 0 || num > 128 || afw < 1.0 || afh < 1.0 {

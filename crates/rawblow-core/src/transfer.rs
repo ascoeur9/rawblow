@@ -94,7 +94,7 @@ pub struct Progress {
 }
 
 /// 동반 범위에 따라 항목에서 전송할 멤버를 고른다.
-pub fn select_members<'a>(entry: &'a Entry, companions: Companions) -> Vec<&'a PathBuf> {
+pub fn select_members(entry: &Entry, companions: Companions) -> Vec<&PathBuf> {
     match companions {
         Companions::Both => entry.members.iter().collect(),
         Companions::RawOnly => entry.members_of_kind(Kind::Raw),
@@ -457,7 +457,7 @@ fn split_folder(label: Label, stars: u8) -> String {
 pub fn parse_terms(text: &str) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
-    for raw in text.split(|c| matches!(c, ',' | ';' | '\t' | '\n' | '\r')) {
+    for raw in text.split([',', ';', '\t', '\n', '\r']) {
         let t = raw.trim();
         if !t.is_empty() && seen.insert(t.to_ascii_lowercase()) {
             out.push(t.to_string());

@@ -878,7 +878,7 @@ fn jpeg_dimensions(b: &[u8]) -> Option<(u16, u16)> {
         // CR2(캐논 5D/5D2 등) 등은 본 이미지가 무손실 JPEG(SOF3, C3)로 들어있는데
         // jpeg-decoder/image 둘 다 무손실·산술코딩 JPEG을 못 푼다. 이걸 프리뷰 후보로
         // 잡으면 엉뚱한 크기(예: 780×2048)로 깨져 단일뷰가 안 뜬다 → 후보에서 제외.
-        let is_decodable_sof = matches!(marker, 0xC0 | 0xC1 | 0xC2);
+        let is_decodable_sof = matches!(marker, 0xC0..=0xC2);
         let is_other_sof = matches!(
             marker,
             0xC3 | 0xC5 | 0xC6 | 0xC7 | 0xC9 | 0xCA | 0xCB | 0xCD | 0xCE | 0xCF
