@@ -201,6 +201,8 @@ pub struct RawBlowApp {
     zoom: f32,          // 절대 배율(화면픽셀/이미지픽셀). 1.0 = 1:1
     pan: Vec2,          // 중앙 기준 이동(화면 px)
     zoom_for: Option<usize>, // 줌 상태가 적용된 항목(real). 바뀌면 fit으로 리셋
+    last_view_size: Option<Vec2>, // #48: 마지막으로 표시한 텍스처 크기(px). 같은 항목에서 해상도가 바뀌면(ORIG 토글) 화면상 배율을 유지.
+    af_zoom_pending: bool,   // #49: 다음 1:1 확대를 AF 측거점 중심에 맞추라는 요청.
     grid_cols: usize,
     sort: SortOrder,
 
@@ -344,6 +346,8 @@ impl RawBlowApp {
             zoom: 1.0,
             pan: Vec2::ZERO,
             zoom_for: None,
+            last_view_size: None,
+            af_zoom_pending: false,
             grid_cols: cfg.grid_cols.clamp(4, 12),
             sort: SortOrder::Name,
             selected: std::collections::HashSet::new(),
@@ -1264,9 +1268,12 @@ impl RawBlowApp {
                                 self.fit = false;
                                 self.zoom = 1.0;
                                 self.pan = Vec2::ZERO;
+                                // #49: AF 포인트 표시 중이면 측거점 기준으로 확대(photo_view가 pan 보정).
+                                self.af_zoom_pending = self.show_af;
                             } else {
                                 self.fit = true;
                                 self.pan = Vec2::ZERO;
+                                self.af_zoom_pending = false;
                             }
                         }
                         Key::D => self.full_raw = !self.full_raw, // ORIG(원본 보기) 토글
@@ -2008,6 +2015,8 @@ impl RawBlowApp {
             self.fit = true;
             self.pan = Vec2::ZERO;
             self.zoom_for = Some(real);
+            self.last_view_size = None; // 항목이 바뀜 → 해상도 추적 리셋(#48)
+            self.af_zoom_pending = false;
         }
         let texsize = self
             .cache
@@ -2037,6 +2046,18 @@ impl RawBlowApp {
         }
         let min_zoom = fit_scale.min(1.0);
         let max_zoom = 8.0_f32.max(fit_scale); // 최소 8x(작은 이미지도 확대 가능)
+
+        // #48: 같은 항목에서 표시 해상도가 바뀌면(ORIG 로드/언로드) 화면상 배율·보던 위치를 유지한다.
+        // zoom은 화면픽셀/이미지픽셀이라 해상도가 K배면 같은 zoom이 K배 확대로 보인다 → zoom을 1/K로
+        // 맞춰 scaled(=size*zoom, 화면상 크기)를 보존하면 pan(화면픽셀)도 그대로 들어맞는다.
+        if !self.fit {
+            if let Some(prev) = self.last_view_size {
+                if prev.x > 0.0 && (prev.x - size.x).abs() > 0.5 {
+                    self.zoom = (self.zoom * prev.x / size.x).clamp(min_zoom, max_zoom);
+                }
+            }
+        }
+        self.last_view_size = Some(size);
 
         // 줌 입력: Ctrl+휠 또는 터치패드 핀치(커서 기준 확대).
         if resp.hovered() {
@@ -2084,6 +2105,20 @@ impl RawBlowApp {
 
         // pan 클램프(이미지가 영역보다 클 때만 이동 허용 — 화면 밖으로 날아가지 않게).
         let scaled = size * self.zoom;
+        // #49: AF 중심 확대 요청 소비 — 측거점(합초 우선)이 화면 중앙에 오도록 pan을 설정한다.
+        // 표시좌표(0..1)의 (cx,cy)가 area.center()에 오려면 pan = scaled * (0.5 - c). 이후 클램프로
+        // 가장자리 측거점이어도 화면 밖으로 벗어나지 않게 보정된다.
+        if self.af_zoom_pending {
+            self.af_zoom_pending = false;
+            if let Some((cx, cy)) = self
+                .items
+                .get(real)
+                .and_then(|it| it.af.as_ref().map(|af| (af, it.orient.unwrap_or(1))))
+                .and_then(|(af, orient)| af_focus_center(af, orient))
+            {
+                self.pan = Vec2::new(scaled.x * (0.5 - cx as f32), scaled.y * (0.5 - cy as f32));
+            }
+        }
         let max_px = ((scaled.x - area.width()) * 0.5).max(0.0);
         let max_py = ((scaled.y - area.height()) * 0.5).max(0.0);
         self.pan.x = self.pan.x.clamp(-max_px, max_px);
@@ -3630,6 +3665,8 @@ impl RawBlowApp {
                         link_label(ui, "X · @hare_kig", "https://x.com/hare_kig");
                     });
                     ui.add_space(10.0);
+                    link_label(ui, tr(lang, "투네이션으로 후원하기"), "https://toon.at/donate/hare");
+                    ui.add_space(10.0);
                     ui.label(egui::RichText::new(tr(lang, "마음에 드시나요? 그럼 cosly도 이용해보세요.")).font(prop(11.5)).color(theme::INK2));
                     link_label(ui, "https://cosly.link", "https://cosly.link");
                 });
@@ -3768,6 +3805,35 @@ fn af_display_coords(pt: &rawblow_core::af::AfPoint, orient: u16) -> (f64, f64, 
         8 => (y, 1.0 - x, h, w),         // 90° CCW
         _ => (x, y, w, h),
     }
+}
+
+/// AF 중심 확대(#49)용: 측거점들의 대표 중심을 **표시좌표(0..1, orientation 적용)**로 반환.
+/// 우선순위: 합초(in_focus) → 선택(selected) → 전체. 같은 그룹 안에서는 평균(존 AF 대응). 점이
+/// 없으면 None → 호출부는 기존 중앙 기준 확대로 폴백한다.
+fn af_focus_center(af: &rawblow_core::af::AfInfo, orient: u16) -> Option<(f64, f64)> {
+    fn avg(
+        af: &rawblow_core::af::AfInfo,
+        orient: u16,
+        pred: impl Fn(&rawblow_core::af::AfPoint) -> bool,
+    ) -> Option<(f64, f64)> {
+        let (mut sx, mut sy, mut n) = (0.0, 0.0, 0u32);
+        for p in &af.points {
+            if pred(p) {
+                let (cx, cy, _, _) = af_display_coords(p, orient);
+                sx += cx;
+                sy += cy;
+                n += 1;
+            }
+        }
+        if n == 0 {
+            None
+        } else {
+            Some((sx / n as f64, sy / n as f64))
+        }
+    }
+    avg(af, orient, |p| p.in_focus)
+        .or_else(|| avg(af, orient, |p| p.selected))
+        .or_else(|| avg(af, orient, |_| true))
 }
 
 /// `#rrggbb` 또는 `rrggbb`(공백 허용) → [r,g,b](#36). 형식이 아니면 None.

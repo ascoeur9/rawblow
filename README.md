@@ -138,6 +138,12 @@ cargo run   --release -p rawblow-app
 
 ---
 
+## 후원 (Support)
+
+→ **[투네이션으로 후원하기](https://toon.at/donate/hare)**
+
+---
+
 ## 감사 (Thanks To)
 
 이슈 제보·테스트로 RawBlow를 함께 다듬어주신 분들께 감사드립니다:

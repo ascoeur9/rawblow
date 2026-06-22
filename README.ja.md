@@ -134,6 +134,12 @@ cargo run   --release -p rawblow-app
 
 ---
 
+## 支援 (Support)
+
+→ **[Toonationで支援する](https://toon.at/donate/hare)**
+
+---
+
 ## 感謝 (Thanks To)
 
 問題の報告・テストで RawBlow を一緒に磨き上げてくださった方々に感謝します:

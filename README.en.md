@@ -134,6 +134,12 @@ For bugs (especially crashes), display errors, requests for new camera support, 
 
 ---
 
+## Support
+
+→ **[Donate via Toonation](https://toon.at/donate/hare)**
+
+---
+
 ## Thanks To
 
 Thanks to everyone who helped refine RawBlow through issue reports and testing:

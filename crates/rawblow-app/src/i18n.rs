@@ -199,6 +199,7 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "최신 버전 받기 · GitHub Releases" => ("Get the latest version · GitHub Releases", "最新バージョンを入手 · GitHub Releases"),
         "버그 제보 · GitHub Issues" => ("Report a bug · GitHub Issues", "バグ報告 · GitHub Issues"),
         "만든 사람 · 하레 (Hare)" => ("Created by · Hare", "制作者 · ハレ (Hare)"),
+        "투네이션으로 후원하기" => ("Donate via Toonation", "Toonationで支援する"),
         "마음에 드시나요? 그럼 cosly도 이용해보세요." => (
             "Like it? Then give cosly a try too.",
             "気に入りましたか？ぜひcoslyもお試しください。",
