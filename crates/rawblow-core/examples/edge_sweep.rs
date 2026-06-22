@@ -46,7 +46,7 @@ fn main() {
         println!("  edge={edge:4} -> {ms:5.1}ms  {mb:.2}MB  out~{dims}");
     }
     println!("\n== PREVIEW target sweep (full_raw=false) ==");
-    for edge in [1280u32, 1440, 1600, 1920, 2048] {
+    for edge in [1280u32, 1440, 1600, 1920, 2048, 2560, 3200, 4096] {
         let (ms, mb, dims) = avg_for(&files, edge, false);
         println!("  edge={edge:4} -> {ms:5.1}ms  {mb:.2}MB  out~{dims}");
     }
