@@ -28,8 +28,9 @@ const RAIL_W: f32 = 188.0;
 const FILMSTRIP_H: f32 = 92.0;
 const STATUS_H: f32 = 24.0;
 
-/// 단일/전체화면 프리뷰 최대 변(px). 속도 최우선 — DCT 축소 디코딩 타깃.
-const PREVIEW_EDGE: u32 = 1600;
+/// 단일/전체화면 프리뷰 최대 변(px). RAW의 풀해상도 임베디드 JPEG를 DCT 축소해
+/// 4K급 화면에서도 기본 FIT 미리보기가 덜 물러 보이도록 2560px로 상향(#preview-audit).
+const PREVIEW_EDGE: u32 = 2560;
 /// ORIG(원본 보기) 최대 변(px). GPU 텍스처 한계(보통 8192) 안에서 원본 디테일 확보.
 const ORIG_EDGE: u32 = 8192;
 /// 그리드·필름스트립 썸네일 최대 변(px). 작게 → 빠른 디코딩·작은 메모리.

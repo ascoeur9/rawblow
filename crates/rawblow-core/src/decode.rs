@@ -134,7 +134,7 @@ pub fn decode_file(path: &Path, opts: DecodeOptions) -> Result<DecodedImage, Dec
                         }
                         tried = sz;
                         if let Ok(prefix) = read_prefix(path, sz) {
-                            if let Some(img) = decode_best_embedded(&prefix, true, orient, opts.max_edge) {
+                            if let Some(img) = decode_best_embedded(&prefix, true, orient, opts.max_edge, preview_min_edge()) {
                                 return Ok(img);
                             }
                         }
@@ -188,15 +188,25 @@ fn decode_raw_embedded(
     max_edge: Option<u32>,
 ) -> Result<DecodedImage, DecodeError> {
     let thumb = matches!(max_edge, Some(e) if e <= 384);
-    // 썸네일: 320으로 축소. 프리뷰: 1920급 임베디드를 줄이지 않고(≤2048 → 그대로) 선명하게,
-    // 단 드물게 거대한 임베디드는 2048로 상한.
-    let decode_edge = if thumb { max_edge } else { Some(2048) };
+    // 썸네일은 요청 변(max_edge)으로 축소한다. 프리뷰는 호출자가 요청한 변을 존중하되,
+    // max_edge=None인 하위호환 경로만 2048px 상한으로 제한한다(거대 임베디드 갑작스런 풀디코딩 방지).
+    let decode_edge = if thumb {
+        max_edge
+    } else {
+        Some(max_edge.unwrap_or(2048))
+    };
+    let min_long_edge = if thumb {
+        max_edge.unwrap_or(0)
+    } else {
+        max_edge.unwrap_or_else(preview_min_edge)
+    };
 
-    // 프리뷰: IFD가 가리키는 **가장 작은 ≥1600 임베디드**(RW2 0x002e ~1920)를 그 구간만 읽어
-    // 디코딩한다(blind 1MB prefix·전체파일 폴백 회피, 1920이 1MB 밖이어도 안전). IFD가 없거나
-    // ≥1600 임베디드가 없으면(비RW2 등) 아래 prefix 경로로 폴백.
+    // 프리뷰: IFD가 가리키는 임베디드 중 **요청 변을 만족하는 가장 작은 해상도**를 그 구간만 읽어
+    // 디코딩한다. 기본 1600/1920급 요청은 RW2 0x002e(~1920)를 빠르게 쓰고, 2560px 이상 요청은
+    // 0x0127 같은 풀해상도 JPEG를 DCT 축소해 더 선명한 단일뷰를 제공한다(풀 RAW 현상은 여전히 회피).
+    // max_edge=None인 하위호환 호출은 기존처럼 ≥1600 후보를 고른다.
     if !thumb {
-        if let Some(img) = decode_ifd_embedded(path, orient, decode_edge, preview_min_edge(), true) {
+        if let Some(img) = decode_ifd_embedded(path, orient, decode_edge, min_long_edge, true) {
             return Ok(img);
         }
     }
@@ -218,16 +228,16 @@ fn decode_raw_embedded(
         }
         tried = sz;
         let prefix = read_prefix(path, sz)?;
-        if let Some(img) = decode_best_embedded(&prefix, thumb, orient, decode_edge) {
-            // 프리뷰가 충분히 크면 채택. 너무 작으면(1920을 못 찾음) 다음 단계/전체로 재시도.
-            if thumb || img.width.max(img.height) >= 1200 {
+        if let Some(img) = decode_best_embedded(&prefix, thumb, orient, decode_edge, min_long_edge) {
+            // 프리뷰가 요청 변을 만족하면 채택. 작으면 뒤쪽의 더 큰 임베디드를 찾기 위해 전체로 재시도.
+            if thumb || img.width.max(img.height) >= min_long_edge {
                 return Ok(img);
             }
         }
     }
     // 폴백: 전체 읽기.
     let full = read_whole(path)?;
-    decode_best_embedded(&full, thumb, orient, decode_edge).ok_or(DecodeError::NoEmbeddedPreview)
+    decode_best_embedded(&full, thumb, orient, decode_edge, min_long_edge).ok_or(DecodeError::NoEmbeddedPreview)
 }
 
 /// ORIG 폴백: RAW의 **가장 큰** 임베디드 JPEG를 요청 크기(`max_edge`)로 디코딩한다.
@@ -246,12 +256,13 @@ fn decode_largest_embedded(
 /// 후보 임베디드 JPEG들을 선호 순서로 디코딩 시도해, 처음 성공한 것을 반환.
 /// 잘린/손상 후보는 자동으로 건너뛴다(회색 화면 방지).
 /// - 썸네일: 작은 것부터(빠른 디코딩).
-/// - 프리뷰: 화면 크기(≥1600) 이상 중 작은 것부터, 없으면 큰 것부터.
+/// - 프리뷰: 요청 긴변 이상 중 작은 것부터, 없으면 큰 것부터.
 fn decode_best_embedded(
     bytes: &[u8],
     thumb: bool,
     orient: u16,
     decode_edge: Option<u32>,
+    preview_min_long_edge: u32,
 ) -> Option<DecodedImage> {
     let cands = embedded_candidates(bytes); // (start, len, max_edge) 오름차순
     if cands.is_empty() {
@@ -261,8 +272,8 @@ fn decode_best_embedded(
     if !thumb {
         order.sort_by_key(|&i| {
             let e = cands[i].2;
-            if e >= 1600 {
-                (0u8, e) // ≥1600 중 작은 것 우선
+            if e >= preview_min_long_edge {
+                (0u8, e) // 요청 프리뷰 긴변 이상 중 작은 것 우선
             } else {
                 (1u8, u32::MAX - e) // 그다음 큰 것부터(폴백)
             }
