@@ -229,8 +229,9 @@ fn decode_raw_embedded(
         tried = sz;
         let prefix = read_prefix(path, sz)?;
         if let Some(img) = decode_best_embedded(&prefix, thumb, orient, decode_edge, min_long_edge) {
-            // 프리뷰가 요청 변을 만족하면 채택. 작으면 뒤쪽의 더 큰 임베디드를 찾기 위해 전체로 재시도.
-            if thumb || img.width.max(img.height) >= min_long_edge {
+            // 1200px 이상이면 채택 — 요청 크기(min_long_edge)보다 작아도 전체 파일 읽기보다 낫다.
+            // (카메라 내장 프리뷰가 요청 크기보다 작을 수 있고, 전체 파일을 읽어도 같은 크기만 나옴.)
+            if thumb || img.width.max(img.height) >= 1200 {
                 return Ok(img);
             }
         }
