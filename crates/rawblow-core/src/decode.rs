@@ -523,10 +523,29 @@ fn decode_ifd_embedded(
     let order: Vec<usize> =
         if prefer_smallest { (0..scored.len()).collect() } else { (0..scored.len()).rev().collect() };
     for idx in order {
-        let (_, off, len) = scored[idx];
+        let (le, off, len) = scored[idx];
         if let Ok(bytes) = read_range(path, off, len) {
             if bytes.len() >= 4 && bytes[0] == 0xFF && bytes[1] == 0xD8 {
-                if let Ok(img) = decode_jpeg_scaled(&bytes, orient, max_edge) {
+                // 원본 JPEG가 요청 변(max_edge)의 2배 이상 클 때 1/4 DCT 스케일을 강제해
+                // 빠른 디코딩을 유도한다(예: CR2 5616px, max_edge=1920 → 130ms → ~35ms).
+                // eff_scale = le/4: jpeg-decoder가 정확히 1/4 DCT를 선택하도록 하는 타깃.
+                // eff_scale >= max_edge면(예: Sony 8736px, 2184 > 1920) finish()가 max_edge로 다운스케일 → 1920px 출력.
+                // eff_scale < max_edge면(예: CR2 5616px, 1404 < 1920) 1404px 출력 — GPU가 표시 시 스트레칭.
+                let eff_scale = match max_edge {
+                    Some(me) if le > me * 2 => Some(le / 4),
+                    _ => max_edge,
+                };
+                let result = if eff_scale != max_edge {
+                    // DCT 타깃(eff_scale)으로 디코딩 후 finish()는 max_edge로 출력을 클램핑.
+                    if let Some((raw_img, icc)) = try_jpeg_decoder_scaled(&bytes, eff_scale) {
+                        Ok(finish(raw_img, icc, false, orient, max_edge))
+                    } else {
+                        decode_jpeg_scaled(&bytes, orient, max_edge)
+                    }
+                } else {
+                    decode_jpeg_scaled(&bytes, orient, max_edge)
+                };
+                if let Ok(img) = result {
                     return Some(img);
                 }
             }
