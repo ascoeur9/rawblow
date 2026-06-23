@@ -1191,6 +1191,37 @@ fn gps_extraction_from_synthetic_tiff() {
     assert_eq!(gps.alt, Some(-12.5));
 }
 
+/// 미리보기 디코딩 속도 측정 — RW2/CR2 각 1920px, release 빌드 권장(debug는 5~6× 느림).
+/// `cargo test --release -p rawblow-core -- preview_decode_timing --nocapture`
+#[test]
+fn preview_decode_timing() {
+    use std::time::Instant;
+    let files: &[(&str, u32)] = &[
+        ("P1186492.RW2", 1920),
+        ("IMG_0005.CR2", 1920),
+    ];
+    for (rel, edge) in files {
+        let Some(p) = sample_file(rel) else {
+            eprintln!("skip: sample/{rel} 없음");
+            continue;
+        };
+        let mut times = Vec::new();
+        for _ in 0..3 {
+            let t0 = Instant::now();
+            let img = decode::decode_file(
+                &p,
+                decode::DecodeOptions { full_raw: false, max_edge: Some(*edge) },
+            )
+            .unwrap_or_else(|e| panic!("{rel} 디코딩 실패: {e}"));
+            times.push(t0.elapsed());
+            assert!(img.width > 0 && img.height > 0);
+        }
+        let best_ms = times.iter().map(|d| d.as_millis()).min().unwrap();
+        eprintln!("[preview_timing] {rel} {edge}px → {best_ms}ms (best-of-3)");
+        assert!(best_ms < 500, "{rel} {edge}px 프리뷰 너무 느림: {best_ms}ms (상한 500ms)");
+    }
+}
+
 #[test]
 fn gps_extraction_from_real_tagged_jpg() {
     // ExifTool로 지오태깅한 QA 샘플(sample/gps_test/, gitignored). 없으면 skip.

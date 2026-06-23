@@ -96,12 +96,18 @@ impl Worker {
         // 백그라운드(프리페치) 레인은 일부 스레드만 처리한다. 느린 디스크에서 모든 워커가
         // 프리페치 읽기에 매달리면 전경(보이는 셀)이 대역폭을 못 얻어 굶는다.
         let bg_threads = (threads / 2).clamp(1, 2);
+        // 스레드 0은 Preview·Normal 전용 — Thumb 레인을 절대 받지 않는다. 스크롤 중 모든 스레드가
+        // 썸네일 디코딩에 묶여 있을 때도, 스레드 0은 곧바로 Preview를 집어 단일뷰 지연을 방지한다.
+        // 나머지 스레드는 기존 우선순위(Preview > Thumb > Normal > Bg)로 모든 레인을 처리한다.
         for idx in 0..threads.max(1) {
             let sched = sched.clone();
             let res_tx = res_tx.clone();
             let cache_dir = cache_dir.clone();
             let cur_gen = cur_gen.clone();
-            let serves_bg = idx < bg_threads;
+            // 스레드 0은 Preview/Normal 전용(스레드 수가 2 이상일 때만). 단일 스레드 환경에서는
+            // 유일한 워커라 전체 레인을 처리해야 한다.
+            let serves_thumb = idx > 0 || threads < 2;
+            let serves_bg = serves_thumb && idx < bg_threads;
             std::thread::spawn(move || loop {
                 // 최신 우선으로 한 요청을 꺼낸다(레인 우선순위 + LIFO). 없으면 대기.
                 let req = {
@@ -113,8 +119,10 @@ impl Worker {
                         if let Some(r) = g.preview.pop_back() {
                             break r;
                         }
-                        if let Some(r) = g.thumb.pop_back() {
-                            break r;
+                        if serves_thumb {
+                            if let Some(r) = g.thumb.pop_back() {
+                                break r;
+                            }
                         }
                         if let Some(r) = g.normal.pop_back() {
                             break r;
@@ -201,12 +209,22 @@ impl Worker {
                 }
 
                 // 패닉 격리: rawloader 등 디코더가 특정 파일에 패닉해도 워커가 죽지 않게 Err 변환.
+                #[cfg(debug_assertions)]
+                let _t0 = std::time::Instant::now();
                 let image = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     decode_file(&path, DecodeOptions { full_raw, max_edge })
                 })) {
                     Ok(r) => r.map_err(|e| e.to_string()),
                     Err(_) => Err("panic during decode".to_string()),
                 };
+                #[cfg(debug_assertions)]
+                if !is_thumb && !req.prefetch {
+                    eprintln!(
+                        "[preview] {:>4}ms  {:?}",
+                        _t0.elapsed().as_millis(),
+                        path.file_name().unwrap_or_default()
+                    );
+                }
 
                 // 디코딩 성공한 캐시 대상은 디스크 캐시에 저장(재오픈·재방문 즉시 표시).
                 if let (Some(key), Ok(img)) = (&cache_key, &image) {

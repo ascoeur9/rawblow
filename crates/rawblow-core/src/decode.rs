@@ -44,10 +44,12 @@ fn thumb_prefix_size() -> usize {
     static C: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     tunable("RB_THUMB_PREFIX_KB", 512, &C) * 1024
 }
-/// 프리뷰 prefix 폴백 바이트(기본 1MB). env `RB_PREVIEW_PREFIX_KB`.
+/// 프리뷰 prefix 폴백 바이트(기본 2MB). env `RB_PREVIEW_PREFIX_KB`.
+/// RW2 1920px 임베디드는 ~512KB 오프셋에서 시작해 ~950KB를 차지 → 끝이 1.46MB.
+/// 1MB prefix는 JPEG를 잘라 디코딩 실패 → read_whole 폴백(25MB)으로 느려진다. 2MB로 안전하게 확보.
 fn preview_prefix_size() -> usize {
     static C: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    tunable("RB_PREVIEW_PREFIX_KB", 1024, &C) * 1024
+    tunable("RB_PREVIEW_PREFIX_KB", 2048, &C) * 1024
 }
 /// ORIG IFD 임베디드 최소 긴변(기본 3000). env `RB_ORIG_GATE`.
 fn orig_gate() -> u32 {
