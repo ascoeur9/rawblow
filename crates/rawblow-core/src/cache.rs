@@ -20,7 +20,7 @@ fn jpeg_quality() -> u8 {
         std::env::var("RB_CACHE_Q")
             .ok()
             .and_then(|s| s.parse::<u8>().ok())
-            .filter(|&q| q >= 1 && q <= 100)
+            .filter(|&q| (1..=100).contains(&q))
             .unwrap_or(85)
     })
 }
@@ -117,10 +117,10 @@ pub fn store(cache_dir: &Path, key: &str, img: &DecodedImage) {
     }
     let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp_path = cache_dir.join(format!(".tmp-{}-{}", std::process::id(), seq));
-    if std::fs::write(&tmp_path, &buf).is_ok() {
-        if std::fs::rename(&tmp_path, entry_path(cache_dir, key)).is_err() {
-            let _ = std::fs::remove_file(&tmp_path); // rename 실패 시 임시파일 청소.
-        }
+    if std::fs::write(&tmp_path, &buf).is_ok()
+        && std::fs::rename(&tmp_path, entry_path(cache_dir, key)).is_err()
+    {
+        let _ = std::fs::remove_file(&tmp_path); // rename 실패 시 임시파일 청소.
     }
 }
 

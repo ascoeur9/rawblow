@@ -243,6 +243,87 @@ fn orig_ifd_embedded_synthetic_rw2() {
     assert_eq!((img.width, img.height), (3200, 2000), "과대선언 len에도 EOF까지만 읽어 정상");
 }
 
+/// RAW 빠른 프리뷰(full_raw=false)가 요청 해상도에 맞는 IFD 임베디드 JPEG를 골라야 한다.
+/// 1600px 요청은 작은 1920px 프리뷰를 쓰고, 2560px 요청은 풀해상도 임베디드를 DCT 축소해
+/// ORIG 전환 없이도 더 선명한 기본 미리보기를 제공한다(#preview-audit).
+#[test]
+fn raw_preview_uses_hires_if_requested_edge_exceeds_small_preview() {
+    use image::{ImageBuffer, Rgb};
+
+    fn make_jpeg(w: u32, h: u32) -> Vec<u8> {
+        let buf = ImageBuffer::from_fn(w, h, |x, y| {
+            Rgb([(x * 255 / (w - 1)) as u8, (y * 255 / (h - 1)) as u8, 64u8])
+        });
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(buf)
+            .write_to(&mut out, image::ImageFormat::Jpeg)
+            .unwrap();
+        out.into_inner()
+    }
+
+    fn build_rw2_with_two_embedded(small: &[u8], large: &[u8]) -> Vec<u8> {
+        let entry_count = 2u16;
+        let ifd_size = 2 + entry_count as usize * 12 + 4;
+        let small_off = 8 + ifd_size;
+        let large_off = small_off + small.len();
+        let mut f = Vec::new();
+        f.extend_from_slice(b"II");
+        f.extend_from_slice(&0x0055u16.to_le_bytes());
+        f.extend_from_slice(&8u32.to_le_bytes());
+        f.extend_from_slice(&entry_count.to_le_bytes());
+        // Panasonic RW2에서 흔한 작은 프리뷰(0x002e) + 풀해상도 JPEG(0x0127) 구조.
+        for (tag, data, off) in [
+            (0x002eu16, small, small_off),
+            (0x0127u16, large, large_off),
+        ] {
+            f.extend_from_slice(&tag.to_le_bytes());
+            f.extend_from_slice(&7u16.to_le_bytes()); // UNDEFINED blob
+            f.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            f.extend_from_slice(&(off as u32).to_le_bytes());
+        }
+        f.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(f.len(), small_off);
+        f.extend_from_slice(small);
+        assert_eq!(f.len(), large_off);
+        f.extend_from_slice(large);
+        f
+    }
+
+    let small = make_jpeg(1920, 1200);
+    let large = make_jpeg(3200, 2000);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("two_previews.rw2");
+    std::fs::write(&path, build_rw2_with_two_embedded(&small, &large)).unwrap();
+
+    let fast = decode::decode_file(
+        &path,
+        decode::DecodeOptions {
+            full_raw: false,
+            max_edge: Some(1600),
+        },
+    )
+    .expect("1600px preview");
+    assert_eq!(
+        (fast.width, fast.height),
+        (1600, 1000),
+        "1600px 요청은 작은 프리뷰에서 축소"
+    );
+
+    let hires = decode::decode_file(
+        &path,
+        decode::DecodeOptions {
+            full_raw: false,
+            max_edge: Some(2560),
+        },
+    )
+    .expect("2560px preview");
+    assert_eq!(
+        (hires.width, hires.height),
+        (2560, 1600),
+        "2560px 요청은 큰 임베디드에서 축소"
+    );
+}
+
 /// CR2(Canon)식 StripOffsets(0x0111)+StripByteCounts(0x0117) 임베디드 JPEG를 합성 TIFF로
 /// 검증한다(#perf C162 회귀 가드). RW2의 type-7과 달리 strip 태그로 JPEG를 가리키는 경로.
 #[test]

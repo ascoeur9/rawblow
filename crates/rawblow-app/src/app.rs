@@ -28,8 +28,14 @@ const RAIL_W: f32 = 188.0;
 const FILMSTRIP_H: f32 = 92.0;
 const STATUS_H: f32 = 24.0;
 
-/// 단일/전체화면 프리뷰 최대 변(px). 속도 최우선 — DCT 축소 디코딩 타깃.
-const PREVIEW_EDGE: u32 = 1600;
+/// 단일/전체화면 프리뷰 최대 변(px). RW2 등은 내장 프리뷰가 네이티브 1920px이라,
+/// 1920을 요청하면 기존 1600 대비 (1) 더 높은 해상도(1600→1920)이면서 (2) 다운스케일
+/// 리샘플이 0이 돼 오히려 더 빠르다(샘플 RW2 실측: 1600=108ms vs 1920=29ms, I/O 동일 0.95MB).
+/// 2560 이상은 8144px 풀해상도 임베디드를 읽어야 해 I/O가 ~10배(0.95→9.3MB)·시간이 ~5배로
+/// 늘어, 매 넘김마다 디코딩하는 컬링 기본값으로는 느린 드라이브에서 손해다(#preview-audit).
+/// 더 선명한 확인이 필요하면 ORIG(D)로 8192px 풀해상도를 본다(요청 시 디코더가 풀해상도
+/// 임베디드를 DCT 축소하는 경로는 그대로 유지 — 회귀 테스트로 검증).
+const PREVIEW_EDGE: u32 = 1920;
 /// ORIG(원본 보기) 최대 변(px). GPU 텍스처 한계(보통 8192) 안에서 원본 디테일 확보.
 const ORIG_EDGE: u32 = 8192;
 /// 그리드·필름스트립 썸네일 최대 변(px). 작게 → 빠른 디코딩·작은 메모리.
@@ -447,6 +453,7 @@ impl RawBlowApp {
             for (it, e) in items.iter_mut().zip(tmp) {
                 it.entry.label = e.label;
                 it.entry.stars = e.stars;
+                it.entry.tag = e.tag;
             }
         }
 
