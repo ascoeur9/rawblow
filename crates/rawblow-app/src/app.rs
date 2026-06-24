@@ -3835,11 +3835,19 @@ impl RawBlowApp {
                 ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0, theme::LINE));
                 ui.add_space(12.0);
                 let count = if c.scope_all { total_items } else { filtered_count };
+                // 모드별 대략 처리량(추론 기준, 디코드 제외 · M1 Max 실측): 사용자가 속도를 가늠하도록.
+                let rate = if c.use_aesthetic {
+                    if c.use_gpu { "~수백 장/초 (GPU)" } else { "~190 장/초 (ViT-B/CPU)" }
+                } else {
+                    "~수백 장/초 (CV)"
+                };
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("WILL ANALYZE").font(prop(10.0)).color(theme::INK3));
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new(count.to_string()).font(mono(13.0)).color(theme::ACCENT));
                     ui.label(egui::RichText::new(tr(lang, "장")).font(mono(10.0)).color(theme::INK3));
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new(tr(lang, rate)).font(mono(9.5)).color(theme::INK4));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let aesthetic_blocks = c.use_aesthetic && !Self::model_present(c.model_spec());
                     let can_start = c.any_enabled() && count > 0 && !aesthetic_blocks;
