@@ -3956,7 +3956,7 @@ impl RawBlowApp {
                 cores.min(8).min(total.max(1))
             } else {
                 // CoreML 동시 세션(실측 8워커×배치8 ≈ 421 img/s). 작은 컬링엔 배치 수만큼만.
-                let batches = (total + batch_size - 1) / batch_size;
+                let batches = total.div_ceil(batch_size);
                 cores.min(8).min(batches.max(1))
             }
         } else {
