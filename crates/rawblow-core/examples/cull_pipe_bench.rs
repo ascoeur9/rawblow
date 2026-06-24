@@ -65,8 +65,12 @@ fn main() {
         let ready = ready.clone();
         let go = go.clone();
         handles.push(std::thread::spawn(move || {
-            // 모델 로드(타이머 밖). 워밍업 1장 후 ready, go 신호에 일제히 시작.
-            let model = AestheticModel::load_tuned(std::path::Path::new(&mp), accel, intra).ok();
+            // 모델 로드(타이머 밖). model="none"이면 CV 전용(미적 모델 없음). 워밍업 후 일제히 시작.
+            let model = if mp == "none" {
+                None
+            } else {
+                AestheticModel::load_tuned(std::path::Path::new(&mp), accel, intra).ok()
+            };
             if let (Some(m), Ok(im)) = (model.as_ref(), decode_file(&files[0], DecodeOptions { full_raw: false, max_edge: Some(edge()) })) {
                 let _ = m.score(&im); // 워밍업(CoreML 컴파일 등) — 타이머 제외.
             }
