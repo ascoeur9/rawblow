@@ -78,15 +78,28 @@ impl QualityReport {
 /// 초점은 **전체 프레임** 선명도. AF 측거점에서만 재고 싶으면 [`focus_report_regions`]를
 /// 써서 `focus`를 교체하라(앱은 표시좌표 기준 AF 사각형을 이미 안다).
 pub fn analyze(img: &DecodedImage) -> QualityReport {
+    analyze_selective(img, true, true, true)
+}
+
+/// 켜진 신호만 계산한다(컬링 워커용 — 꺼진 검사는 건너뛰어 시간을 아낀다). 꺼진 항목은
+/// `empty()` 기본값으로 남고, `CullCriteria::verdict`은 `use_*`가 false면 그 값을 무시한다.
+/// 초점을 AF 영역에서만 잴 땐 `focus=false`로 두고 호출부가 [`focus_report_regions`]로 채운다
+/// (전체 프레임 초점을 중복 계산하지 않음).
+pub fn analyze_selective(img: &DecodedImage, exposure: bool, focus: bool, tilt: bool) -> QualityReport {
+    let mut q = QualityReport::empty();
     if !valid(img) {
-        return QualityReport::empty();
+        return q;
     }
-    QualityReport {
-        exposure: exposure_report(img),
-        focus: focus_report(img),
-        tilt: tilt_report(img),
-        aesthetic: None,
+    if exposure {
+        q.exposure = exposure_report(img);
     }
+    if focus {
+        q.focus = focus_report(img);
+    }
+    if tilt {
+        q.tilt = tilt_report(img);
+    }
+    q
 }
 
 /// rgba 버퍼가 width*height*4 이상인지(디코더가 부분 버퍼를 줄 가능성 방어).

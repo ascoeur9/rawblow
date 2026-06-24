@@ -3954,7 +3954,14 @@ impl RawBlowApp {
                             rawblow_core::decode::DecodeOptions { full_raw: false, max_edge: Some(AI_CULL_EDGE) },
                         )
                         .ok()?;
-                        let mut q = rawblow_core::quality::analyze(&img);
+                        // 켜진 신호만 계산. AF 영역 초점을 쓸 땐 전체 프레임 초점을 건너뛴다(중복 제거).
+                        let want_whole_focus = criteria.use_focus && !use_af;
+                        let mut q = rawblow_core::quality::analyze_selective(
+                            &img,
+                            criteria.use_exposure,
+                            want_whole_focus,
+                            criteria.use_tilt,
+                        );
                         if use_af {
                             if let Some(af) = rawblow_core::af::parse_af(path) {
                                 let orient = rawblow_core::meta::orientation(path);
