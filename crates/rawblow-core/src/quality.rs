@@ -853,6 +853,22 @@ mod tests {
     }
 
     #[test]
+    fn finalize_edge_cases() {
+        // 빈 입력 → 패닉 없이 빈 결과.
+        let mut empty: Vec<(usize, Verdict, Option<f32>)> = vec![];
+        finalize_cull_verdicts(&mut empty, true, 3, 0.5);
+        assert!(empty.is_empty());
+        // top-N인데 점수가 전부 None → 아무도 Good 못 됨(전부 Bad).
+        let mut none = vec![(0, Verdict::Good, None), (1, Verdict::Good, None)];
+        finalize_cull_verdicts(&mut none, true, 5, 0.5);
+        assert_eq!(verdicts(&none), vec![(0, Verdict::Bad), (1, Verdict::Bad)]);
+        // top_n이 개수보다 크면 점수 있는 전부 Good.
+        let mut few = vec![(0, Verdict::Bad, Some(0.3)), (1, Verdict::Bad, Some(0.8))];
+        finalize_cull_verdicts(&mut few, true, 99, 0.5);
+        assert_eq!(verdicts(&few), vec![(0, Verdict::Good), (1, Verdict::Good)]);
+    }
+
+    #[test]
     fn analyze_selective_skips_disabled_signals() {
         // 선명 패턴 이미지: 켠 신호만 계산되고 끈 신호는 empty 기본값(0)이어야 한다.
         let img = synth(200, 200, |x, y| if (x + y) % 2 == 0 { 220 } else { 30 });

@@ -469,6 +469,16 @@ mod tests {
     }
 
     #[test]
+    fn gpu_model_spec_is_rn50_fp32_consistent() {
+        // GPU 전용 모델(RN50 fp32) 명세 무결성: fp32(.onnx, int8 아님), URL이 파일명으로 끝남, sha 64자.
+        assert_eq!(GPU_MODEL.file, "clip-iqa-RN50.onnx");
+        assert!(!GPU_MODEL.file.contains("int8"));
+        assert!(GPU_MODEL.url.ends_with(GPU_MODEL.file));
+        assert_eq!(GPU_MODEL.sha256.len(), 64);
+        assert!(GPU_MODEL.bytes > 100_000_000); // fp32 RN50 ≈ 153MB
+    }
+
+    #[test]
     fn default_backbone_is_recommended_vitb32() {
         assert_eq!(ClipIqaBackbone::default(), ClipIqaBackbone::ViTB32);
         assert_eq!(ClipIqaBackbone::ALL[0], ClipIqaBackbone::ViTB32); // 표시 순서 권장 먼저
