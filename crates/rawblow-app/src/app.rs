@@ -3693,6 +3693,10 @@ impl RawBlowApp {
                             }
                         }
                     });
+                    ui.label(
+                        egui::RichText::new(tr(lang, "ViT-B/32 권장 — 가장 빠름. ViT-L/14는 화질↑ 속도↓(약 15배 느림)."))
+                            .font(mono(9.5)).color(theme::INK3),
+                    );
                     if model_ok {
                         // 선택 모드: 상위 N장 vs 임계값.
                         let use_topn = c.top_n > 0;

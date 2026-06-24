@@ -44,13 +44,15 @@ impl Lang {
 }
 
 /// CLIP-IQA 백본 종류(#50). 정확도/속도/크기 절충 — 사용자가 선택.
+/// 속도는 CPU int8 추론 기준(M1 Max 워커풀 실측): ViT-B/32 ≫ ViT-L/14 > RN50.
+/// (RN50은 다운로드는 작지만 CPU에서 int8 conv가 느려 처리량이 가장 낮다.)
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClipIqaBackbone {
-    /// ResNet-50 (~39 MB int8). 가장 빠르고 작다.
+    /// ResNet-50 (~39 MB int8). 다운로드는 가장 작으나 CPU 추론은 가장 느리다.
     RN50,
-    /// ViT-B/32 (~89 MB int8). 기본값 — 속도와 정확도 균형.
+    /// ViT-B/32 (~89 MB int8). **권장 기본값 — 가장 빠르고 정확도도 충분**.
     ViTB32,
-    /// ViT-L/14 (~307 MB int8). 가장 정확하나 느리다.
+    /// ViT-L/14 (~307 MB int8). 최고 화질이지만 ViT-B/32보다 ~15배 느리다.
     ViTL14,
 }
 
@@ -95,16 +97,17 @@ impl ClipIqaBackbone {
         }
     }
 
-    /// 표시 이름(UI용).
+    /// 표시 이름(UI 칩용). 속도/화질 힌트 포함.
     pub fn label(self) -> &'static str {
         match self {
-            ClipIqaBackbone::RN50   => "RN50  (~39 MB)",
-            ClipIqaBackbone::ViTB32 => "ViT-B/32  (~89 MB)",
-            ClipIqaBackbone::ViTL14 => "ViT-L/14  (~307 MB)",
+            ClipIqaBackbone::ViTB32 => "ViT-B/32 ⚡권장",
+            ClipIqaBackbone::ViTL14 => "ViT-L/14 정밀·느림",
+            ClipIqaBackbone::RN50   => "RN50 작은용량·느림",
         }
     }
 
-    pub const ALL: [ClipIqaBackbone; 3] = [ClipIqaBackbone::RN50, ClipIqaBackbone::ViTB32, ClipIqaBackbone::ViTL14];
+    /// 표시 순서: 권장(ViT-B/32) 먼저.
+    pub const ALL: [ClipIqaBackbone; 3] = [ClipIqaBackbone::ViTB32, ClipIqaBackbone::ViTL14, ClipIqaBackbone::RN50];
 }
 
 /// AI 컬링 결과를 어느 분류축에 배정할지(#50). 라벨·별점·태그는 서로 독립이므로

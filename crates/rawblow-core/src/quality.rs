@@ -521,6 +521,8 @@ mod ai {
     }
 
     /// RGBA8 → 224² RGB → CHW f32(CLIP 정규화). 실패 시 None.
+    /// 리샘플은 Triangle(쌍선형) — CLIP 표준 전처리(바이큐빅)에 가장 가깝다. (면적평균으로
+    /// 바꿔봤으나 추론이 병목이라 속도 이득이 없고 점수만 달라져 되돌림 — preprocess 비병목.)
     fn preprocess(img: &DecodedImage) -> Option<Vec<f32>> {
         if !valid(img) {
             return None;
