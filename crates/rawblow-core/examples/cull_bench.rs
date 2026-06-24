@@ -7,7 +7,7 @@
 //! 출력: 워밍업 후 iters×threads 장을 채점하고 ms/img(스레드당 지연)·img/s(총 처리량)를 보고.
 
 use rawblow_core::decode::DecodedImage;
-use rawblow_core::quality::{Accel, AestheticModel};
+use rawblow_core::quality::{analyze_selective, Accel, AestheticModel};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -57,14 +57,28 @@ fn main() {
     for _ in 0..threads {
         let mp = model_path.clone();
         let img = img.clone();
+        // RB_PIPE: ""=score만, "cv"=analyze(전 신호)만, "full"=analyze+score(실파이프라인 근사).
+        let pipe = std::env::var("RB_PIPE").unwrap_or_default();
         handles.push(std::thread::spawn(move || {
             let m = AestheticModel::load_with(std::path::Path::new(&mp), accel).expect("load");
+            let run = |img: &DecodedImage| match pipe.as_str() {
+                "cv" => {
+                    let _ = analyze_selective(img, true, true, true);
+                }
+                "full" => {
+                    let _ = analyze_selective(img, true, true, true);
+                    let _ = m.score(img).expect("score");
+                }
+                _ => {
+                    let _ = m.score(img).expect("score");
+                }
+            };
             for _ in 0..warmup {
-                let _ = m.score(&img);
+                run(&img);
             }
             let s = Instant::now();
             for _ in 0..iters {
-                let _ = m.score(&img).expect("score");
+                run(&img);
             }
             s.elapsed().as_secs_f64()
         }));
