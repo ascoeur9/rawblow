@@ -105,7 +105,31 @@ impl ClipIqaBackbone {
 
     /// 표시 순서: 권장(ViT-B/32) 먼저.
     pub const ALL: [ClipIqaBackbone; 3] = [ClipIqaBackbone::ViTB32, ClipIqaBackbone::ViTL14, ClipIqaBackbone::RN50];
+
+    /// CPU(int8) 모델 명세.
+    pub fn spec(self) -> ModelSpec {
+        ModelSpec { file: self.filename(), url: self.download_url(), sha256: self.sha256(), bytes: self.expected_bytes() }
+    }
 }
+
+/// 다운로드·로드할 ONNX 모델 명세(파일명·URL·sha256·바이트).
+#[derive(Clone, Copy, Debug)]
+pub struct ModelSpec {
+    pub file: &'static str,
+    pub url: &'static str,
+    pub sha256: &'static str,
+    pub bytes: u64,
+}
+
+/// GPU 고속 모드 전용 모델: **RN50 fp32**. CNN이라 CoreML(Apple)/WebGPU(Windows)에서 그래프 분할
+/// 없이 통째로 가속돼 압도적으로 빠르다(M1 Max 실측: CoreML 멀티세션+배치 400+ img/s vs RN50 CPU 9).
+/// int8은 GPU에서 fallback하므로 GPU 경로는 fp32를 받는다(트랜스포머 ViT는 GPU에서 분할되어 느림).
+pub const GPU_MODEL: ModelSpec = ModelSpec {
+    file: "clip-iqa-RN50.onnx",
+    url: "https://github.com/ascoeur9/rawblow/releases/download/models-v1/clip-iqa-RN50.onnx",
+    sha256: "29cce2e00f7c5c6afc5eef953c2b27d0565f23ee4a7c165f3d75a30b31cb6eaa",
+    bytes: 153_218_127,
+};
 
 /// AI 컬링 결과를 어느 분류축에 배정할지(#50). 라벨·별점·태그는 서로 독립이므로
 /// 사용자가 수동으로 쓰는 축을 덮어쓰지 않도록 하나만 고른다.
@@ -135,8 +159,11 @@ pub struct AiCullConfig {
     pub tilt_max_deg: f32,
     /// P(good) 하한(0..1). 미만이면 탈락. 기본 0.4.
     pub aesthetic_min: f32,
-    /// 사용할 CLIP-IQA 백본. 기본 ViT-B/32.
+    /// 사용할 CLIP-IQA 백본(CPU 모드). 기본 ViT-B/32.
     pub backbone: ClipIqaBackbone,
+    /// GPU 고속 모드. on이면 RN50 fp32를 CoreML(mac)/WebGPU(win)로 배치·병렬 추론(400+ img/s).
+    /// CNN이라 GPU에서 분할 없이 가속됨. off면 CPU(int8 backbone). 미적 점수 사용 시에만 의미.
+    pub use_gpu: bool,
     pub target: AiCullTarget,
     pub good_stars: u8,
     pub bad_stars: u8,
@@ -163,6 +190,7 @@ impl Default for AiCullConfig {
             tilt_max_deg: d.tilt_max_deg,
             aesthetic_min: 0.55,
             backbone: ClipIqaBackbone::default(),
+            use_gpu: false,
             target: AiCullTarget::Label,
             good_stars: 5,
             bad_stars: 1,
@@ -192,6 +220,15 @@ impl AiCullConfig {
     /// 켜진 검사가 하나도 없으면 채점 의미 없음.
     pub fn any_enabled(&self) -> bool {
         self.use_focus || self.use_exposure || self.use_tilt || self.use_aesthetic
+    }
+
+    /// 미적 점수에 쓸 모델 명세: GPU 모드면 RN50 fp32, 아니면 선택한 백본 int8.
+    pub fn model_spec(&self) -> ModelSpec {
+        if self.use_gpu {
+            GPU_MODEL
+        } else {
+            self.backbone.spec()
+        }
     }
 }
 

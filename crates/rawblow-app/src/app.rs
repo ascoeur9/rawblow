@@ -222,7 +222,7 @@ enum ModelDlMsg {
 #[cfg(feature = "model-download")]
 struct ModelDlJob {
     rx: crossbeam_channel::Receiver<ModelDlMsg>,
-    backbone: ClipIqaBackbone,
+    label: String,
     done: u64,
     total: u64,
 }
@@ -3420,22 +3420,22 @@ impl RawBlowApp {
     /// AI 컬링 설정 다이얼로그(#50). 어떤 신호로 거를지 + 임계값 + 결과 배정축을 고른다.
     /// 라이선스 문제로 미적(NIMA) 모델은 번들하지 않으므로 노출·초점·기울기 3종만 노출한다.
     /// CLIP-IQA 모델 파일의 로컬 경로(config_dir()/models/…).
-    fn model_path(backbone: ClipIqaBackbone) -> std::path::PathBuf {
-        config::config_dir().join("models").join(backbone.filename())
+    fn model_path(spec: config::ModelSpec) -> std::path::PathBuf {
+        config::config_dir().join("models").join(spec.file)
     }
 
-    /// 백본 파일이 다운로드되어 있는지 확인.
-    fn model_present(backbone: ClipIqaBackbone) -> bool {
-        Self::model_path(backbone).exists()
+    /// 모델 파일이 다운로드되어 있는지 확인.
+    fn model_present(spec: config::ModelSpec) -> bool {
+        Self::model_path(spec).exists()
     }
 
     /// 모델 파일을 백그라운드 스레드로 다운로드(#50). ureq 스트리밍 + sha256 검증.
     #[cfg(feature = "model-download")]
-    fn start_model_download(&mut self, backbone: ClipIqaBackbone) {
-        let dest = Self::model_path(backbone);
-        let url = backbone.download_url().to_string();
-        let sha = backbone.sha256().to_string();
-        let expected = backbone.expected_bytes();
+    fn start_model_download(&mut self, spec: config::ModelSpec, label: String) {
+        let dest = Self::model_path(spec);
+        let url = spec.url.to_string();
+        let sha = spec.sha256.to_string();
+        let expected = spec.bytes;
         let (tx, rx) = crossbeam_channel::unbounded::<ModelDlMsg>();
         std::thread::spawn(move || {
             use std::io::{Read, Write};
@@ -3520,7 +3520,7 @@ impl RawBlowApp {
             }
             let _ = tx.send(ModelDlMsg::Done(Ok(())));
         });
-        self.model_dl = Some(ModelDlJob { rx, backbone, done: 0, total: expected });
+        self.model_dl = Some(ModelDlJob { rx, label, done: 0, total: expected });
     }
 
     /// 모델 다운로드 진행 모달(#50).
@@ -3584,7 +3584,7 @@ impl RawBlowApp {
             .frame(modal_frame())
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
-                modal_header(ui, tr(lang, "모델 다운로드"), job.backbone.label());
+                modal_header(ui, tr(lang, "모델 다운로드"), &job.label);
                 ui.add(egui::ProgressBar::new(frac).fill(theme::ACCENT).desired_height(10.0));
                 ui.add_space(10.0);
                 ui.label(
@@ -3601,7 +3601,7 @@ impl RawBlowApp {
         let mut c = self.cfg.ai_cull.clone();
         let mut do_start = false;
         let mut do_cancel = false;
-        let mut do_download: Option<ClipIqaBackbone> = None;
+        let mut do_download: Option<config::ModelSpec> = None;
 
         // 채점 대상 수(scope에 따라). 미리 계산(클로저 안에서 self 차용 회피).
         let total_items = self.items.len();
@@ -3679,24 +3679,36 @@ impl RawBlowApp {
                     });
                 }
                 if c.use_aesthetic {
-                    let model_ok = Self::model_present(c.backbone);
-                    // 백본 선택.
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(tr(lang, "백본 모델")).font(mono(11.0)).color(theme::INK3));
-                        ui.add_space(4.0);
-                        for b in ClipIqaBackbone::ALL {
-                            let sel = c.backbone == b;
-                            let present = Self::model_present(b);
-                            let col = if present { theme::ACCENT } else { theme::INK3 };
-                            if check_chip(ui, b.label(), None, col, sel) {
-                                c.backbone = b;
+                    // GPU 고속 모드 토글: RN50을 CoreML(mac)/WebGPU(win)로 배치·병렬 추론.
+                    if check_chip(ui, tr(lang, "⚡ GPU 고속 모드"), None, theme::ACCENT, c.use_gpu) {
+                        c.use_gpu = !c.use_gpu;
+                    }
+                    if c.use_gpu {
+                        ui.label(
+                            egui::RichText::new(tr(lang, "RN50을 GPU로 배치·병렬 추론 — 매우 빠름(수백 장/초). 화질은 ViT보다 낮음."))
+                                .font(mono(9.5)).color(theme::INK3),
+                        );
+                    } else {
+                        // 백본 선택(CPU int8).
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(tr(lang, "백본 모델")).font(mono(11.0)).color(theme::INK3));
+                            ui.add_space(4.0);
+                            for b in ClipIqaBackbone::ALL {
+                                let sel = c.backbone == b;
+                                let present = Self::model_present(b.spec());
+                                let col = if present { theme::ACCENT } else { theme::INK3 };
+                                if check_chip(ui, b.label(), None, col, sel) {
+                                    c.backbone = b;
+                                }
                             }
-                        }
-                    });
-                    ui.label(
-                        egui::RichText::new(tr(lang, "ViT-B/32 권장 — 가장 빠름. ViT-L/14는 화질↑ 속도↓(약 15배 느림)."))
-                            .font(mono(9.5)).color(theme::INK3),
-                    );
+                        });
+                        ui.label(
+                            egui::RichText::new(tr(lang, "ViT-B/32 권장. CPU에선 ViT-B가 가장 빠름. (강력한 GPU면 위 GPU 모드가 더 빠름)"))
+                                .font(mono(9.5)).color(theme::INK3),
+                        );
+                    }
+                    let spec = c.model_spec();
+                    let model_ok = Self::model_present(spec);
                     if model_ok {
                         // 선택 모드: 상위 N장 vs 임계값.
                         let use_topn = c.top_n > 0;
@@ -3732,10 +3744,10 @@ impl RawBlowApp {
                         );
                         #[cfg(feature = "model-download")]
                         if ui.add(egui::Button::new(
-                            egui::RichText::new(format!("  {}  ", tr(lang, "다운로드")))
+                            egui::RichText::new(format!("  {} ({:.0} MB)  ", tr(lang, "다운로드"), spec.bytes as f64 / 1e6))
                                 .color(Color32::from_rgb(0x0a, 0x14, 0x20))
                         ).fill(theme::ACCENT)).clicked() {
-                            do_download = Some(c.backbone);
+                            do_download = Some(spec);
                         }
                     }
                     ui.add_space(4.0);
@@ -3829,7 +3841,7 @@ impl RawBlowApp {
                     ui.label(egui::RichText::new(count.to_string()).font(mono(13.0)).color(theme::ACCENT));
                     ui.label(egui::RichText::new(tr(lang, "장")).font(mono(10.0)).color(theme::INK3));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let aesthetic_blocks = c.use_aesthetic && !Self::model_present(c.backbone);
+                        let aesthetic_blocks = c.use_aesthetic && !Self::model_present(c.model_spec());
                     let can_start = c.any_enabled() && count > 0 && !aesthetic_blocks;
                         if ui
                             .add_enabled(
@@ -3860,11 +3872,20 @@ impl RawBlowApp {
             let _ = config::save(&self.cfg);
             self.ai_cull_open = false;
             self.start_ai_cull();
-        } else if let Some(backbone) = do_download {
+        } else if let Some(spec) = do_download {
             let _ = config::save(&self.cfg);
             self.ai_cull_open = false;
             #[cfg(feature = "model-download")]
-            self.start_model_download(backbone);
+            {
+                let label = if self.cfg.ai_cull.use_gpu {
+                    tr(lang, "RN50 (GPU 고속)").to_string()
+                } else {
+                    self.cfg.ai_cull.backbone.label().to_string()
+                };
+                self.start_model_download(spec, label);
+            }
+            #[cfg(not(feature = "model-download"))]
+            let _ = spec;
         }
     }
 
@@ -3895,10 +3916,11 @@ impl RawBlowApp {
         };
         let total = targets.len();
 
-        // 미적 모델: 파일이 있으면 워커마다 자기 세션을 로드(CPU intra=1). 파일 크기로 워커 수 상한.
+        // 미적 모델: GPU 모드면 RN50 fp32 + CoreML/WebGPU, 아니면 선택 백본 int8 + CPU.
+        let spec = cfg.model_spec();
         #[cfg(feature = "ai")]
         let model_path: Option<PathBuf> =
-            if cfg.use_aesthetic && Self::model_present(cfg.backbone) { Some(Self::model_path(cfg.backbone)) } else { None };
+            if cfg.use_aesthetic && Self::model_present(spec) { Some(Self::model_path(spec)) } else { None };
         #[cfg(not(feature = "ai"))]
         let model_path: Option<PathBuf> = None;
 
@@ -3906,8 +3928,21 @@ impl RawBlowApp {
         if model_path.is_none() {
             criteria.use_aesthetic = false;
         }
+        // GPU 모드: CoreML/WebGPU EP, intra 무관. 워커는 동시 세션으로 GPU 처리량을 채운다(메모리 ≈ N×모델).
+        // CPU 모드: intra=1 세션을 코어 수만큼.
+        let use_gpu = cfg.use_gpu && model_path.is_some();
+        #[cfg(feature = "ai")]
+        let accel = if use_gpu { rawblow_core::quality::Accel::Gpu } else { rawblow_core::quality::Accel::Cpu };
+        #[cfg(feature = "ai")]
+        let intra = if use_gpu { None } else { Some(1usize) };
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
         let model_bytes = model_path.as_ref().and_then(|p| std::fs::metadata(p).ok().map(|m| m.len()));
-        let n_workers = Self::cull_worker_count(model_bytes).min(total.max(1));
+        let n_workers = if use_gpu {
+            cores.min(8) // GPU: 동시 세션으로 처리량 ↑(실측 8세션 ≈ 270 img/s, RN50)
+        } else {
+            Self::cull_worker_count(model_bytes)
+        }
+        .min(total.max(1));
 
         let (tx, rx) = crossbeam_channel::bounded::<AiCullMsg>(1);
         let cancel = Arc::new(AtomicBool::new(false));
@@ -3928,15 +3963,10 @@ impl RawBlowApp {
             #[cfg(feature = "ai")]
             let model_path = model_path.clone();
             handles.push(std::thread::spawn(move || {
-                // 워커 전용 세션(intra=1). 로드 실패 시 CV-only로 폴백(aesthetic=None).
+                // 워커 전용 세션(CPU=intra1, GPU=CoreML/WebGPU). 로드 실패 시 CV-only 폴백.
                 #[cfg(feature = "ai")]
                 let model = model_path.as_ref().and_then(|p| {
-                    rawblow_core::quality::AestheticModel::load_tuned(
-                        p,
-                        rawblow_core::quality::Accel::Cpu,
-                        Some(1),
-                    )
-                    .ok()
+                    rawblow_core::quality::AestheticModel::load_tuned(p, accel, intra).ok()
                 });
                 loop {
                     if cancel_w.load(Ordering::Relaxed) {
