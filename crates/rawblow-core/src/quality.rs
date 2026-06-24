@@ -391,7 +391,7 @@ impl Default for CullCriteria {
             focus_thresh: IN_FOCUS_THRESH,
             exposure_min: 0.5,
             tilt_max_deg: 3.0,
-            aesthetic_min: 0.4,
+            aesthetic_min: 0.55,
         }
     }
 }

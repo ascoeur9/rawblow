@@ -142,6 +142,9 @@ pub struct AiCullConfig {
     pub bad_stars: u8,
     pub good_tag: crate::model::ColorTag,
     pub bad_tag: crate::model::ColorTag,
+    /// 미적 점수 상위 N장만 Good으로 선택(0=비활성, threshold 모드 사용).
+    /// use_aesthetic=true일 때만 동작.
+    pub top_n: usize,
     /// true=전체 항목, false=현재 필터를 통과한 항목만 채점.
     pub scope_all: bool,
 }
@@ -158,13 +161,14 @@ impl Default for AiCullConfig {
             focus_thresh: d.focus_thresh,
             exposure_min: d.exposure_min,
             tilt_max_deg: d.tilt_max_deg,
-            aesthetic_min: d.aesthetic_min,
+            aesthetic_min: 0.55,
             backbone: ClipIqaBackbone::default(),
             target: AiCullTarget::Label,
             good_stars: 5,
             bad_stars: 1,
             good_tag: crate::model::ColorTag::Teal,
             bad_tag: crate::model::ColorTag::Orange,
+            top_n: 0,
             scope_all: true,
         }
     }

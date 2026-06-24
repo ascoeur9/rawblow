@@ -190,8 +190,8 @@ struct ProgressJob {
 enum AiCullMsg {
     /// (완료 개수, 전체 개수).
     Progress(usize, usize),
-    /// 채점 완료. (원본 items 인덱스, 판정) 목록.
-    Done(Vec<(usize, rawblow_core::quality::Verdict)>),
+    /// 채점 완료. (원본 items 인덱스, CV 판정, CLIP-IQA P(good)) 목록.
+    Done(Vec<(usize, rawblow_core::quality::Verdict, Option<f32>)>),
 }
 
 /// 진행 중인 AI 컬링 채점(#50). 전송/정리와 같은 패턴 — 별도 스레드에서 디코딩+채점하고
@@ -3587,12 +3587,31 @@ impl RawBlowApp {
                         }
                     });
                     if model_ok {
+                        // 선택 모드: 상위 N장 vs 임계값.
+                        let use_topn = c.top_n > 0;
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(tr(lang, "미적 점수 하한 P(good)")).font(mono(11.0)).color(theme::INK3));
-                            ui.add(egui::Slider::new(&mut c.aesthetic_min, 0.1..=0.9).fixed_decimals(2));
+                            if check_chip(ui, tr(lang, "상위 N장"), None, theme::ACCENT, use_topn) {
+                                c.top_n = if use_topn { 0 } else { 20 };
+                            }
+                            if use_topn {
+                                ui.add_space(8.0);
+                                ui.label(egui::RichText::new(tr(lang, "최고")).font(mono(11.0)).color(theme::INK3));
+                                ui.add(egui::DragValue::new(&mut c.top_n).range(1..=9999).suffix(tr(lang, "장")));
+                            } else {
+                                if check_chip(ui, tr(lang, "임계값"), None, theme::ACCENT, !use_topn) {
+                                    // 이미 선택됨 — 토글 불필요
+                                }
+                            }
                         });
+                        if !use_topn {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(tr(lang, "P(good) 하한")).font(mono(11.0)).color(theme::INK3));
+                                ui.add(egui::Slider::new(&mut c.aesthetic_min, 0.1..=0.9).fixed_decimals(2));
+                                ui.label(egui::RichText::new(tr(lang, "↑ 엄격할수록 탈락↑")).font(mono(9.0)).color(theme::INK3));
+                            });
+                        }
                         ui.label(
-                            egui::RichText::new(tr(lang, "✓ 모델 준비됨 — CLIP-IQA 채점 사용 가능"))
+                            egui::RichText::new(tr(lang, "✓ 모델 준비됨"))
                                 .font(mono(10.0)).color(theme::ACCENT),
                         );
                     } else {
@@ -3774,15 +3793,16 @@ impl RawBlowApp {
 
         let (tx, rx) = crossbeam_channel::unbounded::<AiCullMsg>();
         let cancel = Arc::new(AtomicBool::new(false));
+        let top_n = cfg.top_n;
         let cancel_t = cancel.clone();
         std::thread::spawn(move || {
-            let mut out: Vec<(usize, Verdict)> = Vec::with_capacity(total);
+            let mut out: Vec<(usize, Verdict, Option<f32>)> = Vec::with_capacity(total);
             for (n, (real, path)) in targets.into_iter().enumerate() {
                 if cancel_t.load(Ordering::Relaxed) {
                     break;
                 }
                 // 디코더·파서 패닉(손상 파일)에도 스레드가 죽지 않게 격리. 실패 항목은 건너뛴다.
-                let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let img = rawblow_core::decode::decode_file(
                         &path,
                         rawblow_core::decode::DecodeOptions { full_raw: false, max_edge: Some(AI_CULL_EDGE) },
@@ -3806,17 +3826,29 @@ impl RawBlowApp {
                             }
                         }
                     }
-                    // CLIP-IQA 미적 점수(ai 기능 + 모델 있을 때만).
+                    // CV 판정 먼저. threshold 모드에서 CV 실패면 CLIP-IQA 건너뜀(속도 최적화).
+                    let mut criteria_no_aesthetic = criteria;
+                    criteria_no_aesthetic.use_aesthetic = false;
+                    let cv_verdict = criteria_no_aesthetic.verdict(&q);
+                    // CLIP-IQA: top_n 모드는 전체 채점, threshold 모드는 CV 통과자만.
                     #[cfg(feature = "ai")]
-                    if let Some(ref model) = aesthetic_model {
-                        q.aesthetic = model.score(&img).ok();
-                    }
-                    Some(criteria.verdict(&q))
+                    let aesthetic_score: Option<f32> = if let Some(ref model) = aesthetic_model {
+                        if top_n > 0 || matches!(cv_verdict, Verdict::Good) {
+                            model.score(&img).ok()
+                        } else {
+                            None // CV 탈락 + threshold 모드 → 건너뜀
+                        }
+                    } else {
+                        None
+                    };
+                    #[cfg(not(feature = "ai"))]
+                    let aesthetic_score: Option<f32> = None;
+                    Some((cv_verdict, aesthetic_score))
                 }))
                 .ok()
                 .flatten();
-                if let Some(v) = verdict {
-                    out.push((real, v));
+                if let Some((cv_v, aes)) = result {
+                    out.push((real, cv_v, aes));
                 }
                 let _ = tx.send(AiCullMsg::Progress(n + 1, total));
             }
@@ -3831,7 +3863,7 @@ impl RawBlowApp {
         let lang = self.lang;
         let mut job = self.ai_cull.take().unwrap();
 
-        let mut done_verdicts: Option<Vec<(usize, Verdict)>> = None;
+        let mut done_results: Option<Vec<(usize, Verdict, Option<f32>)>> = None;
         let mut disconnected = false;
         loop {
             match job.rx.try_recv() {
@@ -3840,7 +3872,7 @@ impl RawBlowApp {
                     job.total = t;
                 }
                 Ok(AiCullMsg::Done(v)) => {
-                    done_verdicts = Some(v);
+                    done_results = Some(v);
                     break;
                 }
                 Err(crossbeam_channel::TryRecvError::Empty) => break,
@@ -3851,7 +3883,7 @@ impl RawBlowApp {
             }
         }
 
-        if let Some(v) = done_verdicts {
+        if let Some(v) = done_results {
             self.ai_cull = None;
             self.apply_cull_verdicts(v);
             return;
@@ -3912,18 +3944,53 @@ impl RawBlowApp {
     }
 
     /// AI 컬링 판정을 선택한 분류축에 적용(#50). "양쪽 다 표시" — 좋음/탈락 모두 표시.
-    fn apply_cull_verdicts(&mut self, verdicts: Vec<(usize, Verdict)>) {
+    fn apply_cull_verdicts(&mut self, mut results: Vec<(usize, Verdict, Option<f32>)>) {
         let lang = self.lang;
         let c = self.cfg.ai_cull.clone();
+
+        // top_n 모드: aesthetic 점수로 상위 N장을 Good으로, 나머지를 Bad로.
+        let top_n = c.top_n;
+        if top_n > 0 && c.use_aesthetic {
+            // aesthetic 점수 있는 것만 순위 산정; 없는 것은 Bad.
+            let mut scored: Vec<(usize, f32)> = results.iter()
+                .filter_map(|(idx, _, aes)| aes.map(|s| (*idx, s)))
+                .collect();
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let good_set: std::collections::HashSet<usize> = scored
+                .iter()
+                .take(top_n)
+                .map(|(idx, _)| *idx)
+                .collect();
+            for (idx, verdict, _) in &mut results {
+                *verdict = if good_set.contains(idx) { Verdict::Good } else { Verdict::Bad };
+            }
+        } else if c.use_aesthetic {
+            // threshold 모드: aesthetic 점수가 없으면(CV 탈락 등) Bad로 두고 score 있으면 재판정.
+            for (_, verdict, aes) in &mut results {
+                if let Some(score) = aes {
+                    if *score < c.aesthetic_min {
+                        *verdict = Verdict::Bad;
+                    }
+                }
+                // aesthetic=None인 경우: CV 판정 유지(CV 탈락 → Bad, CV 통과 → Good).
+            }
+        }
+
+        // 점수 범위 수집(진단용 토스트).
+        let scores: Vec<f32> = results.iter().filter_map(|(_, _, a)| *a).collect();
+        let score_info = if scores.is_empty() {
+            String::new()
+        } else {
+            let min = scores.iter().cloned().fold(f32::INFINITY, f32::min);
+            let max = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            format!(" (P(good) {:.2}–{:.2})", min, max)
+        };
+
         let (mut good, mut bad) = (0usize, 0usize);
-        for (real, v) in verdicts {
+        for (real, v, _) in results {
             let Some(it) = self.items.get_mut(real) else { continue };
             let is_good = matches!(v, Verdict::Good);
-            if is_good {
-                good += 1;
-            } else {
-                bad += 1;
-            }
+            if is_good { good += 1; } else { bad += 1; }
             match c.target {
                 AiCullTarget::Label => {
                     it.entry.label = if is_good { Label::Pick } else { Label::Reject };
@@ -3938,7 +4005,11 @@ impl RawBlowApp {
         }
         self.sidecar_dirty = true;
         self.toast = Some((
-            trf(lang, "AI 컬링 완료 · 좋음 {} · 탈락 {}", &[&good.to_string(), &bad.to_string()]),
+            format!(
+                "{}{}",
+                trf(lang, "AI 컬링 완료 · 좋음 {} · 탈락 {}", &[&good.to_string(), &bad.to_string()]),
+                score_info
+            ),
             Instant::now(),
         ));
     }
