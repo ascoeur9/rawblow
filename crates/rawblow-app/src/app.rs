@@ -3953,6 +3953,8 @@ impl RawBlowApp {
         ));
         let targets = std::sync::Arc::new(targets);
 
+        // GPU는 한 워커가 chunk를 모아 배치 추론(처리량↑), CPU는 1장씩(threshold CLIP-skip 유지).
+        let batch_size = if use_gpu { 8usize } else { 1usize };
         let mut handles = Vec::with_capacity(n_workers);
         for _ in 0..n_workers {
             let targets = targets.clone();
@@ -3972,64 +3974,63 @@ impl RawBlowApp {
                     if cancel_w.load(Ordering::Relaxed) {
                         break;
                     }
-                    let idx = next.fetch_add(1, Ordering::Relaxed);
-                    if idx >= targets.len() {
+                    let start = next.fetch_add(batch_size, Ordering::Relaxed);
+                    if start >= targets.len() {
                         break;
                     }
-                    let (real, path) = &targets[idx];
-                    // 디코더·파서 패닉(손상 파일)에도 워커가 죽지 않게 격리. 실패 항목은 건너뛴다.
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let img = rawblow_core::decode::decode_file(
-                            path,
-                            rawblow_core::decode::DecodeOptions { full_raw: false, max_edge: Some(AI_CULL_EDGE) },
-                        )
-                        .ok()?;
-                        // 켜진 신호만 계산. AF 영역 초점을 쓸 땐 전체 프레임 초점을 건너뛴다(중복 제거).
-                        let want_whole_focus = criteria.use_focus && !use_af;
-                        let mut q = rawblow_core::quality::analyze_selective(
-                            &img,
-                            criteria.use_exposure,
-                            want_whole_focus,
-                            criteria.use_tilt,
-                        );
-                        if use_af {
-                            if let Some(af) = rawblow_core::af::parse_af(path) {
-                                let orient = rawblow_core::meta::orientation(path);
-                                let regions: Vec<(f32, f32, f32, f32)> = af
-                                    .points
-                                    .iter()
-                                    .filter(|p| p.in_focus)
-                                    .map(|p| {
-                                        let (cx, cy, w, h) = af_display_coords(p, orient);
-                                        (cx as f32, cy as f32, w as f32, h as f32)
-                                    })
-                                    .collect();
-                                if !regions.is_empty() {
-                                    q.focus = rawblow_core::quality::focus_report_regions(&img, &regions);
+                    let end = (start + batch_size).min(targets.len());
+                    // 1단계: chunk의 각 장을 디코딩+CV(패닉 격리). 디코드 이미지는 미적 추론용으로 보관.
+                    let mut imgs: Vec<rawblow_core::decode::DecodedImage> = Vec::with_capacity(end - start);
+                    let mut metas: Vec<(usize, rawblow_core::quality::QualityReport, Verdict)> =
+                        Vec::with_capacity(end - start);
+                    for idx in start..end {
+                        let (real, path) = &targets[idx];
+                        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            cull_decode_cv(path, criteria, use_af)
+                        }))
+                        .ok()
+                        .flatten();
+                        if let Some((img, q, cv)) = r {
+                            imgs.push(img);
+                            metas.push((*real, q, cv));
+                        }
+                        progress.fetch_add(1, Ordering::Relaxed);
+                    }
+                    // 2단계: 미적 추론. GPU=배치, CPU=1장씩(threshold면 CV 통과자만 — CLIP-skip).
+                    #[cfg(feature = "ai")]
+                    if criteria.use_aesthetic {
+                        if let Some(m) = model.as_ref() {
+                            if batch_size > 1 {
+                                let refs: Vec<&rawblow_core::decode::DecodedImage> = imgs.iter().collect();
+                                let scores = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    m.score_batch(&refs)
+                                }))
+                                .ok()
+                                .and_then(|r| r.ok());
+                                if let Some(scores) = scores {
+                                    for (meta, s) in metas.iter_mut().zip(scores) {
+                                        meta.1.aesthetic = Some(s);
+                                    }
+                                }
+                            } else {
+                                for (i, meta) in metas.iter_mut().enumerate() {
+                                    if top_n > 0 || matches!(meta.2, Verdict::Good) {
+                                        meta.1.aesthetic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                            m.score(&imgs[i]).ok()
+                                        }))
+                                        .ok()
+                                        .flatten();
+                                    }
                                 }
                             }
                         }
-                        // CV 판정 먼저. threshold 모드에서 CV 실패면 CLIP-IQA 건너뜀(속도 최적화).
-                        let mut cv_only = criteria;
-                        cv_only.use_aesthetic = false;
-                        let cv_verdict = cv_only.verdict(&q);
-                        #[cfg(feature = "ai")]
-                        let aesthetic_score: Option<f32> = match model.as_ref() {
-                            Some(m) if top_n > 0 || matches!(cv_verdict, Verdict::Good) => m.score(&img).ok(),
-                            _ => None,
-                        };
-                        #[cfg(not(feature = "ai"))]
-                        let aesthetic_score: Option<f32> = None;
-                        Some((cv_verdict, aesthetic_score))
-                    }))
-                    .ok()
-                    .flatten();
-                    if let Some((cv_v, aes)) = result {
-                        if let Ok(mut g) = results.lock() {
-                            g.push((*real, cv_v, aes));
+                    }
+                    // 3단계: 결과 적재(CV 판정 + 미적 점수). 최종 조합은 apply_cull_verdicts가 한다.
+                    if let Ok(mut g) = results.lock() {
+                        for (real, q, cv) in &metas {
+                            g.push((*real, *cv, q.aesthetic));
                         }
                     }
-                    progress.fetch_add(1, Ordering::Relaxed);
                 }
             }));
         }
@@ -4878,6 +4879,53 @@ fn bg_swatch(ui: &mut egui::Ui, rgb: [u8; 3], selected: bool) -> bool {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     resp.clicked()
+}
+
+/// 컬링 1장: 디코딩 + 켜진 CV 신호 채점(+AF 영역 초점) + CV 판정(미적 제외)(#50).
+/// 디코드 이미지를 함께 돌려줘 호출부가 단장/배치 미적 추론에 재사용한다. 손상·실패 시 None.
+fn cull_decode_cv(
+    path: &std::path::Path,
+    criteria: rawblow_core::quality::CullCriteria,
+    use_af: bool,
+) -> Option<(
+    rawblow_core::decode::DecodedImage,
+    rawblow_core::quality::QualityReport,
+    Verdict,
+)> {
+    let img = rawblow_core::decode::decode_file(
+        path,
+        rawblow_core::decode::DecodeOptions { full_raw: false, max_edge: Some(AI_CULL_EDGE) },
+    )
+    .ok()?;
+    // 켜진 신호만 계산. AF 영역 초점을 쓸 땐 전체 프레임 초점은 건너뛴다(중복 제거).
+    let want_whole_focus = criteria.use_focus && !use_af;
+    let mut q = rawblow_core::quality::analyze_selective(
+        &img,
+        criteria.use_exposure,
+        want_whole_focus,
+        criteria.use_tilt,
+    );
+    if use_af {
+        if let Some(af) = rawblow_core::af::parse_af(path) {
+            let orient = rawblow_core::meta::orientation(path);
+            let regions: Vec<(f32, f32, f32, f32)> = af
+                .points
+                .iter()
+                .filter(|p| p.in_focus)
+                .map(|p| {
+                    let (cx, cy, w, h) = af_display_coords(p, orient);
+                    (cx as f32, cy as f32, w as f32, h as f32)
+                })
+                .collect();
+            if !regions.is_empty() {
+                q.focus = rawblow_core::quality::focus_report_regions(&img, &regions);
+            }
+        }
+    }
+    let mut cv_only = criteria;
+    cv_only.use_aesthetic = false;
+    let cv = cv_only.verdict(&q);
+    Some((img, q, cv))
 }
 
 /// AF 정규화 좌표(센서 기준, 원점 좌상단)를 EXIF orientation이 적용된 표시
