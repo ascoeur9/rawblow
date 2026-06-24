@@ -431,3 +431,47 @@ pub fn save(config: &Config) -> std::io::Result<()> {
         .map_err(std::io::Error::other)?;
     std::fs::write(config_path(), json)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_spec_gpu_uses_rn50_fp32() {
+        let mut c = AiCullConfig { use_gpu: true, ..Default::default() };
+        // GPU 모드는 백본 선택과 무관하게 RN50 fp32(GPU_MODEL)를 쓴다(int8은 GPU fallback).
+        c.backbone = ClipIqaBackbone::ViTL14;
+        let s = c.model_spec();
+        assert_eq!(s.file, "clip-iqa-RN50.onnx");
+        assert!(!s.file.contains("int8"), "GPU는 fp32여야 함");
+        assert_eq!(s.sha256, GPU_MODEL.sha256);
+    }
+
+    #[test]
+    fn model_spec_cpu_uses_backbone_int8() {
+        let c = AiCullConfig { use_gpu: false, backbone: ClipIqaBackbone::ViTB32, ..Default::default() };
+        let s = c.model_spec();
+        assert_eq!(s.file, "clip-iqa-ViT-B-32.int8.onnx");
+        assert_eq!(s.file, ClipIqaBackbone::ViTB32.spec().file);
+    }
+
+    #[test]
+    fn backbone_specs_are_consistent() {
+        // filename/url/sha/bytes가 spec()로 일관되게 묶이는지.
+        for b in ClipIqaBackbone::ALL {
+            let s = b.spec();
+            assert_eq!(s.file, b.filename());
+            assert_eq!(s.url, b.download_url());
+            assert!(s.url.ends_with(s.file), "URL이 파일명으로 끝나야 함: {}", s.url);
+            assert_eq!(s.sha256.len(), 64, "sha256 hex 64자");
+            assert!(s.bytes > 0);
+        }
+    }
+
+    #[test]
+    fn default_backbone_is_recommended_vitb32() {
+        assert_eq!(ClipIqaBackbone::default(), ClipIqaBackbone::ViTB32);
+        assert_eq!(ClipIqaBackbone::ALL[0], ClipIqaBackbone::ViTB32); // 표시 순서 권장 먼저
+        assert!(!AiCullConfig::default().use_gpu); // 기본 CPU
+    }
+}
