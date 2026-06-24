@@ -3937,15 +3937,33 @@ impl RawBlowApp {
         let intra = if use_gpu { None } else { Some(1usize) };
         let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
         let model_bytes = model_path.as_ref().and_then(|p| std::fs::metadata(p).ok().map(|m| m.len()));
-        // GPU는 한 워커가 chunk(8장)를 모아 배치 추론, CPU는 1장씩.
-        let batch_size = if use_gpu { 8usize } else { 1usize };
+        // GPU는 한 워커가 chunk를 모아 배치 추론, CPU는 1장씩.
+        // **WebGPU(Windows)는 동시 세션이 크래시**('command encoder already encoding')하므로 워커들이
+        // 세션 하나를 공유(Mutex가 추론을 직렬화, 디코드+CV는 병렬). CoreML(mac)은 동시 세션 OK라 워커별.
+        let share_session = (use_gpu && cfg!(target_os = "windows")) || std::env::var("RB_SHARE").is_ok();
+        let batch_size = if use_gpu { if share_session { 32 } else { 8 } } else { 1usize };
         let n_workers = if use_gpu {
-            // GPU: 동시 세션으로 처리량↑(실측 8워커×배치8 ≈ 421 img/s). 단 작은 컬링에 유휴 세션을
-            // 로드하지 않도록 필요한 배치 수로도 상한(세션 로드 ~1.4s씩이라 낭비 방지).
-            let batches = (total + batch_size - 1) / batch_size;
-            cores.min(8).min(batches.max(1))
+            if share_session {
+                // WebGPU 공유 세션: 워커는 디코드+CV 병렬화용(추론은 1세션에 직렬). 코어만큼.
+                cores.min(8).min(total.max(1))
+            } else {
+                // CoreML 동시 세션(실측 8워커×배치8 ≈ 421 img/s). 작은 컬링엔 배치 수만큼만.
+                let batches = (total + batch_size - 1) / batch_size;
+                cores.min(8).min(batches.max(1))
+            }
         } else {
             Self::cull_worker_count(model_bytes).min(total.max(1))
+        };
+
+        // 공유 세션 모드: 모델을 한 번만 로드해 모든 워커가 Arc로 공유(WebGPU 동시성 크래시 방지).
+        #[cfg(feature = "ai")]
+        let shared_model: Option<std::sync::Arc<rawblow_core::quality::AestheticModel>> = if share_session {
+            model_path
+                .as_ref()
+                .and_then(|p| rawblow_core::quality::AestheticModel::load_tuned(p, accel, intra).ok())
+                .map(std::sync::Arc::new)
+        } else {
+            None
         };
 
         let (tx, rx) = crossbeam_channel::bounded::<AiCullMsg>(1);
@@ -3966,12 +3984,20 @@ impl RawBlowApp {
             let results = results.clone();
             #[cfg(feature = "ai")]
             let model_path = model_path.clone();
+            #[cfg(feature = "ai")]
+            let shared_model = shared_model.clone();
             handles.push(std::thread::spawn(move || {
-                // 워커 전용 세션(CPU=intra1, GPU=CoreML/WebGPU). 로드 실패 시 CV-only 폴백.
+                // 공유 세션 모드면 Arc 클론, 아니면 워커 전용 세션 로드(CPU=intra1, CoreML=동시).
+                // 로드 실패 시 CV-only 폴백.
                 #[cfg(feature = "ai")]
-                let model = model_path.as_ref().and_then(|p| {
-                    rawblow_core::quality::AestheticModel::load_tuned(p, accel, intra).ok()
-                });
+                let model: Option<std::sync::Arc<rawblow_core::quality::AestheticModel>> = if share_session {
+                    shared_model
+                } else {
+                    model_path
+                        .as_ref()
+                        .and_then(|p| rawblow_core::quality::AestheticModel::load_tuned(p, accel, intra).ok())
+                        .map(std::sync::Arc::new)
+                };
                 loop {
                     if cancel_w.load(Ordering::Relaxed) {
                         break;

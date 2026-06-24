@@ -52,16 +52,25 @@ fn main() {
         "model={model_name} ep={ep} threads={threads} iters/thread={iters} | load={load_ms:.0}ms first_score={first:.3}"
     );
 
+    // RB_SHARE=1: 모델 세션을 한 번만 로드해 모든 스레드가 Arc로 공유(WebGPU 동시성 크래시 회피 검증).
+    let shared: Option<Arc<AestheticModel>> = if std::env::var("RB_SHARE").is_ok() {
+        Some(Arc::new(AestheticModel::load_with(std::path::Path::new(&model_path), accel).expect("load")))
+    } else {
+        None
+    };
+
     let t0 = Instant::now();
     let mut handles = Vec::new();
     for _ in 0..threads {
         let mp = model_path.clone();
         let img = img.clone();
+        let shared = shared.clone();
         // RB_PIPE: ""=score만, "cv"=analyze만, "full"=analyze+score. RB_BATCH=N으로 배치 추론.
         let pipe = std::env::var("RB_PIPE").unwrap_or_default();
         let batch: usize = std::env::var("RB_BATCH").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
         handles.push(std::thread::spawn(move || {
-            let m = AestheticModel::load_with(std::path::Path::new(&mp), accel).expect("load");
+            let m: Arc<AestheticModel> = shared
+                .unwrap_or_else(|| Arc::new(AestheticModel::load_with(std::path::Path::new(&mp), accel).expect("load")));
             if batch > 0 {
                 let imgs: Vec<&DecodedImage> = (0..batch).map(|_| img.as_ref()).collect();
                 for _ in 0..warmup {
