@@ -3917,6 +3917,9 @@ impl RawBlowApp {
         let mut criteria = cfg.criteria();
         let use_af = cfg.use_af_focus && cfg.use_focus;
         let top_n = cfg.top_n;
+        // 디코드 해상도는 가장 디테일이 필요한 신호(초점)에 맞춘다. 초점 검사가 꺼져 있으면
+        // 노출(무관)·기울기(512 내부)·미적(224)만 필요하므로 512로 줄여 디코드를 ~1.5배 빠르게.
+        let cull_edge: u32 = if cfg.use_focus { AI_CULL_EDGE } else { 512 };
         let targets: Vec<(usize, PathBuf)> = if cfg.scope_all {
             self.items.iter().enumerate().map(|(i, it)| (i, it.entry.display.clone())).collect()
         } else {
@@ -4026,7 +4029,7 @@ impl RawBlowApp {
                         }
                         let (real, path) = &targets[idx];
                         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            cull_decode_cv(path, criteria, use_af)
+                            cull_decode_cv(path, criteria, use_af, cull_edge)
                         }))
                         .ok()
                         .flatten();
@@ -4927,6 +4930,7 @@ fn cull_decode_cv(
     path: &std::path::Path,
     criteria: rawblow_core::quality::CullCriteria,
     use_af: bool,
+    max_edge: u32,
 ) -> Option<(
     rawblow_core::decode::DecodedImage,
     rawblow_core::quality::QualityReport,
@@ -4934,7 +4938,7 @@ fn cull_decode_cv(
 )> {
     let img = rawblow_core::decode::decode_file(
         path,
-        rawblow_core::decode::DecodeOptions { full_raw: false, max_edge: Some(AI_CULL_EDGE) },
+        rawblow_core::decode::DecodeOptions { full_raw: false, max_edge: Some(max_edge) },
     )
     .ok()?;
     // 켜진 신호만 계산. AF 영역 초점을 쓸 땐 전체 프레임 초점은 건너뛴다(중복 제거).
