@@ -57,10 +57,22 @@ fn main() {
     for _ in 0..threads {
         let mp = model_path.clone();
         let img = img.clone();
-        // RB_PIPE: ""=score만, "cv"=analyze(전 신호)만, "full"=analyze+score(실파이프라인 근사).
+        // RB_PIPE: ""=score만, "cv"=analyze만, "full"=analyze+score. RB_BATCH=N으로 배치 추론.
         let pipe = std::env::var("RB_PIPE").unwrap_or_default();
+        let batch: usize = std::env::var("RB_BATCH").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
         handles.push(std::thread::spawn(move || {
             let m = AestheticModel::load_with(std::path::Path::new(&mp), accel).expect("load");
+            if batch > 0 {
+                let imgs: Vec<&DecodedImage> = (0..batch).map(|_| img.as_ref()).collect();
+                for _ in 0..warmup {
+                    let _ = m.score_batch(&imgs);
+                }
+                let s = Instant::now();
+                for _ in 0..iters {
+                    let _ = m.score_batch(&imgs).expect("score_batch");
+                }
+                return s.elapsed().as_secs_f64();
+            }
             let run = |img: &DecodedImage| match pipe.as_str() {
                 "cv" => {
                     let _ = analyze_selective(img, true, true, true);
@@ -88,11 +100,13 @@ fn main() {
         max_secs = max_secs.max(h.join().unwrap());
     }
     let total_secs = t0.elapsed().as_secs_f64();
-    let total_imgs = (iters * threads) as f64;
-    let ms_per_img = max_secs / iters as f64 * 1000.0; // 스레드당 평균 지연
+    let batch_env: usize = std::env::var("RB_BATCH").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let per_thread = iters * batch_env.max(1);
+    let total_imgs = (per_thread * threads) as f64;
+    let ms_per_img = max_secs / per_thread as f64 * 1000.0; // 장당 평균(배치 환산)
     let imgs_per_sec = total_imgs / max_secs; // 총 처리량(추론 구간)
 
     println!(
-        "RESULT model={model_name} ep={ep} threads={threads} | {ms_per_img:.1} ms/img (latency) | {imgs_per_sec:.1} img/s (throughput) | wall(incl spawn+load)={total_secs:.1}s"
+        "RESULT model={model_name} ep={ep} threads={threads} batch={batch_env} | {ms_per_img:.1} ms/img | {imgs_per_sec:.1} img/s | wall={total_secs:.1}s"
     );
 }

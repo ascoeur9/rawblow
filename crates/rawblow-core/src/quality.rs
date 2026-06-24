@@ -488,14 +488,32 @@ mod ai {
             if matches!(accel, Accel::Gpu) {
                 #[cfg(target_os = "macos")]
                 {
-                    // 벤치용: RB_GPU_EP=webgpu로 WebGPU, 기본은 CoreML.
+                    // 벤치용: RB_GPU_EP=webgpu로 WebGPU, 기본은 CoreML(MLProgram+ANE+FastPrediction).
                     if std::env::var("RB_GPU_EP").as_deref() == Ok("webgpu") {
                         builder = builder
                             .with_execution_providers([ort::ep::WebGPU::default().build()])
                             .map_err(|e| format!("ort webgpu ep: {e}"))?;
                     } else {
+                        use ort::ep::coreml::{ComputeUnits, ModelFormat, SpecializationStrategy};
+                        // MLProgram = 더 많은 op 지원(트랜스포머 분할 감소) + fp16. ANE 우선.
+                        let cu = match std::env::var("RB_CU").as_deref() {
+                            Ok("ane") => ComputeUnits::CPUAndNeuralEngine,
+                            Ok("gpu") => ComputeUnits::CPUAndGPU,
+                            Ok("cpu") => ComputeUnits::CPUOnly,
+                            _ => ComputeUnits::All,
+                        };
+                        let fmt = if std::env::var("RB_FMT").as_deref() == Ok("nn") {
+                            ModelFormat::NeuralNetwork
+                        } else {
+                            ModelFormat::MLProgram
+                        };
+                        let coreml = ort::ep::CoreML::default()
+                            .with_model_format(fmt)
+                            .with_compute_units(cu)
+                            .with_specialization_strategy(SpecializationStrategy::FastPrediction)
+                            .build();
                         builder = builder
-                            .with_execution_providers([ort::ep::CoreML::default().build()])
+                            .with_execution_providers([coreml])
                             .map_err(|e| format!("ort coreml ep: {e}"))?;
                     }
                 }
@@ -530,6 +548,34 @@ mod ai {
                 return Err(format!("unexpected CLIP-IQA output len {}", data.len()));
             }
             Ok(data[0].clamp(0.0, 1.0))
+        }
+
+        /// 여러 이미지를 한 번의 추론(배치 N)으로 채점. GPU EP에서 배치가 처리량을 크게 올릴 수 있다.
+        pub fn score_batch(&self, imgs: &[&DecodedImage]) -> Result<Vec<f32>, String> {
+            let b = imgs.len();
+            if b == 0 {
+                return Ok(Vec::new());
+            }
+            let plane = 3 * SIDE * SIDE;
+            let mut chw = vec![0f32; b * plane];
+            for (i, img) in imgs.iter().enumerate() {
+                let one = preprocess(img).ok_or("invalid image for aesthetic scoring")?;
+                chw[i * plane..(i + 1) * plane].copy_from_slice(&one);
+            }
+            let tensor = Tensor::from_array(([b, 3, SIDE, SIDE], chw))
+                .map_err(|e| format!("ort tensor: {e}"))?;
+            let mut sess = self.session.lock().map_err(|_| "ort session poisoned")?;
+            let input_name = sess.inputs()[0].name().to_string();
+            let outputs = sess
+                .run(ort::inputs![input_name => tensor])
+                .map_err(|e| format!("ort run: {e}"))?;
+            let (_, data) = outputs[0]
+                .try_extract_tensor::<f32>()
+                .map_err(|e| format!("ort extract: {e}"))?;
+            if data.len() < b * 2 {
+                return Err(format!("unexpected batch output len {}", data.len()));
+            }
+            Ok((0..b).map(|i| data[i * 2].clamp(0.0, 1.0)).collect())
         }
     }
 
