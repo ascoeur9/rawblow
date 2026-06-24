@@ -4250,10 +4250,13 @@ impl RawBlowApp {
             if job.generation == self.generation {
                 let hits = job.cache_hits.load(Ordering::Relaxed);
                 self.apply_cull_verdicts(v, hits);
-                // 갱신된 캐시를 디스크에 저장(다음 세션에서도 재컬링 즉시화).
-                if let Ok(c) = self.cull_cache.lock() {
-                    save_cull_cache(&c);
-                }
+                // 갱신된 캐시를 디스크에 저장(다음 세션 재컬링 즉시화). 메인 스레드 I/O 히치를 피해
+                // 스냅샷만 잠금 안에서 뜨고(빠른 memcpy) 직렬화·쓰기는 백그라운드에서.
+                let cache = self.cull_cache.clone();
+                std::thread::spawn(move || {
+                    let snapshot = cache.lock().map(|c| c.clone()).unwrap_or_default();
+                    save_cull_cache(&snapshot);
+                });
             } else {
                 self.toast = Some((
                     tr(self.lang, "폴더가 바뀌어 AI 컬링 결과를 버렸습니다").into(),
