@@ -16,6 +16,80 @@ fn edge() -> u32 {
     std::env::var("RB_EDGE").ok().and_then(|s| s.parse().ok()).unwrap_or(1024)
 }
 
+/// 생산자-소비자: 디코드 스레드 풀(대부분 코어) → 채널 → 추론 소비자(GPU=배치). 디코드가
+/// 병목인 실파이프라인에서 GPU를 연속으로 먹여 추론 우위를 실현한다. 로드 시간은 측정 제외.
+fn run_decoupled(files: &Arc<Vec<PathBuf>>, model_path: &str, accel: Accel, intra: Option<usize>, ep: &str, threads: usize) {
+    let n_infer = if ep == "gpu" { 2usize } else { threads }; // CoreML 동시 2소비자, CPU는 워커가 곧 추론
+    let n_decode = threads.max(1);
+    let batch = if ep == "gpu" { 8usize } else { 1usize };
+    let next = Arc::new(AtomicUsize::new(0));
+    let done = Arc::new(AtomicUsize::new(0));
+    // 디코드된 이미지를 흘려보내는 바운드 채널(백프레셔). crossbeam로 다중 소비자.
+    let (tx, rx) = crossbeam_channel::bounded::<rawblow_core::decode::DecodedImage>(64);
+
+    // 추론 소비자(모델 로드는 타이머 밖 — 미리 로드해 ready 후 시작).
+    let infer_ready = Arc::new(std::sync::Barrier::new(n_infer + 1));
+    let mut infer_handles = Vec::new();
+    for _ in 0..n_infer {
+        let rx = rx.clone();
+        let done = done.clone();
+        let mp = model_path.to_string();
+        let infer_ready = infer_ready.clone();
+        infer_handles.push(std::thread::spawn(move || {
+            let model = if mp == "none" { None } else { AestheticModel::load_tuned(std::path::Path::new(&mp), accel, intra).ok() };
+            infer_ready.wait();
+            let mut buf: Vec<rawblow_core::decode::DecodedImage> = Vec::with_capacity(batch);
+            loop {
+                match rx.recv() {
+                    Ok(img) => {
+                        buf.push(img);
+                        // 배치가 차거나 채널이 잠시 빌 때까지 모아 score_batch.
+                        while buf.len() < batch {
+                            match rx.try_recv() { Ok(i) => buf.push(i), Err(_) => break }
+                        }
+                        if let Some(m) = model.as_ref() {
+                            let refs: Vec<&_> = buf.iter().collect();
+                            let _ = m.score_batch(&refs);
+                        }
+                        done.fetch_add(buf.len(), Ordering::Relaxed);
+                        buf.clear();
+                    }
+                    Err(_) => break, // 채널 닫힘
+                }
+            }
+        }));
+    }
+    drop(rx);
+    infer_ready.wait();
+    let t0 = Instant::now();
+    // 디코드 생산자.
+    let mut dec_handles = Vec::new();
+    for _ in 0..n_decode {
+        let files = files.clone();
+        let next = next.clone();
+        let tx = tx.clone();
+        dec_handles.push(std::thread::spawn(move || loop {
+            let idx = next.fetch_add(1, Ordering::Relaxed);
+            if idx >= files.len() { break; }
+            if let Ok(im) = decode_file(&files[idx], DecodeOptions { full_raw: false, max_edge: Some(edge()) }) {
+                if std::env::var("RB_NOCV").is_err() {
+                    let _ = analyze_selective(&im, true, true, true);
+                }
+                if tx.send(im).is_err() { break; }
+            }
+        }));
+    }
+    drop(tx);
+    for h in dec_handles { let _ = h.join(); }
+    for h in infer_handles { let _ = h.join(); }
+    let secs = t0.elapsed().as_secs_f64();
+    let d = done.load(Ordering::Relaxed) as f64;
+    println!(
+        "PIPE-DECOUPLE model={} ep={ep} decode={n_decode} infer={n_infer} | {} imgs in {:.2}s = {:.1} img/s",
+        std::path::Path::new(model_path).file_name().unwrap().to_string_lossy(), d as usize, secs, d / secs
+    );
+}
+
 /// 결정적 콘텐츠의 큰 JPEG들을 임시 폴더에 1회 생성(이미 있으면 재사용).
 fn ensure_jpegs(dir: &PathBuf, n: usize) -> Vec<PathBuf> {
     std::fs::create_dir_all(dir).unwrap();
@@ -49,6 +123,13 @@ fn main() {
     let dir = std::env::temp_dir().join("rawblow_pipebench");
     let files = Arc::new(ensure_jpegs(&dir, n));
     eprintln!("pipe-bench: {} JPEGs @ {}, ep={ep} threads={threads}", n, dir.display());
+
+    // RB_DECOUPLE=1: 디코드 스레드 풀과 추론 소비자를 분리(생산자-소비자). 디코드가 GPU를
+    // 굶기지 않게 채널로 흘려보내, GPU 추론(빠름)을 디코드 공급률까지 끌어올린다.
+    if std::env::var("RB_DECOUPLE").is_ok() {
+        run_decoupled(&files, &model_path, accel, intra, ep, threads);
+        return;
+    }
 
     // GPU는 chunk를 모아 score_batch(프로덕션과 동일), CPU는 1장씩.
     let batch_size = if ep == "gpu" { 8usize } else { 1usize };
