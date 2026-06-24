@@ -430,6 +430,38 @@ impl CullCriteria {
     }
 }
 
+/// 컬링 결과의 **최종 Good/Bad 조합**(#50). 워커가 낸 `(인덱스, CV판정, CLIP-IQA점수)` 목록을
+/// 미적 설정에 따라 제자리에서 확정한다:
+/// - `use_aesthetic && top_n>0`: 미적 점수 **상위 N장만 Good**(점수 없는 항목은 제외→Bad), 나머지 Bad.
+/// - `use_aesthetic`(임계 모드): 점수가 `aesthetic_min` 미만이면 Bad, 아니면 CV 판정 유지
+///   (점수 None이면 CV 판정 유지 — 예: CV 탈락은 Bad 유지).
+/// - 그 외: CV 판정 그대로.
+pub fn finalize_cull_verdicts(
+    results: &mut [(usize, Verdict, Option<f32>)],
+    use_aesthetic: bool,
+    top_n: usize,
+    aesthetic_min: f32,
+) {
+    if use_aesthetic && top_n > 0 {
+        let mut scored: Vec<(usize, f32)> =
+            results.iter().filter_map(|(i, _, a)| a.map(|s| (*i, s))).collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let good: std::collections::HashSet<usize> =
+            scored.iter().take(top_n).map(|(i, _)| *i).collect();
+        for (i, v, _) in results.iter_mut() {
+            *v = if good.contains(i) { Verdict::Good } else { Verdict::Bad };
+        }
+    } else if use_aesthetic {
+        for (_, v, a) in results.iter_mut() {
+            if let Some(s) = a {
+                if *s < aesthetic_min {
+                    *v = Verdict::Bad;
+                }
+            }
+        }
+    }
+}
+
 // ───────────────────────── 선택 기능: CLIP-IQA 미적 점수 ─────────────────────────
 #[cfg(feature = "ai")]
 pub use ai::{Accel, AestheticModel};
@@ -774,6 +806,50 @@ mod tests {
         // 하한 이상이면 통과.
         q.aesthetic = Some(0.7);
         assert_eq!(c.verdict(&q), Verdict::Good, "P(good) >= aesthetic_min → Good");
+    }
+
+    fn verdicts(v: &[(usize, Verdict, Option<f32>)]) -> Vec<(usize, Verdict)> {
+        v.iter().map(|(i, ve, _)| (*i, *ve)).collect()
+    }
+
+    #[test]
+    fn finalize_top_n_keeps_highest_scores() {
+        // top_n=2: 점수 상위 2장만 Good. CV 판정은 무시되고 점수 순위로 재배정.
+        let mut r = vec![
+            (0, Verdict::Bad, Some(0.9)),  // 최고점이지만 CV Bad → top-N에선 Good
+            (1, Verdict::Good, Some(0.2)),
+            (2, Verdict::Good, Some(0.7)),
+            (3, Verdict::Good, None),      // 점수 없음 → 제외(Bad)
+        ];
+        finalize_cull_verdicts(&mut r, true, 2, 0.5);
+        assert_eq!(
+            verdicts(&r),
+            vec![(0, Verdict::Good), (1, Verdict::Bad), (2, Verdict::Good), (3, Verdict::Bad)]
+        );
+    }
+
+    #[test]
+    fn finalize_threshold_gates_low_scores() {
+        // 임계 모드(top_n=0): 점수<min이면 Bad, 아니면 CV 유지. None은 CV 유지.
+        let mut r = vec![
+            (0, Verdict::Good, Some(0.6)), // ≥0.5 → CV(Good) 유지
+            (1, Verdict::Good, Some(0.3)), // <0.5 → Bad
+            (2, Verdict::Bad, Some(0.9)),  // CV Bad, 점수 높아도 CV 유지(Bad)
+            (3, Verdict::Good, None),      // None → CV(Good) 유지
+        ];
+        finalize_cull_verdicts(&mut r, true, 0, 0.5);
+        assert_eq!(
+            verdicts(&r),
+            vec![(0, Verdict::Good), (1, Verdict::Bad), (2, Verdict::Bad), (3, Verdict::Good)]
+        );
+    }
+
+    #[test]
+    fn finalize_no_aesthetic_keeps_cv() {
+        // use_aesthetic=false → CV 판정 그대로(점수 무시).
+        let mut r = vec![(0, Verdict::Good, Some(0.1)), (1, Verdict::Bad, Some(0.99))];
+        finalize_cull_verdicts(&mut r, false, 5, 0.5);
+        assert_eq!(verdicts(&r), vec![(0, Verdict::Good), (1, Verdict::Bad)]);
     }
 
     #[test]

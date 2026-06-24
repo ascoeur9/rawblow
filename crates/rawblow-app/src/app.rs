@@ -4272,33 +4272,8 @@ impl RawBlowApp {
         let lang = self.lang;
         let c = self.cfg.ai_cull.clone();
 
-        // top_n 모드: aesthetic 점수로 상위 N장을 Good으로, 나머지를 Bad로.
-        let top_n = c.top_n;
-        if top_n > 0 && c.use_aesthetic {
-            // aesthetic 점수 있는 것만 순위 산정; 없는 것은 Bad.
-            let mut scored: Vec<(usize, f32)> = results.iter()
-                .filter_map(|(idx, _, aes)| aes.map(|s| (*idx, s)))
-                .collect();
-            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            let good_set: std::collections::HashSet<usize> = scored
-                .iter()
-                .take(top_n)
-                .map(|(idx, _)| *idx)
-                .collect();
-            for (idx, verdict, _) in &mut results {
-                *verdict = if good_set.contains(idx) { Verdict::Good } else { Verdict::Bad };
-            }
-        } else if c.use_aesthetic {
-            // threshold 모드: aesthetic 점수가 없으면(CV 탈락 등) Bad로 두고 score 있으면 재판정.
-            for (_, verdict, aes) in &mut results {
-                if let Some(score) = aes {
-                    if *score < c.aesthetic_min {
-                        *verdict = Verdict::Bad;
-                    }
-                }
-                // aesthetic=None인 경우: CV 판정 유지(CV 탈락 → Bad, CV 통과 → Good).
-            }
-        }
+        // 미적 설정에 따른 최종 Good/Bad 조합(top-N 랭킹 또는 임계). 코어의 테스트된 함수에 위임.
+        rawblow_core::quality::finalize_cull_verdicts(&mut results, c.use_aesthetic, c.top_n, c.aesthetic_min);
 
         // 점수 범위 수집(진단용 토스트).
         let scores: Vec<f32> = results.iter().filter_map(|(_, _, a)| *a).collect();
