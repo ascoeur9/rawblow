@@ -3937,12 +3937,16 @@ impl RawBlowApp {
         let intra = if use_gpu { None } else { Some(1usize) };
         let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
         let model_bytes = model_path.as_ref().and_then(|p| std::fs::metadata(p).ok().map(|m| m.len()));
+        // GPU는 한 워커가 chunk(8장)를 모아 배치 추론, CPU는 1장씩.
+        let batch_size = if use_gpu { 8usize } else { 1usize };
         let n_workers = if use_gpu {
-            cores.min(8) // GPU: 동시 세션으로 처리량 ↑(실측 8세션 ≈ 270 img/s, RN50)
+            // GPU: 동시 세션으로 처리량↑(실측 8워커×배치8 ≈ 421 img/s). 단 작은 컬링에 유휴 세션을
+            // 로드하지 않도록 필요한 배치 수로도 상한(세션 로드 ~1.4s씩이라 낭비 방지).
+            let batches = (total + batch_size - 1) / batch_size;
+            cores.min(8).min(batches.max(1))
         } else {
-            Self::cull_worker_count(model_bytes)
-        }
-        .min(total.max(1));
+            Self::cull_worker_count(model_bytes).min(total.max(1))
+        };
 
         let (tx, rx) = crossbeam_channel::bounded::<AiCullMsg>(1);
         let cancel = Arc::new(AtomicBool::new(false));
@@ -3953,8 +3957,6 @@ impl RawBlowApp {
         ));
         let targets = std::sync::Arc::new(targets);
 
-        // GPU는 한 워커가 chunk를 모아 배치 추론(처리량↑), CPU는 1장씩(threshold CLIP-skip 유지).
-        let batch_size = if use_gpu { 8usize } else { 1usize };
         let mut handles = Vec::with_capacity(n_workers);
         for _ in 0..n_workers {
             let targets = targets.clone();
