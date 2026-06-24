@@ -7,7 +7,8 @@ use crate::worker::{DecodeRequest, Worker};
 use eframe::egui;
 use egui::{Align, Align2, Color32, Layout, Pos2, Rect, Rounding, Sense, Stroke, Vec2};
 use rawblow_core::cache;
-use rawblow_core::config::{self, Config, Lang};
+use rawblow_core::config::{self, AiCullTarget, ClipIqaBackbone, Config, Lang};
+use rawblow_core::quality::Verdict;
 use rawblow_core::meta::{read_exif, ExifInfo};
 use rawblow_core::organize::{self, OrganizeKey, OrganizeRequest};
 use rawblow_core::transfer::{
@@ -40,6 +41,8 @@ const PREVIEW_EDGE: u32 = 1920;
 const ORIG_EDGE: u32 = 8192;
 /// 그리드·필름스트립 썸네일 최대 변(px). 작게 → 빠른 디코딩·작은 메모리.
 const THUMB_EDGE: u32 = 320;
+/// AI 컬링 채점용 디코딩 최대 변(px)(#50). 흐림 판별에 충분한 디테일과 속도(장당 수십 ms)의 절충.
+const AI_CULL_EDGE: u32 = 1024;
 /// 프리뷰 선디코딩 윈도우는 사용자 설정 `cfg.preload`(전방)를 따른다(request_preload).
 /// 프리뷰 텍스처 캐시 용량(윈도우+여유 — 현재 장이 절대 eviction되지 않게).
 const PREVIEW_CAP: usize = 24;
@@ -183,6 +186,41 @@ struct ProgressJob {
     dest: Option<PathBuf>,
 }
 
+/// AI 컬링(#50) 백그라운드 채점에서 메인 스레드로 보내는 메시지.
+enum AiCullMsg {
+    /// (완료 개수, 전체 개수).
+    Progress(usize, usize),
+    /// 채점 완료. (원본 items 인덱스, 판정) 목록.
+    Done(Vec<(usize, rawblow_core::quality::Verdict)>),
+}
+
+/// 진행 중인 AI 컬링 채점(#50). 전송/정리와 같은 패턴 — 별도 스레드에서 디코딩+채점하고
+/// 진행 상황을 채널로 받는다. 배정 방식은 완료 시 `cfg.ai_cull`을 읽어 적용한다.
+struct AiCullJob {
+    rx: crossbeam_channel::Receiver<AiCullMsg>,
+    cancel: Arc<AtomicBool>,
+    done: usize,
+    total: usize,
+}
+
+/// CLIP-IQA 모델 자동 다운로드(#50) 진행 메시지.
+#[cfg(feature = "model-download")]
+enum ModelDlMsg {
+    /// (다운로드된 바이트, 전체 바이트 — 0이면 미확인).
+    Progress(u64, u64),
+    /// 다운로드+검증 완료. Err이면 오류 메시지.
+    Done(Result<(), String>),
+}
+
+/// 진행 중인 모델 다운로드.
+#[cfg(feature = "model-download")]
+struct ModelDlJob {
+    rx: crossbeam_channel::Receiver<ModelDlMsg>,
+    backbone: ClipIqaBackbone,
+    done: u64,
+    total: u64,
+}
+
 pub struct RawBlowApp {
     cfg: Config,
     folder: Option<PathBuf>,
@@ -241,6 +279,12 @@ pub struct RawBlowApp {
     progress: Option<ProgressJob>,
     result: Option<TransferReport>,
     show_settings: bool,
+    // AI 컬링(#50): 설정 다이얼로그 표시 여부 + 진행 중인 채점 작업.
+    ai_cull_open: bool,
+    ai_cull: Option<AiCullJob>,
+    // CLIP-IQA 모델 다운로드 진행.
+    #[cfg(feature = "model-download")]
+    model_dl: Option<ModelDlJob>,
     // 오픈소스 라이센스 페이지(#39). 설정에서 열며, Some이면 설정 대신 이 페이지를 그린다.
     licenses: Option<crate::licenses::LicensesPage>,
     last_dest: Option<PathBuf>,
@@ -378,6 +422,10 @@ impl RawBlowApp {
             last_save: Instant::now(),
             transfer: None,
             organize: None,
+            ai_cull_open: false,
+            ai_cull: None,
+            #[cfg(feature = "model-download")]
+            model_dl: None,
             progress: None,
             result: None,
             show_settings: false,
@@ -1123,10 +1171,22 @@ impl eframe::App for RawBlowApp {
         // 모달. 진행 중 작업(전송/정리)이 있으면 그 프로그레스바가 최우선 — 다른 모달을 가린다.
         if self.progress.is_some() {
             self.ui_progress(ctx);
+        } else if self.ai_cull.is_some() {
+            self.ui_ai_cull_progress(ctx);
+        } else if {
+            #[cfg(feature = "model-download")]
+            { self.model_dl.is_some() }
+            #[cfg(not(feature = "model-download"))]
+            { false }
+        } {
+            #[cfg(feature = "model-download")]
+            self.ui_model_dl_progress(ctx);
         } else if self.transfer.is_some() {
             self.ui_transfer_dialog(ctx);
         } else if self.organize.is_some() {
             self.ui_organize_dialog(ctx);
+        } else if self.ai_cull_open {
+            self.ui_ai_cull_dialog(ctx);
         }
         if self.result.is_some() {
             self.ui_transfer_result(ctx);
@@ -1164,6 +1224,14 @@ impl RawBlowApp {
             || self.bulk_open
             || self.show_settings
             || self.licenses.is_some()
+            || self.ai_cull_open
+            || self.ai_cull.is_some()
+            || {
+                #[cfg(feature = "model-download")]
+                { self.model_dl.is_some() }
+                #[cfg(not(feature = "model-download"))]
+                { false }
+            }
     }
 
     // ── 입력 ──────────────────────────────────────────────
@@ -1858,6 +1926,32 @@ impl RawBlowApp {
                         }
                         if org_resp.clicked() {
                             self.open_organize();
+                        }
+                    }
+
+                    // AI 컬링(#50): 정리 버튼 **바로 위**(bottom_up이라 코드상 뒤가 위). 강조색 테두리로
+                    // 일반 '정리'와 구분. 항목이 있을 때만 활성.
+                    ui.add_space(8.0);
+                    let ai_enabled = !self.items.is_empty();
+                    let (ai_rect, ai_resp) = ui.allocate_exact_size(
+                        Vec2::new(ui.available_width(), 32.0),
+                        if ai_enabled { Sense::click() } else { Sense::hover() },
+                    );
+                    {
+                        let p = ui.painter();
+                        let txt_col = if ai_enabled { theme::ACCENT } else { theme::INK4 };
+                        let fill = if ai_enabled && ai_resp.hovered() { theme::BG4 } else { theme::BG3 };
+                        let border = if ai_enabled { theme::ACCENT } else { theme::LINE2 };
+                        p.rect(ai_rect, Rounding::same(6.0), fill, Stroke::new(1.0, border));
+                        let label = format!("✨ {}", tr(lang, "AI 컬링"));
+                        p.text(ai_rect.center(), Align2::CENTER_CENTER, label, prop(12.0), txt_col);
+                    }
+                    if ai_enabled {
+                        if ai_resp.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if ai_resp.clicked() {
+                            self.ai_cull_open = true;
                         }
                     }
 
@@ -3214,6 +3308,639 @@ impl RawBlowApp {
         } else {
             self.organize = Some(st);
         }
+    }
+
+    /// AI 컬링 설정 다이얼로그(#50). 어떤 신호로 거를지 + 임계값 + 결과 배정축을 고른다.
+    /// 라이선스 문제로 미적(NIMA) 모델은 번들하지 않으므로 노출·초점·기울기 3종만 노출한다.
+    /// CLIP-IQA 모델 파일의 로컬 경로(config_dir()/models/…).
+    fn model_path(backbone: ClipIqaBackbone) -> std::path::PathBuf {
+        config::config_dir().join("models").join(backbone.filename())
+    }
+
+    /// 백본 파일이 다운로드되어 있는지 확인.
+    fn model_present(backbone: ClipIqaBackbone) -> bool {
+        Self::model_path(backbone).exists()
+    }
+
+    /// 모델 파일을 백그라운드 스레드로 다운로드(#50). ureq 스트리밍 + sha256 검증.
+    #[cfg(feature = "model-download")]
+    fn start_model_download(&mut self, backbone: ClipIqaBackbone) {
+        let dest = Self::model_path(backbone);
+        let url = backbone.download_url().to_string();
+        let sha = backbone.sha256().to_string();
+        let expected = backbone.expected_bytes();
+        let (tx, rx) = crossbeam_channel::unbounded::<ModelDlMsg>();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            if let Some(parent) = dest.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    let _ = tx.send(ModelDlMsg::Done(Err(format!("mkdir: {e}"))));
+                    return;
+                }
+            }
+            let resp = match ureq::get(&url).call() {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = tx.send(ModelDlMsg::Done(Err(format!("HTTP: {e}"))));
+                    return;
+                }
+            };
+            let tmp = dest.with_extension("onnx.tmp");
+            let mut file = match std::fs::File::create(&tmp) {
+                Ok(f) => f,
+                Err(e) => {
+                    let _ = tx.send(ModelDlMsg::Done(Err(format!("파일 생성: {e}"))));
+                    return;
+                }
+            };
+            let mut reader = resp.into_reader();
+            let mut buf = vec![0u8; 1 << 16];
+            let mut downloaded = 0u64;
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if let Err(e) = file.write_all(&buf[..n]) {
+                            let _ = tx.send(ModelDlMsg::Done(Err(format!("쓰기 오류: {e}"))));
+                            return;
+                        }
+                        downloaded += n as u64;
+                        let _ = tx.send(ModelDlMsg::Progress(downloaded, expected));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(ModelDlMsg::Done(Err(format!("읽기 오류: {e}"))));
+                        return;
+                    }
+                }
+            }
+            drop(file);
+            // sha256 검증.
+            let actual = {
+                use sha2::{Digest, Sha256};
+                use std::io::BufReader;
+                let f = match std::fs::File::open(&tmp) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let _ = tx.send(ModelDlMsg::Done(Err(format!("검증 열기: {e}"))));
+                        return;
+                    }
+                };
+                let mut hasher = Sha256::new();
+                let mut r = BufReader::new(f);
+                let mut b = [0u8; 1 << 16];
+                loop {
+                    match r.read(&mut b) {
+                        Ok(0) => break,
+                        Ok(n) => hasher.update(&b[..n]),
+                        Err(e) => {
+                            let _ = tx.send(ModelDlMsg::Done(Err(format!("해시 읽기: {e}"))));
+                            return;
+                        }
+                    }
+                }
+                format!("{:x}", hasher.finalize())
+            };
+            if actual != sha {
+                let _ = std::fs::remove_file(&tmp);
+                let _ = tx.send(ModelDlMsg::Done(Err(format!(
+                    "sha256 불일치 — 다시 시도해주세요\n예상: {sha}\n실제: {actual}"
+                ))));
+                return;
+            }
+            if let Err(e) = std::fs::rename(&tmp, &dest) {
+                let _ = tx.send(ModelDlMsg::Done(Err(format!("파일 이동: {e}"))));
+                return;
+            }
+            let _ = tx.send(ModelDlMsg::Done(Ok(())));
+        });
+        self.model_dl = Some(ModelDlJob { rx, backbone, done: 0, total: expected });
+    }
+
+    /// 모델 다운로드 진행 모달(#50).
+    #[cfg(feature = "model-download")]
+    fn ui_model_dl_progress(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
+        let mut job = self.model_dl.take().unwrap();
+        let mut done_result: Option<Result<(), String>> = None;
+        loop {
+            match job.rx.try_recv() {
+                Ok(ModelDlMsg::Progress(d, t)) => { job.done = d; job.total = t; }
+                Ok(ModelDlMsg::Done(r)) => { done_result = Some(r); break; }
+                Err(crossbeam_channel::TryRecvError::Empty) => break,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    done_result = Some(Err("연결 끊김".into())); break;
+                }
+            }
+        }
+        if let Some(result) = done_result {
+            match result {
+                Ok(()) => {
+                    self.toast = Some((
+                        tr(lang, "모델 다운로드 완료").into(),
+                        std::time::Instant::now(),
+                    ));
+                    // 다운로드 완료 후 다이얼로그 다시 열기.
+                    self.ai_cull_open = true;
+                }
+                Err(e) => {
+                    self.toast = Some((
+                        format!("다운로드 실패: {e}"),
+                        std::time::Instant::now(),
+                    ));
+                    self.ai_cull_open = true;
+                }
+            }
+            return;
+        }
+        ctx.request_repaint_after(Duration::from_millis(100));
+        let frac = if job.total > 0 {
+            (job.done as f32 / job.total as f32).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let mb_done = job.done as f32 / 1_000_000.0;
+        let mb_total = job.total as f32 / 1_000_000.0;
+        let screen = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("model_dl_dim"))
+            .order(egui::Order::Middle)
+            .fixed_pos(Pos2::ZERO)
+            .show(ctx, |ui| {
+                ui.painter().with_clip_rect(screen).rect_filled(screen, 0.0, Color32::from_black_alpha(180));
+                let _ = ui.allocate_rect(screen, Sense::click_and_drag());
+            });
+        egui::Window::new("model_dl_modal")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .fixed_size(Vec2::new(440.0, 0.0))
+            .frame(modal_frame())
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                modal_header(ui, tr(lang, "모델 다운로드"), job.backbone.label());
+                ui.add(egui::ProgressBar::new(frac).fill(theme::ACCENT).desired_height(10.0));
+                ui.add_space(10.0);
+                ui.label(
+                    egui::RichText::new(format!("{:.1} / {:.1} MB", mb_done, mb_total))
+                        .font(mono(11.0))
+                        .color(theme::INK3),
+                );
+            });
+        self.model_dl = Some(job);
+    }
+
+    fn ui_ai_cull_dialog(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
+        let mut c = self.cfg.ai_cull.clone();
+        let mut do_start = false;
+        let mut do_cancel = false;
+        let mut do_download: Option<ClipIqaBackbone> = None;
+
+        // 채점 대상 수(scope에 따라). 미리 계산(클로저 안에서 self 차용 회피).
+        let total_items = self.items.len();
+        let filtered_count = self.filtered().len();
+
+        let screen = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("aicull_dim"))
+            .order(egui::Order::Middle)
+            .fixed_pos(Pos2::ZERO)
+            .show(ctx, |ui| {
+                ui.painter().with_clip_rect(screen).rect_filled(screen, 0.0, Color32::from_black_alpha(180));
+                let _ = ui.allocate_rect(screen, Sense::click_and_drag());
+            });
+
+        let tag_col = |t: ColorTag| {
+            t.color_rgb()
+                .map(|[r, g, b]| Color32::from_rgb(r, g, b))
+                .unwrap_or(theme::INK3)
+        };
+
+        egui::Window::new("aicull_modal")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .fixed_size(Vec2::new(540.0, 0.0))
+            .frame(modal_frame())
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                modal_header(
+                    ui,
+                    tr(lang, "AI 컬링"),
+                    tr(lang, "사진을 분석해 흐림·노출·기울기로 자동 분류 · 전부 로컬 처리"),
+                );
+
+                section_label(ui, "CHECKS");
+                ui.horizontal_wrapped(|ui| {
+                    if check_chip(ui, tr(lang, "초점(선명도)"), None, theme::ACCENT, c.use_focus) {
+                        c.use_focus = !c.use_focus;
+                    }
+                    if check_chip(ui, tr(lang, "노출"), None, theme::ACCENT, c.use_exposure) {
+                        c.use_exposure = !c.use_exposure;
+                    }
+                    if check_chip(ui, tr(lang, "수평 기울기"), None, theme::ACCENT, c.use_tilt) {
+                        c.use_tilt = !c.use_tilt;
+                    }
+                    if check_chip(ui, tr(lang, "미적(구도) AI"), None, theme::ACCENT, c.use_aesthetic) {
+                        c.use_aesthetic = !c.use_aesthetic;
+                    }
+                });
+                ui.add_space(16.0);
+
+                section_label(ui, "OPTIONS");
+                if c.use_focus {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(tr(lang, "흐림 임계(선명도↑ 엄격)")).font(mono(11.0)).color(theme::INK3));
+                        ui.add(egui::Slider::new(&mut c.focus_thresh, 0.2..=0.8).fixed_decimals(2));
+                    });
+                    if check_chip(ui, tr(lang, "AF 측거점에서만 초점 측정"), None, theme::ACCENT, c.use_af_focus) {
+                        c.use_af_focus = !c.use_af_focus;
+                    }
+                    ui.add_space(4.0);
+                }
+                if c.use_exposure {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(tr(lang, "노출 양호도 하한")).font(mono(11.0)).color(theme::INK3));
+                        ui.add(egui::Slider::new(&mut c.exposure_min, 0.2..=0.9).fixed_decimals(2));
+                    });
+                    ui.add_space(4.0);
+                }
+                if c.use_tilt {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(tr(lang, "허용 기울기")).font(mono(11.0)).color(theme::INK3));
+                        ui.add(egui::Slider::new(&mut c.tilt_max_deg, 0.5..=10.0).suffix("°").fixed_decimals(1));
+                    });
+                }
+                if c.use_aesthetic {
+                    let model_ok = Self::model_present(c.backbone);
+                    // 백본 선택.
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(tr(lang, "백본 모델")).font(mono(11.0)).color(theme::INK3));
+                        ui.add_space(4.0);
+                        for b in ClipIqaBackbone::ALL {
+                            let sel = c.backbone == b;
+                            let present = Self::model_present(b);
+                            let col = if present { theme::ACCENT } else { theme::INK3 };
+                            if check_chip(ui, b.label(), None, col, sel) {
+                                c.backbone = b;
+                            }
+                        }
+                    });
+                    if model_ok {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(tr(lang, "미적 점수 하한 P(good)")).font(mono(11.0)).color(theme::INK3));
+                            ui.add(egui::Slider::new(&mut c.aesthetic_min, 0.1..=0.9).fixed_decimals(2));
+                        });
+                        ui.label(
+                            egui::RichText::new(tr(lang, "✓ 모델 준비됨 — CLIP-IQA 채점 사용 가능"))
+                                .font(mono(10.0)).color(theme::ACCENT),
+                        );
+                    } else {
+                        ui.label(
+                            egui::RichText::new(tr(lang, "모델 없음 — 아래 다운로드 버튼을 눌러주세요"))
+                                .font(mono(10.0)).color(theme::WARN),
+                        );
+                        #[cfg(feature = "model-download")]
+                        if ui.add(egui::Button::new(
+                            egui::RichText::new(format!("  {}  ", tr(lang, "다운로드")))
+                                .color(Color32::from_rgb(0x0a, 0x14, 0x20))
+                        ).fill(theme::ACCENT)).clicked() {
+                            do_download = Some(c.backbone);
+                        }
+                    }
+                    ui.add_space(4.0);
+                }
+                if !c.any_enabled() {
+                    ui.label(egui::RichText::new(tr(lang, "검사 항목을 하나 이상 켜세요.")).font(mono(10.0)).color(theme::WARN));
+                }
+                ui.add_space(16.0);
+
+                section_label(ui, "ASSIGN RESULT TO");
+                let tgt_sel = match c.target {
+                    AiCullTarget::Label => 0,
+                    AiCullTarget::Stars => 1,
+                    AiCullTarget::Tag => 2,
+                };
+                if let Some(i) = segmented(
+                    ui,
+                    &[
+                        (tr(lang, "선택"), tr(lang, "Pick / Reject")),
+                        (tr(lang, "별점"), tr(lang, "높음 / 낮음")),
+                        (tr(lang, "색 태그"), tr(lang, "두 색")),
+                    ],
+                    tgt_sel,
+                ) {
+                    c.target = match i {
+                        0 => AiCullTarget::Label,
+                        1 => AiCullTarget::Stars,
+                        _ => AiCullTarget::Tag,
+                    };
+                }
+                ui.add_space(8.0);
+                match c.target {
+                    AiCullTarget::Label => {
+                        ui.label(egui::RichText::new(tr(lang, "좋음 → 선택(Pick) · 탈락 → 제외(Reject)")).font(mono(10.5)).color(theme::INK4));
+                    }
+                    AiCullTarget::Stars => {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(tr(lang, "좋음")).font(mono(11.0)).color(theme::INK3));
+                            ui.add(egui::Slider::new(&mut c.good_stars, 0..=5).suffix("★"));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(tr(lang, "탈락")).font(mono(11.0)).color(theme::INK3));
+                            ui.add(egui::Slider::new(&mut c.bad_stars, 0..=5).suffix("★"));
+                        });
+                    }
+                    AiCullTarget::Tag => {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(egui::RichText::new(tr(lang, "좋음")).font(mono(11.0)).color(theme::INK3));
+                            for t in ColorTag::ALL {
+                                if check_chip(ui, " ", None, tag_col(t), c.good_tag == t) {
+                                    c.good_tag = t;
+                                }
+                            }
+                        });
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(egui::RichText::new(tr(lang, "탈락")).font(mono(11.0)).color(theme::INK3));
+                            for t in ColorTag::ALL {
+                                if check_chip(ui, " ", None, tag_col(t), c.bad_tag == t) {
+                                    c.bad_tag = t;
+                                }
+                            }
+                        });
+                    }
+                }
+                ui.add_space(16.0);
+
+                section_label(ui, "SCOPE");
+                let scope_sel = if c.scope_all { 0 } else { 1 };
+                let all_lbl = trf(lang, "{} 항목", &[&total_items.to_string()]);
+                let filt_lbl = trf(lang, "{} 항목", &[&filtered_count.to_string()]);
+                if let Some(i) = segmented(
+                    ui,
+                    &[
+                        (tr(lang, "전체"), all_lbl.as_str()),
+                        (tr(lang, "현재 필터"), filt_lbl.as_str()),
+                    ],
+                    scope_sel,
+                ) {
+                    c.scope_all = i == 0;
+                }
+
+                ui.add_space(14.0);
+                let r = ui.max_rect();
+                let y = ui.cursor().top();
+                ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0, theme::LINE));
+                ui.add_space(12.0);
+                let count = if c.scope_all { total_items } else { filtered_count };
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("WILL ANALYZE").font(prop(10.0)).color(theme::INK3));
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new(count.to_string()).font(mono(13.0)).color(theme::ACCENT));
+                    ui.label(egui::RichText::new(tr(lang, "장")).font(mono(10.0)).color(theme::INK3));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let aesthetic_blocks = c.use_aesthetic && !Self::model_present(c.backbone);
+                    let can_start = c.any_enabled() && count > 0 && !aesthetic_blocks;
+                        if ui
+                            .add_enabled(
+                                can_start,
+                                egui::Button::new(egui::RichText::new(format!("  {}  ", tr(lang, "컬링 시작"))).color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT),
+                            )
+                            .clicked()
+                        {
+                            do_start = true;
+                        }
+                        ui.add_space(8.0);
+                        if toggle_btn(ui, tr(lang, "취소"), false).clicked() {
+                            do_cancel = true;
+                        }
+                    });
+                });
+            });
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            do_cancel = true;
+        }
+        // 편집한 설정은 매 프레임 cfg에 반영(영속화는 시작/취소 시).
+        self.cfg.ai_cull = c;
+        if do_cancel {
+            let _ = config::save(&self.cfg);
+            self.ai_cull_open = false;
+        } else if do_start {
+            let _ = config::save(&self.cfg);
+            self.ai_cull_open = false;
+            self.start_ai_cull();
+        } else if let Some(backbone) = do_download {
+            let _ = config::save(&self.cfg);
+            self.ai_cull_open = false;
+            #[cfg(feature = "model-download")]
+            self.start_model_download(backbone);
+        }
+    }
+
+    /// AI 컬링 채점을 백그라운드 스레드에서 시작(#50). 각 항목을 작은 해상도로 디코딩해
+    /// 노출·초점·기울기를 채점하고, AF 옵션이 켜져 있으면 합초 측거점 영역에서 선명도를 잰다.
+    /// `ai` 기능+모델 파일이 있으면 CLIP-IQA 미적 점수도 함께 낸다.
+    fn start_ai_cull(&mut self) {
+        let cfg = self.cfg.ai_cull.clone();
+        let mut criteria = cfg.criteria();
+        let use_af = cfg.use_af_focus && cfg.use_focus;
+        let targets: Vec<(usize, PathBuf)> = if cfg.scope_all {
+            self.items.iter().enumerate().map(|(i, it)| (i, it.entry.display.clone())).collect()
+        } else {
+            self.filtered().into_iter().map(|r| (r, self.items[r].entry.display.clone())).collect()
+        };
+        let total = targets.len();
+
+        // 미적 모델 로드 시도(ai 피처 + 파일 존재 시).
+        #[cfg(feature = "ai")]
+        let aesthetic_model: Option<std::sync::Arc<rawblow_core::quality::AestheticModel>> = {
+            if cfg.use_aesthetic {
+                let path = Self::model_path(cfg.backbone);
+                rawblow_core::quality::AestheticModel::load(&path)
+                    .ok()
+                    .map(std::sync::Arc::new)
+            } else {
+                None
+            }
+        };
+        #[cfg(not(feature = "ai"))]
+        let aesthetic_model: Option<()> = None;
+
+        // 모델 로드 실패 시 미적 판정 기준 꺼 둠(오판 방지).
+        if aesthetic_model.is_none() {
+            criteria.use_aesthetic = false;
+        }
+
+        let (tx, rx) = crossbeam_channel::unbounded::<AiCullMsg>();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_t = cancel.clone();
+        std::thread::spawn(move || {
+            let mut out: Vec<(usize, Verdict)> = Vec::with_capacity(total);
+            for (n, (real, path)) in targets.into_iter().enumerate() {
+                if cancel_t.load(Ordering::Relaxed) {
+                    break;
+                }
+                // 디코더·파서 패닉(손상 파일)에도 스레드가 죽지 않게 격리. 실패 항목은 건너뛴다.
+                let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let img = rawblow_core::decode::decode_file(
+                        &path,
+                        rawblow_core::decode::DecodeOptions { full_raw: false, max_edge: Some(AI_CULL_EDGE) },
+                    )
+                    .ok()?;
+                    let mut q = rawblow_core::quality::analyze(&img);
+                    if use_af {
+                        if let Some(af) = rawblow_core::af::parse_af(&path) {
+                            let orient = rawblow_core::meta::orientation(&path);
+                            let regions: Vec<(f32, f32, f32, f32)> = af
+                                .points
+                                .iter()
+                                .filter(|p| p.in_focus)
+                                .map(|p| {
+                                    let (cx, cy, w, h) = af_display_coords(p, orient);
+                                    (cx as f32, cy as f32, w as f32, h as f32)
+                                })
+                                .collect();
+                            if !regions.is_empty() {
+                                q.focus = rawblow_core::quality::focus_report_regions(&img, &regions);
+                            }
+                        }
+                    }
+                    // CLIP-IQA 미적 점수(ai 기능 + 모델 있을 때만).
+                    #[cfg(feature = "ai")]
+                    if let Some(ref model) = aesthetic_model {
+                        q.aesthetic = model.score(&img).ok();
+                    }
+                    Some(criteria.verdict(&q))
+                }))
+                .ok()
+                .flatten();
+                if let Some(v) = verdict {
+                    out.push((real, v));
+                }
+                let _ = tx.send(AiCullMsg::Progress(n + 1, total));
+            }
+            let _ = tx.send(AiCullMsg::Done(out));
+        });
+
+        self.ai_cull = Some(AiCullJob { rx, cancel, done: 0, total });
+    }
+
+    /// AI 컬링 진행 모달(#50): 진행률을 갱신하고 완료 시 판정을 분류축에 적용한다.
+    fn ui_ai_cull_progress(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
+        let mut job = self.ai_cull.take().unwrap();
+
+        let mut done_verdicts: Option<Vec<(usize, Verdict)>> = None;
+        let mut disconnected = false;
+        loop {
+            match job.rx.try_recv() {
+                Ok(AiCullMsg::Progress(d, t)) => {
+                    job.done = d;
+                    job.total = t;
+                }
+                Ok(AiCullMsg::Done(v)) => {
+                    done_verdicts = Some(v);
+                    break;
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => break,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+
+        if let Some(v) = done_verdicts {
+            self.ai_cull = None;
+            self.apply_cull_verdicts(v);
+            return;
+        }
+        if disconnected {
+            self.ai_cull = None;
+            return;
+        }
+
+        ctx.request_repaint_after(Duration::from_millis(80));
+        let frac = if job.total > 0 {
+            (job.done as f32 / job.total as f32).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let mut do_cancel = false;
+
+        let screen = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("aicull_prog_dim"))
+            .order(egui::Order::Middle)
+            .fixed_pos(Pos2::ZERO)
+            .show(ctx, |ui| {
+                ui.painter().with_clip_rect(screen).rect_filled(screen, 0.0, Color32::from_black_alpha(180));
+                let _ = ui.allocate_rect(screen, Sense::click_and_drag());
+            });
+
+        egui::Window::new("aicull_prog_modal")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .fixed_size(Vec2::new(480.0, 0.0))
+            .frame(modal_frame())
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                modal_header(ui, tr(lang, "AI 컬링 분석 중"), "");
+                ui.add(egui::ProgressBar::new(frac).fill(theme::ACCENT).desired_height(10.0));
+                ui.add_space(10.0);
+                ui.label(
+                    egui::RichText::new(trf(lang, "{} / {} 장", &[&job.done.to_string(), &job.total.to_string()]))
+                        .font(mono(11.0))
+                        .color(theme::INK3),
+                );
+                ui.add_space(10.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if toggle_btn(ui, tr(lang, "취소"), false).clicked() {
+                        do_cancel = true;
+                    }
+                });
+            });
+
+        if do_cancel || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            job.cancel.store(true, Ordering::Relaxed);
+            self.ai_cull = None; // 취소 시 부분 결과는 적용하지 않는다.
+            return;
+        }
+        self.ai_cull = Some(job);
+    }
+
+    /// AI 컬링 판정을 선택한 분류축에 적용(#50). "양쪽 다 표시" — 좋음/탈락 모두 표시.
+    fn apply_cull_verdicts(&mut self, verdicts: Vec<(usize, Verdict)>) {
+        let lang = self.lang;
+        let c = self.cfg.ai_cull.clone();
+        let (mut good, mut bad) = (0usize, 0usize);
+        for (real, v) in verdicts {
+            let Some(it) = self.items.get_mut(real) else { continue };
+            let is_good = matches!(v, Verdict::Good);
+            if is_good {
+                good += 1;
+            } else {
+                bad += 1;
+            }
+            match c.target {
+                AiCullTarget::Label => {
+                    it.entry.label = if is_good { Label::Pick } else { Label::Reject };
+                }
+                AiCullTarget::Stars => {
+                    it.entry.stars = if is_good { c.good_stars.min(5) } else { c.bad_stars.min(5) };
+                }
+                AiCullTarget::Tag => {
+                    it.entry.tag = if is_good { c.good_tag } else { c.bad_tag };
+                }
+            }
+        }
+        self.sidecar_dirty = true;
+        self.toast = Some((
+            trf(lang, "AI 컬링 완료 · 좋음 {} · 탈락 {}", &[&good.to_string(), &bad.to_string()]),
+            Instant::now(),
+        ));
     }
 
     fn ui_jump(&mut self, ctx: &egui::Context) {

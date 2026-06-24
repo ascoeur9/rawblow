@@ -43,6 +43,154 @@ impl Lang {
     }
 }
 
+/// CLIP-IQA 백본 종류(#50). 정확도/속도/크기 절충 — 사용자가 선택.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipIqaBackbone {
+    /// ResNet-50 (~39 MB int8). 가장 빠르고 작다.
+    RN50,
+    /// ViT-B/32 (~89 MB int8). 기본값 — 속도와 정확도 균형.
+    ViTB32,
+    /// ViT-L/14 (~307 MB int8). 가장 정확하나 느리다.
+    ViTL14,
+}
+
+impl Default for ClipIqaBackbone {
+    fn default() -> Self { ClipIqaBackbone::ViTB32 }
+}
+
+impl ClipIqaBackbone {
+    /// 모델 파일명(`clip-iqa-<backbone>.int8.onnx`).
+    pub fn filename(self) -> &'static str {
+        match self {
+            ClipIqaBackbone::RN50   => "clip-iqa-RN50.int8.onnx",
+            ClipIqaBackbone::ViTB32 => "clip-iqa-ViT-B-32.int8.onnx",
+            ClipIqaBackbone::ViTL14 => "clip-iqa-ViT-L-14.int8.onnx",
+        }
+    }
+
+    /// GitHub Releases 다운로드 URL.
+    pub fn download_url(self) -> &'static str {
+        match self {
+            ClipIqaBackbone::RN50   => "https://github.com/ascoeur9/rawblow/releases/download/models-v1/clip-iqa-RN50.int8.onnx",
+            ClipIqaBackbone::ViTB32 => "https://github.com/ascoeur9/rawblow/releases/download/models-v1/clip-iqa-ViT-B-32.int8.onnx",
+            ClipIqaBackbone::ViTL14 => "https://github.com/ascoeur9/rawblow/releases/download/models-v1/clip-iqa-ViT-L-14.int8.onnx",
+        }
+    }
+
+    /// 예상 파일 크기(바이트, 표시용).
+    pub fn expected_bytes(self) -> u64 {
+        match self {
+            ClipIqaBackbone::RN50   => 38_862_297,
+            ClipIqaBackbone::ViTB32 => 88_935_710,
+            ClipIqaBackbone::ViTL14 => 306_927_473,
+        }
+    }
+
+    /// sha256(hex) — 다운로드 후 무결성 검증.
+    pub fn sha256(self) -> &'static str {
+        match self {
+            ClipIqaBackbone::RN50   => "9ed26151a00618d10c912d0198bedff1b831a65b9dde164df72b47f6330c4886",
+            ClipIqaBackbone::ViTB32 => "e23fcc1532944501ec7516f7421127e65fc43c63cb37f934e6706c0f38e4fd96",
+            ClipIqaBackbone::ViTL14 => "020c8f33d52aa38e55c0a6bb9cf07af1f9444118ac403599b139c7bc11820dd2",
+        }
+    }
+
+    /// 표시 이름(UI용).
+    pub fn label(self) -> &'static str {
+        match self {
+            ClipIqaBackbone::RN50   => "RN50  (~39 MB)",
+            ClipIqaBackbone::ViTB32 => "ViT-B/32  (~89 MB)",
+            ClipIqaBackbone::ViTL14 => "ViT-L/14  (~307 MB)",
+        }
+    }
+
+    pub const ALL: [ClipIqaBackbone; 3] = [ClipIqaBackbone::RN50, ClipIqaBackbone::ViTB32, ClipIqaBackbone::ViTL14];
+}
+
+/// AI 컬링 결과를 어느 분류축에 배정할지(#50). 라벨·별점·태그는 서로 독립이므로
+/// 사용자가 수동으로 쓰는 축을 덮어쓰지 않도록 하나만 고른다.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AiCullTarget {
+    /// 좋음 → Pick, 탈락 → Reject.
+    Label,
+    /// 좋음 → `good_stars`★, 탈락 → `bad_stars`★.
+    Stars,
+    /// 좋음 → `good_tag`, 탈락 → `bad_tag`.
+    Tag,
+}
+
+/// AI 컬링(#50) 설정. 어떤 신호로 거를지 + 임계값 + 결과 배정 방식. 영속화된다.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct AiCullConfig {
+    pub use_focus: bool,
+    pub use_exposure: bool,
+    pub use_tilt: bool,
+    /// CLIP-IQA 미적 점수 사용 여부. 모델 미다운로드 시 채점에서 자동 건너뜀.
+    pub use_aesthetic: bool,
+    /// 초점을 AF 측거점 영역에서만 측정(합초점 기준). off면 전체 프레임.
+    pub use_af_focus: bool,
+    pub focus_thresh: f32,
+    pub exposure_min: f32,
+    pub tilt_max_deg: f32,
+    /// P(good) 하한(0..1). 미만이면 탈락. 기본 0.4.
+    pub aesthetic_min: f32,
+    /// 사용할 CLIP-IQA 백본. 기본 ViT-B/32.
+    pub backbone: ClipIqaBackbone,
+    pub target: AiCullTarget,
+    pub good_stars: u8,
+    pub bad_stars: u8,
+    pub good_tag: crate::model::ColorTag,
+    pub bad_tag: crate::model::ColorTag,
+    /// true=전체 항목, false=현재 필터를 통과한 항목만 채점.
+    pub scope_all: bool,
+}
+
+impl Default for AiCullConfig {
+    fn default() -> Self {
+        let d = crate::quality::CullCriteria::default();
+        AiCullConfig {
+            use_focus: d.use_focus,
+            use_exposure: d.use_exposure,
+            use_tilt: d.use_tilt,
+            use_aesthetic: false,
+            use_af_focus: true,
+            focus_thresh: d.focus_thresh,
+            exposure_min: d.exposure_min,
+            tilt_max_deg: d.tilt_max_deg,
+            aesthetic_min: d.aesthetic_min,
+            backbone: ClipIqaBackbone::default(),
+            target: AiCullTarget::Label,
+            good_stars: 5,
+            bad_stars: 1,
+            good_tag: crate::model::ColorTag::Teal,
+            bad_tag: crate::model::ColorTag::Orange,
+            scope_all: true,
+        }
+    }
+}
+
+impl AiCullConfig {
+    /// 코어 채점 기준으로 변환.
+    pub fn criteria(&self) -> crate::quality::CullCriteria {
+        crate::quality::CullCriteria {
+            use_focus: self.use_focus,
+            use_exposure: self.use_exposure,
+            use_tilt: self.use_tilt,
+            use_aesthetic: self.use_aesthetic,
+            focus_thresh: self.focus_thresh,
+            exposure_min: self.exposure_min,
+            tilt_max_deg: self.tilt_max_deg,
+            aesthetic_min: self.aesthetic_min,
+        }
+    }
+
+    /// 켜진 검사가 하나도 없으면 채점 의미 없음.
+    pub fn any_enabled(&self) -> bool {
+        self.use_focus || self.use_exposure || self.use_tilt || self.use_aesthetic
+    }
+}
+
 /// 단축키 맵(핸드오프 기본값). 값은 표시용 키 문자열.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct KeyMap {
@@ -116,6 +264,9 @@ pub struct Config {
     /// `Config::default()`(=true)로 채우게 해야 한다. 필드 레벨을 달면 bool 기본값 false가 되어
     /// 기존 사용자가 '작게'로 켜진다.
     pub large_badges: bool,
+    /// AI 컬링(#50) 설정. 누락 시 기본값.
+    #[serde(default)]
+    pub ai_cull: AiCullConfig,
 }
 
 impl Default for Config {
@@ -137,6 +288,7 @@ impl Default for Config {
             show_map: false,      // GPS 미니 지도(#38). 기본 off.
             show_af: false,       // AF 포인트 오버레이(#37). 기본 off.
             large_badges: true,   // 스트립·그리드 표기 크게가 기본(#44).
+            ai_cull: AiCullConfig::default(), // AI 컬링 기본 설정(#50).
         }
     }
 }
