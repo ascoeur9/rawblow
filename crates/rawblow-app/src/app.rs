@@ -221,6 +221,60 @@ struct CullCacheEntry {
     report: rawblow_core::quality::QualityReport,
 }
 
+/// 디스크 직렬화용 미러(세션 간 재컬링 즉시화). SystemTime은 UNIX epoch 나노초로 저장.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CullCacheDisk {
+    path: String,
+    mtime_nanos: u64,
+    sig: u64,
+    report: rawblow_core::quality::QualityReport,
+}
+
+/// 컬링 캐시 파일 경로(`config_dir/cull-cache.json`).
+fn cull_cache_file() -> PathBuf {
+    config::config_dir().join("cull-cache.json")
+}
+
+/// 디스크에서 캐시 로드(없거나 손상 시 빈 맵 — 안전: 적중은 mtime+sig로만 발생).
+fn load_cull_cache() -> std::collections::HashMap<PathBuf, CullCacheEntry> {
+    load_cull_cache_from(&cull_cache_file())
+}
+
+fn load_cull_cache_from(path: &std::path::Path) -> std::collections::HashMap<PathBuf, CullCacheEntry> {
+    use std::time::{Duration, UNIX_EPOCH};
+    let mut map = std::collections::HashMap::new();
+    let Ok(s) = std::fs::read_to_string(path) else { return map };
+    let Ok(list) = serde_json::from_str::<Vec<CullCacheDisk>>(&s) else { return map };
+    for d in list {
+        map.insert(
+            PathBuf::from(d.path),
+            CullCacheEntry { mtime: UNIX_EPOCH + Duration::from_nanos(d.mtime_nanos), sig: d.sig, report: d.report },
+        );
+    }
+    map
+}
+
+/// 캐시를 디스크에 저장(최대 50k 항목으로 상한 — 파일 크기 ~7MB 이하 유지).
+fn save_cull_cache(map: &std::collections::HashMap<PathBuf, CullCacheEntry>) {
+    let _ = std::fs::create_dir_all(config::config_dir());
+    save_cull_cache_to(&cull_cache_file(), map);
+}
+
+fn save_cull_cache_to(path: &std::path::Path, map: &std::collections::HashMap<PathBuf, CullCacheEntry>) {
+    use std::time::UNIX_EPOCH;
+    let mut list: Vec<CullCacheDisk> = map
+        .iter()
+        .filter_map(|(p, e)| {
+            let nanos = e.mtime.duration_since(UNIX_EPOCH).ok()?.as_nanos() as u64;
+            Some(CullCacheDisk { path: p.to_string_lossy().into_owned(), mtime_nanos: nanos, sig: e.sig, report: e.report })
+        })
+        .collect();
+    list.truncate(50_000);
+    if let Ok(s) = serde_json::to_string(&list) {
+        let _ = std::fs::write(path, s);
+    }
+}
+
 /// CLIP-IQA 모델 자동 다운로드(#50) 진행 메시지.
 #[cfg(feature = "model-download")]
 enum ModelDlMsg {
@@ -452,7 +506,7 @@ impl RawBlowApp {
             ai_cull: None,
             ai_cull_cancel_confirm: false,
             ai_cull_folder_confirm: None,
-            cull_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            cull_cache: Arc::new(std::sync::Mutex::new(load_cull_cache())),
             #[cfg(feature = "model-download")]
             model_dl: None,
             progress: None,
@@ -510,10 +564,8 @@ impl RawBlowApp {
             }
             self.sidecar_dirty = false;
         }
-        // 폴더가 바뀌면 컬링 결과 캐시는 무의미(다른 파일) → 비워 메모리 회수.
-        if let Ok(mut c) = self.cull_cache.lock() {
-            c.clear();
-        }
+        // 컬링 캐시는 절대 경로+mtime+설정 서명으로 키잉되므로 폴더가 바뀌어도 안전(다른 파일은
+        // 절대 적중 안 함). 비우지 않고 유지 → 이전에 컬링한 폴더로 돌아와 재컬링해도 즉시(세션·재시작 무관).
         let entries = scan::scan_folder(&folder, self.cfg.recursive, self.sort);
         let mut items: Vec<Item> = entries
             .into_iter()
@@ -4198,6 +4250,10 @@ impl RawBlowApp {
             if job.generation == self.generation {
                 let hits = job.cache_hits.load(Ordering::Relaxed);
                 self.apply_cull_verdicts(v, hits);
+                // 갱신된 캐시를 디스크에 저장(다음 세션에서도 재컬링 즉시화).
+                if let Ok(c) = self.cull_cache.lock() {
+                    save_cull_cache(&c);
+                }
             } else {
                 self.toast = Some((
                     tr(self.lang, "폴더가 바뀌어 AI 컬링 결과를 버렸습니다").into(),
@@ -5419,6 +5475,42 @@ fn reveal_in_file_manager(path: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::{format_capture_datetime, hex_str, newer_version, parse_hex_rgb, parse_semver};
+    use super::{load_cull_cache_from, save_cull_cache_to, CullCacheEntry};
+
+    #[test]
+    fn cull_cache_disk_round_trips() {
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+        use std::time::{Duration, UNIX_EPOCH};
+        let dir = std::env::temp_dir().join(format!("rb_cull_cache_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("cull-cache.json");
+
+        let mut report = rawblow_core::quality::QualityReport {
+            exposure: rawblow_core::quality::ExposureReport { mean: 0.5, highlight_clip: 0.0, shadow_clip: 0.0, dynamic_range: 0.8, score: 0.9 },
+            focus: rawblow_core::quality::FocusReport { sharpness: 0.7, acutance: 12.0, in_focus: true },
+            tilt: rawblow_core::quality::TiltReport { degrees: 1.5, confidence: 0.6 },
+            aesthetic: Some(0.42),
+        };
+        let mtime = UNIX_EPOCH + Duration::from_nanos(1_700_000_000_123_456_789);
+        let mut map = HashMap::new();
+        map.insert(PathBuf::from("/photos/IMG_0001.CR2"), CullCacheEntry { mtime, sig: 0xABCD, report });
+
+        save_cull_cache_to(&file, &map);
+        let loaded = load_cull_cache_from(&file);
+        let e = loaded.get(&PathBuf::from("/photos/IMG_0001.CR2")).expect("entry survives round-trip");
+        assert_eq!(e.sig, 0xABCD);
+        assert_eq!(e.mtime, mtime, "mtime 나노초 왕복 보존");
+        assert_eq!(e.report.aesthetic, Some(0.42));
+        assert_eq!(e.report.focus.sharpness, 0.7);
+
+        // 손상/부재 파일 → 빈 맵(안전 폴백).
+        report.aesthetic = None; // (사용 안 함, 경고 회피)
+        let _ = report;
+        let missing = load_cull_cache_from(&dir.join("nope.json"));
+        assert!(missing.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn capture_datetime_uses_dots_for_date_keeps_colons_for_time() {
