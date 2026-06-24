@@ -421,7 +421,7 @@ impl CullCriteria {
             && q.tilt.confidence >= TILT_MIN_CONFIDENCE
             && q.tilt.degrees.abs() > self.tilt_max_deg;
         let aesthetic_fail = self.use_aesthetic
-            && q.aesthetic.map_or(false, |a| a < self.aesthetic_min);
+            && q.aesthetic.is_some_and(|a| a < self.aesthetic_min);
         if focus_fail || expo_fail || tilt_fail || aesthetic_fail {
             Verdict::Bad
         } else {
