@@ -20,7 +20,7 @@ use rawblow_core::{
     ViewMode,
 };
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -186,22 +186,22 @@ struct ProgressJob {
     dest: Option<PathBuf>,
 }
 
-/// AI 컬링(#50) 백그라운드 채점에서 메인 스레드로 보내는 메시지.
+/// AI 컬링(#50) 백그라운드 채점 완료 메시지. 진행률은 공유 원자 카운터(`AiCullJob::progress`)로
+/// 전달하므로(워커가 여러 개라 메시지 순서가 뒤섞이지 않게), 채널은 최종 결과만 보낸다.
 enum AiCullMsg {
-    /// (완료 개수, 전체 개수).
-    Progress(usize, usize),
     /// 채점 완료. (원본 items 인덱스, CV 판정, CLIP-IQA P(good)) 목록.
     Done(Vec<(usize, rawblow_core::quality::Verdict, Option<f32>)>),
 }
 
-/// 진행 중인 AI 컬링 채점(#50). 전송/정리와 같은 패턴 — 별도 스레드에서 디코딩+채점하고
-/// 진행 상황을 채널로 받는다. 배정 방식은 완료 시 `cfg.ai_cull`을 읽어 적용한다.
+/// 진행 중인 AI 컬링 채점(#50). 워커 풀(여러 스레드)이 디코딩+채점을 병렬로 수행하고,
+/// 코디네이터 스레드가 전원 합류 후 결과를 한 번에 보낸다. 진행 개수는 `progress` 원자로 읽는다.
 /// 백그라운드 비차단 실행: 채점 중에도 앱은 조작 가능하되, 결과가 덮어쓸 분류축(`target`)은
 /// 잠그고, 폴더가 바뀌면(`generation` 불일치) 어긋난 인덱스의 결과를 폐기한다.
 struct AiCullJob {
     rx: crossbeam_channel::Receiver<AiCullMsg>,
     cancel: Arc<AtomicBool>,
-    done: usize,
+    /// 완료한 이미지 수(워커들이 fetch_add로 증가, 메인이 매 프레임 읽어 프로그레스바에 표시).
+    progress: Arc<std::sync::atomic::AtomicUsize>,
     total: usize,
     /// 작업 시작 시점의 폴더 세대. 완료 시 현재 세대와 다르면 인덱스가 무효 → 결과 폐기.
     generation: u64,
@@ -2009,7 +2009,7 @@ impl RawBlowApp {
                     // 일반 '정리'와 구분. 항목이 있을 때만 활성. 진행 중에는 버튼이 프로그레스바로 바뀌고
                     // 클릭하면 취소 확인창을 띄운다.
                     ui.add_space(8.0);
-                    let cull_progress = self.ai_cull.as_ref().map(|j| (j.done, j.total));
+                    let cull_progress = self.ai_cull.as_ref().map(|j| (j.progress.load(Ordering::Relaxed), j.total));
                     if let Some((done, total)) = cull_progress {
                         // 진행 중: 프로그레스바 + "AI 분석 nn%" — 클릭 시 취소 확인.
                         let (ai_rect, ai_resp) = ui.allocate_exact_size(
@@ -3864,13 +3864,26 @@ impl RawBlowApp {
         }
     }
 
-    /// AI 컬링 채점을 백그라운드 스레드에서 시작(#50). 각 항목을 작은 해상도로 디코딩해
-    /// 노출·초점·기울기를 채점하고, AF 옵션이 켜져 있으면 합초 측거점 영역에서 선명도를 잰다.
-    /// `ai` 기능+모델 파일이 있으면 CLIP-IQA 미적 점수도 함께 낸다.
+    /// 모델 복사본이 차지할 메모리(~2GB 예산)와 논리 코어 수로 워커 풀 크기를 정한다.
+    /// 각 워커는 자기 ONNX 세션(intra=1)을 들고 디코딩+채점을 병렬 수행한다.
+    fn cull_worker_count(model_bytes: Option<u64>) -> usize {
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let cap = match model_bytes {
+            Some(sz) if sz > 0 => (2_000_000_000u64 / sz).max(1) as usize,
+            _ => usize::MAX, // CV 전용(모델 없음)은 메모리 부담 작음 → 코어 수만 제한.
+        };
+        cores.min(cap).clamp(1, 12)
+    }
+
+    /// AI 컬링 채점을 백그라운드 **워커 풀**에서 시작(#50). 각 항목을 작은 해상도로 디코딩해
+    /// 노출·초점·기울기를 채점하고(AF 옵션 시 합초 측거점 영역), `ai`+모델이 있으면 CLIP-IQA
+    /// 미적 점수도 낸다. 워커마다 자기 세션(intra=1)을 써서 코어를 꽉 채우는 게 최고 처리량
+    /// (M1 Max 실측: ViT-B/32 55→190 img/s, ViT-L/14 5.6→12.5 img/s). 진행률은 원자 카운터로.
     fn start_ai_cull(&mut self) {
         let cfg = self.cfg.ai_cull.clone();
         let mut criteria = cfg.criteria();
         let use_af = cfg.use_af_focus && cfg.use_focus;
+        let top_n = cfg.top_n;
         let targets: Vec<(usize, PathBuf)> = if cfg.scope_all {
             self.items.iter().enumerate().map(|(i, it)| (i, it.entry.display.clone())).collect()
         } else {
@@ -3878,94 +3891,124 @@ impl RawBlowApp {
         };
         let total = targets.len();
 
-        // 미적 모델 로드 시도(ai 피처 + 파일 존재 시).
+        // 미적 모델: 파일이 있으면 워커마다 자기 세션을 로드(CPU intra=1). 파일 크기로 워커 수 상한.
         #[cfg(feature = "ai")]
-        let aesthetic_model: Option<std::sync::Arc<rawblow_core::quality::AestheticModel>> = {
-            if cfg.use_aesthetic {
-                let path = Self::model_path(cfg.backbone);
-                rawblow_core::quality::AestheticModel::load(&path)
-                    .ok()
-                    .map(std::sync::Arc::new)
-            } else {
-                None
-            }
-        };
+        let model_path: Option<PathBuf> =
+            if cfg.use_aesthetic && Self::model_present(cfg.backbone) { Some(Self::model_path(cfg.backbone)) } else { None };
         #[cfg(not(feature = "ai"))]
-        let aesthetic_model: Option<()> = None;
+        let model_path: Option<PathBuf> = None;
 
-        // 모델 로드 실패 시 미적 판정 기준 꺼 둠(오판 방지).
-        if aesthetic_model.is_none() {
+        // 모델 파일이 없으면 미적 판정을 꺼 둔다(오판 방지).
+        if model_path.is_none() {
             criteria.use_aesthetic = false;
         }
+        let model_bytes = model_path.as_ref().and_then(|p| std::fs::metadata(p).ok().map(|m| m.len()));
+        let n_workers = Self::cull_worker_count(model_bytes).min(total.max(1));
 
-        let (tx, rx) = crossbeam_channel::unbounded::<AiCullMsg>();
+        let (tx, rx) = crossbeam_channel::bounded::<AiCullMsg>(1);
         let cancel = Arc::new(AtomicBool::new(false));
-        let top_n = cfg.top_n;
-        let cancel_t = cancel.clone();
-        std::thread::spawn(move || {
-            let mut out: Vec<(usize, Verdict, Option<f32>)> = Vec::with_capacity(total);
-            for (n, (real, path)) in targets.into_iter().enumerate() {
-                if cancel_t.load(Ordering::Relaxed) {
-                    break;
-                }
-                // 디코더·파서 패닉(손상 파일)에도 스레드가 죽지 않게 격리. 실패 항목은 건너뛴다.
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let img = rawblow_core::decode::decode_file(
-                        &path,
-                        rawblow_core::decode::DecodeOptions { full_raw: false, max_edge: Some(AI_CULL_EDGE) },
+        let progress = Arc::new(AtomicUsize::new(0));
+        let next = Arc::new(AtomicUsize::new(0));
+        let results = std::sync::Arc::new(std::sync::Mutex::new(
+            Vec::<(usize, Verdict, Option<f32>)>::with_capacity(total),
+        ));
+        let targets = std::sync::Arc::new(targets);
+
+        let mut handles = Vec::with_capacity(n_workers);
+        for _ in 0..n_workers {
+            let targets = targets.clone();
+            let next = next.clone();
+            let progress = progress.clone();
+            let cancel_w = cancel.clone();
+            let results = results.clone();
+            #[cfg(feature = "ai")]
+            let model_path = model_path.clone();
+            handles.push(std::thread::spawn(move || {
+                // 워커 전용 세션(intra=1). 로드 실패 시 CV-only로 폴백(aesthetic=None).
+                #[cfg(feature = "ai")]
+                let model = model_path.as_ref().and_then(|p| {
+                    rawblow_core::quality::AestheticModel::load_tuned(
+                        p,
+                        rawblow_core::quality::Accel::Cpu,
+                        Some(1),
                     )
-                    .ok()?;
-                    let mut q = rawblow_core::quality::analyze(&img);
-                    if use_af {
-                        if let Some(af) = rawblow_core::af::parse_af(&path) {
-                            let orient = rawblow_core::meta::orientation(&path);
-                            let regions: Vec<(f32, f32, f32, f32)> = af
-                                .points
-                                .iter()
-                                .filter(|p| p.in_focus)
-                                .map(|p| {
-                                    let (cx, cy, w, h) = af_display_coords(p, orient);
-                                    (cx as f32, cy as f32, w as f32, h as f32)
-                                })
-                                .collect();
-                            if !regions.is_empty() {
-                                q.focus = rawblow_core::quality::focus_report_regions(&img, &regions);
+                    .ok()
+                });
+                loop {
+                    if cancel_w.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let idx = next.fetch_add(1, Ordering::Relaxed);
+                    if idx >= targets.len() {
+                        break;
+                    }
+                    let (real, path) = &targets[idx];
+                    // 디코더·파서 패닉(손상 파일)에도 워커가 죽지 않게 격리. 실패 항목은 건너뛴다.
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let img = rawblow_core::decode::decode_file(
+                            path,
+                            rawblow_core::decode::DecodeOptions { full_raw: false, max_edge: Some(AI_CULL_EDGE) },
+                        )
+                        .ok()?;
+                        let mut q = rawblow_core::quality::analyze(&img);
+                        if use_af {
+                            if let Some(af) = rawblow_core::af::parse_af(path) {
+                                let orient = rawblow_core::meta::orientation(path);
+                                let regions: Vec<(f32, f32, f32, f32)> = af
+                                    .points
+                                    .iter()
+                                    .filter(|p| p.in_focus)
+                                    .map(|p| {
+                                        let (cx, cy, w, h) = af_display_coords(p, orient);
+                                        (cx as f32, cy as f32, w as f32, h as f32)
+                                    })
+                                    .collect();
+                                if !regions.is_empty() {
+                                    q.focus = rawblow_core::quality::focus_report_regions(&img, &regions);
+                                }
                             }
                         }
-                    }
-                    // CV 판정 먼저. threshold 모드에서 CV 실패면 CLIP-IQA 건너뜀(속도 최적화).
-                    let mut criteria_no_aesthetic = criteria;
-                    criteria_no_aesthetic.use_aesthetic = false;
-                    let cv_verdict = criteria_no_aesthetic.verdict(&q);
-                    // CLIP-IQA: top_n 모드는 전체 채점, threshold 모드는 CV 통과자만.
-                    #[cfg(feature = "ai")]
-                    let aesthetic_score: Option<f32> = if let Some(ref model) = aesthetic_model {
-                        if top_n > 0 || matches!(cv_verdict, Verdict::Good) {
-                            model.score(&img).ok()
-                        } else {
-                            None // CV 탈락 + threshold 모드 → 건너뜀
+                        // CV 판정 먼저. threshold 모드에서 CV 실패면 CLIP-IQA 건너뜀(속도 최적화).
+                        let mut cv_only = criteria;
+                        cv_only.use_aesthetic = false;
+                        let cv_verdict = cv_only.verdict(&q);
+                        #[cfg(feature = "ai")]
+                        let aesthetic_score: Option<f32> = match model.as_ref() {
+                            Some(m) if top_n > 0 || matches!(cv_verdict, Verdict::Good) => m.score(&img).ok(),
+                            _ => None,
+                        };
+                        #[cfg(not(feature = "ai"))]
+                        let aesthetic_score: Option<f32> = None;
+                        Some((cv_verdict, aesthetic_score))
+                    }))
+                    .ok()
+                    .flatten();
+                    if let Some((cv_v, aes)) = result {
+                        if let Ok(mut g) = results.lock() {
+                            g.push((*real, cv_v, aes));
                         }
-                    } else {
-                        None
-                    };
-                    #[cfg(not(feature = "ai"))]
-                    let aesthetic_score: Option<f32> = None;
-                    Some((cv_verdict, aesthetic_score))
-                }))
-                .ok()
-                .flatten();
-                if let Some((cv_v, aes)) = result {
-                    out.push((real, cv_v, aes));
+                    }
+                    progress.fetch_add(1, Ordering::Relaxed);
                 }
-                let _ = tx.send(AiCullMsg::Progress(n + 1, total));
+            }));
+        }
+
+        // 코디네이터: 워커 전원 합류 후 결과를 한 번에 전송.
+        std::thread::spawn(move || {
+            for h in handles {
+                let _ = h.join();
             }
+            let out = match std::sync::Arc::try_unwrap(results) {
+                Ok(m) => m.into_inner().unwrap_or_default(),
+                Err(arc) => arc.lock().map(|g| g.clone()).unwrap_or_default(),
+            };
             let _ = tx.send(AiCullMsg::Done(out));
         });
 
         self.ai_cull = Some(AiCullJob {
             rx,
             cancel,
-            done: 0,
+            progress,
             total,
             generation: self.generation,
             target: cfg.target,
@@ -3975,26 +4018,14 @@ impl RawBlowApp {
     /// 진행 중인 컬링의 진행률을 펌프하고(매 프레임, 비차단) 완료 시 결과를 적용한다(#50).
     /// 폴더가 바뀌었으면(generation 불일치) 인덱스가 무효이므로 결과를 폐기한다.
     fn pump_ai_cull(&mut self, ctx: &egui::Context) {
-        let Some(mut job) = self.ai_cull.take() else { return };
+        let Some(job) = self.ai_cull.take() else { return };
 
         let mut done_results: Option<Vec<(usize, Verdict, Option<f32>)>> = None;
         let mut disconnected = false;
-        loop {
-            match job.rx.try_recv() {
-                Ok(AiCullMsg::Progress(d, t)) => {
-                    job.done = d;
-                    job.total = t;
-                }
-                Ok(AiCullMsg::Done(v)) => {
-                    done_results = Some(v);
-                    break;
-                }
-                Err(crossbeam_channel::TryRecvError::Empty) => break,
-                Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    disconnected = true;
-                    break;
-                }
-            }
+        match job.rx.try_recv() {
+            Ok(AiCullMsg::Done(v)) => done_results = Some(v),
+            Err(crossbeam_channel::TryRecvError::Empty) => {}
+            Err(crossbeam_channel::TryRecvError::Disconnected) => disconnected = true,
         }
 
         if let Some(v) = done_results {
@@ -4038,7 +4069,7 @@ impl RawBlowApp {
             self.ai_cull_cancel_confirm = false;
             return;
         }
-        let (done, total) = self.ai_cull.as_ref().map(|j| (j.done, j.total)).unwrap_or((0, 0));
+        let (done, total) = self.ai_cull.as_ref().map(|j| (j.progress.load(Ordering::Relaxed), j.total)).unwrap_or((0, 0));
         let mut keep = false; // 계속 진행(닫기)
         let mut stop = false; // 컬링 취소
 
