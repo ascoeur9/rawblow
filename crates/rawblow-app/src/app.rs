@@ -202,6 +202,8 @@ struct AiCullJob {
     cancel: Arc<AtomicBool>,
     /// 완료한 이미지 수(워커들이 fetch_add로 증가, 메인이 매 프레임 읽어 프로그레스바에 표시).
     progress: Arc<std::sync::atomic::AtomicUsize>,
+    /// 캐시에서 재사용한 장 수(디코드/추론 생략). 완료 토스트에 표시 — 캐시 동작 확인용.
+    cache_hits: Arc<AtomicUsize>,
     total: usize,
     /// 작업 시작 시점의 폴더 세대. 완료 시 현재 세대와 다르면 인덱스가 무효 → 결과 폐기.
     generation: u64,
@@ -4026,6 +4028,7 @@ impl RawBlowApp {
             h.finish()
         };
         let cache = self.cull_cache.clone();
+        let cache_hits = Arc::new(AtomicUsize::new(0));
 
         let mut handles = Vec::with_capacity(n_workers);
         for _ in 0..n_workers {
@@ -4035,6 +4038,7 @@ impl RawBlowApp {
             let cancel_w = cancel.clone();
             let results = results.clone();
             let cache = cache.clone();
+            let cache_hits = cache_hits.clone();
             #[cfg(feature = "ai")]
             let model_path = model_path.clone();
             #[cfg(feature = "ai")]
@@ -4087,6 +4091,7 @@ impl RawBlowApp {
                             if let Ok(mut g) = results.lock() {
                                 g.push((*real, cv, report.aesthetic));
                             }
+                            cache_hits.fetch_add(1, Ordering::Relaxed);
                             progress.fetch_add(1, Ordering::Relaxed);
                             continue;
                         }
@@ -4166,6 +4171,7 @@ impl RawBlowApp {
             rx,
             cancel,
             progress,
+            cache_hits,
             total,
             generation: self.generation,
             target: cfg.target,
@@ -4190,7 +4196,8 @@ impl RawBlowApp {
             self.ai_cull_cancel_confirm = false;
             // 폴더가 바뀌면 캡처한 real 인덱스가 다른 사진을 가리킨다 → 결과 폐기(오염 방지).
             if job.generation == self.generation {
-                self.apply_cull_verdicts(v);
+                let hits = job.cache_hits.load(Ordering::Relaxed);
+                self.apply_cull_verdicts(v, hits);
             } else {
                 self.toast = Some((
                     tr(self.lang, "폴더가 바뀌어 AI 컬링 결과를 버렸습니다").into(),
@@ -4339,7 +4346,8 @@ impl RawBlowApp {
     }
 
     /// AI 컬링 판정을 선택한 분류축에 적용(#50). "양쪽 다 표시" — 좋음/탈락 모두 표시.
-    fn apply_cull_verdicts(&mut self, mut results: Vec<(usize, Verdict, Option<f32>)>) {
+    /// `cache_hits`: 캐시에서 재사용해 디코드/추론을 건너뛴 장 수(토스트 표시).
+    fn apply_cull_verdicts(&mut self, mut results: Vec<(usize, Verdict, Option<f32>)>, cache_hits: usize) {
         let lang = self.lang;
         let c = self.cfg.ai_cull.clone();
 
@@ -4374,11 +4382,17 @@ impl RawBlowApp {
             }
         }
         self.sidecar_dirty = true;
+        let cache_info = if cache_hits > 0 {
+            format!(" · 캐시 {}장", cache_hits)
+        } else {
+            String::new()
+        };
         self.toast = Some((
             format!(
-                "{}{}",
+                "{}{}{}",
                 trf(lang, "AI 컬링 완료 · 좋음 {} · 탈락 {}", &[&good.to_string(), &bad.to_string()]),
-                score_info
+                score_info,
+                cache_info
             ),
             Instant::now(),
         ));
