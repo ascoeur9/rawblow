@@ -16,9 +16,19 @@ walkdir = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 qcms = { version = "0.3", optional = true }
 imagepipe = { version = "0.5", optional = true }
-# AI 미적 점수(#50, 선택). ONNX Runtime. 기본 CPU(download-binaries로 플랫폼별 prebuilt 자동).
-# GPU 가속(CoreML/DirectML/CUDA)은 ort의 해당 EP 기능을 추가로 켜서 활성화.
+# AI 미적 점수(#50, 선택). ONNX Runtime. download-binaries로 플랫폼별 prebuilt 자동 다운로드.
+# GPU 가속은 OS별 분기(아래 target 의존성): macOS=CoreML(`none` prebuilt에 포함),
+# Windows=WebGPU(`wgpu` prebuilt). Linux는 CPU. EP 등록 실패는 비치명적 → CPU 폴백.
 ort = { version = "=2.0.0-rc.12", features = ["download-binaries"], optional = true }
+
+# GPU EP는 OS별 분기. 같은 optional `ort`에 feature를 합집합으로 더한다(ai 피처가 dep:ort를 켤 때 함께 활성).
+# macOS: CoreML(Apple GPU+ANE). `coreml`은 prebuilt 변형을 바꾸지 않아 `none` 빌드(=CoreML 포함)를 받는다.
+[target.'cfg(target_os = "macos")'.dependencies]
+ort = { version = "=2.0.0-rc.12", features = ["coreml"], optional = true }
+
+# Windows: WebGPU(D3D12/Vulkan — 모든 GPU). `webgpu`는 `wgpu` prebuilt 변형을 받는다.
+[target.'cfg(target_os = "windows")'.dependencies]
+ort = { version = "=2.0.0-rc.12", features = ["webgpu"], optional = true }
 
 [features]
 default = ["color", "fullraw"]

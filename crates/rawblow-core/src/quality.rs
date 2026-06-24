@@ -419,7 +419,7 @@ impl CullCriteria {
 
 // ───────────────────────── 선택 기능: CLIP-IQA 미적 점수 ─────────────────────────
 #[cfg(feature = "ai")]
-pub use ai::AestheticModel;
+pub use ai::{Accel, AestheticModel};
 
 #[cfg(feature = "ai")]
 mod ai {
@@ -434,6 +434,16 @@ mod ai {
     const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
     const STD: [f32; 3] = [0.229, 0.224, 0.225];
 
+    /// 추론 가속기 선택. **벤치 결과 CLIP 계열 모델은 CPU(int8) 병렬이 CoreML/WebGPU보다
+    /// 빠르고 안정적**(GPU EP가 트랜스포머 그래프를 잘게 분할해 데이터 왕복 오버헤드가 큼)이라
+    /// `Auto`=CPU가 기본이다. `Gpu`는 실험·향후 모델용(macOS=CoreML, Windows=WebGPU).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Accel {
+        Auto,
+        Cpu,
+        Gpu,
+    }
+
     /// CLIP-IQA(ONNX) 미적 점수 모델. 내부 Mutex로 스레드 안전(워커 여러 개가 공유 가능).
     /// 입력: (N,3,224,224) CHW f32 CLIP 정규화. 출력: (N,2) softmax [P(good), P(bad)].
     pub struct AestheticModel {
@@ -441,10 +451,49 @@ mod ai {
     }
 
     impl AestheticModel {
-        /// `.onnx` 파일에서 모델을 로드한다. CPU 기본.
+        /// `.onnx` 파일에서 모델을 로드한다(CPU 기본 — 벤치상 가장 빠름).
         pub fn load(path: &Path) -> Result<Self, String> {
-            let session = Session::builder()
-                .map_err(|e| format!("ort builder: {e}"))?
+            Self::load_tuned(path, Accel::Auto, None)
+        }
+
+        /// 가속기를 명시해 로드(intra-op 스레드는 ort 기본).
+        pub fn load_with(path: &Path, accel: Accel) -> Result<Self, String> {
+            Self::load_tuned(path, accel, None)
+        }
+
+        /// 가속기 + 세션당 intra-op 스레드 수를 명시해 로드. 병렬 워커 풀에서는 `intra=Some(1)`로
+        /// 두고 워커 수로 코어를 채우는 편이 (세션 내부 스레드와의 경합이 없어) 처리량이 가장 높다.
+        /// GPU EP 등록이 실패해도(미지원 빌드) CPU로 폴백한다.
+        #[allow(unused_mut)]
+        pub fn load_tuned(path: &Path, accel: Accel, intra: Option<usize>) -> Result<Self, String> {
+            let mut builder = Session::builder().map_err(|e| format!("ort builder: {e}"))?;
+            // 인자 > 환경변수(RB_INTRA, 벤치용) 순으로 intra-op 스레드 수를 정한다.
+            let intra = intra.or_else(|| std::env::var("RB_INTRA").ok().and_then(|s| s.parse().ok()));
+            if let Some(n) = intra {
+                builder = builder.with_intra_threads(n).map_err(|e| format!("ort intra: {e}"))?;
+            }
+            if matches!(accel, Accel::Gpu) {
+                #[cfg(target_os = "macos")]
+                {
+                    // 벤치용: RB_GPU_EP=webgpu로 WebGPU, 기본은 CoreML.
+                    if std::env::var("RB_GPU_EP").as_deref() == Ok("webgpu") {
+                        builder = builder
+                            .with_execution_providers([ort::ep::WebGPU::default().build()])
+                            .map_err(|e| format!("ort webgpu ep: {e}"))?;
+                    } else {
+                        builder = builder
+                            .with_execution_providers([ort::ep::CoreML::default().build()])
+                            .map_err(|e| format!("ort coreml ep: {e}"))?;
+                    }
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    builder = builder
+                        .with_execution_providers([ort::ep::WebGPU::default().build()])
+                        .map_err(|e| format!("ort webgpu ep: {e}"))?;
+                }
+            }
+            let session = builder
                 .commit_from_file(path)
                 .map_err(|e| format!("ort load {}: {e}", path.display()))?;
             Ok(Self { session: Mutex::new(session) })
