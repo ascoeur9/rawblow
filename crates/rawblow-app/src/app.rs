@@ -196,11 +196,17 @@ enum AiCullMsg {
 
 /// 진행 중인 AI 컬링 채점(#50). 전송/정리와 같은 패턴 — 별도 스레드에서 디코딩+채점하고
 /// 진행 상황을 채널로 받는다. 배정 방식은 완료 시 `cfg.ai_cull`을 읽어 적용한다.
+/// 백그라운드 비차단 실행: 채점 중에도 앱은 조작 가능하되, 결과가 덮어쓸 분류축(`target`)은
+/// 잠그고, 폴더가 바뀌면(`generation` 불일치) 어긋난 인덱스의 결과를 폐기한다.
 struct AiCullJob {
     rx: crossbeam_channel::Receiver<AiCullMsg>,
     cancel: Arc<AtomicBool>,
     done: usize,
     total: usize,
+    /// 작업 시작 시점의 폴더 세대. 완료 시 현재 세대와 다르면 인덱스가 무효 → 결과 폐기.
+    generation: u64,
+    /// 이 작업이 결과를 배정할 분류축. 채점 중 이 축의 수동 편집을 막는다.
+    target: AiCullTarget,
 }
 
 /// CLIP-IQA 모델 자동 다운로드(#50) 진행 메시지.
@@ -282,6 +288,10 @@ pub struct RawBlowApp {
     // AI 컬링(#50): 설정 다이얼로그 표시 여부 + 진행 중인 채점 작업.
     ai_cull_open: bool,
     ai_cull: Option<AiCullJob>,
+    // 진행 중 컬링 버튼(프로그레스바) 재클릭 시 뜨는 취소 확인 모달.
+    ai_cull_cancel_confirm: bool,
+    // 컬링 중 폴더를 바꾸려 할 때 뜨는 확인 모달(예 누르면 컬링 취소 후 이 폴더를 연다).
+    ai_cull_folder_confirm: Option<PathBuf>,
     // CLIP-IQA 모델 다운로드 진행.
     #[cfg(feature = "model-download")]
     model_dl: Option<ModelDlJob>,
@@ -424,6 +434,8 @@ impl RawBlowApp {
             organize: None,
             ai_cull_open: false,
             ai_cull: None,
+            ai_cull_cancel_confirm: false,
+            ai_cull_folder_confirm: None,
             #[cfg(feature = "model-download")]
             model_dl: None,
             progress: None,
@@ -863,7 +875,29 @@ impl RawBlowApp {
         }
     }
 
+    /// 진행 중인 컬링이 결과를 배정할 분류축(잠긴 축). 그 축의 수동 편집을 막는다(#50).
+    fn cull_locked_target(&self) -> Option<AiCullTarget> {
+        self.ai_cull.as_ref().map(|j| j.target)
+    }
+
+    /// 잠긴 축 편집 시도 시 토스트로 안내. true면 호출부가 편집을 건너뛴다.
+    fn cull_axis_locked(&mut self, axis: AiCullTarget) -> bool {
+        if self.cull_locked_target() == Some(axis) {
+            let msg = match axis {
+                AiCullTarget::Label => tr(self.lang, "AI 컬링 중 — 선택(라벨)이 잠겨 있습니다"),
+                AiCullTarget::Stars => tr(self.lang, "AI 컬링 중 — 별점이 잠겨 있습니다"),
+                AiCullTarget::Tag => tr(self.lang, "AI 컬링 중 — 색 태그가 잠겨 있습니다"),
+            };
+            self.toast = Some((msg.into(), Instant::now()));
+            return true;
+        }
+        false
+    }
+
     fn set_label(&mut self, label: Label) {
+        if self.cull_axis_locked(AiCullTarget::Label) {
+            return;
+        }
         // 그리드에서 다중 선택 중이면 선택한 항목 전부에 일괄 적용(토글·자동진행 없음).
         if self.view == ViewMode::Grid && !self.selected.is_empty() {
             let targets: Vec<usize> = self.selected.iter().copied().collect();
@@ -895,6 +929,9 @@ impl RawBlowApp {
     /// 0은 별점 해제(Backtick). 같은 별점 재입력 시 0으로 토글(라벨 토글과 동일한 감각).
     /// `allow_advance`: 키보드 입력은 auto_advance를 따르고(true), 레일 마우스 클릭은 넘기지 않는다(false).
     fn set_stars(&mut self, stars: u8, allow_advance: bool) {
+        if self.cull_axis_locked(AiCullTarget::Stars) {
+            return;
+        }
         let stars = stars.min(5);
         // 그리드 다중 선택 → 선택 전부에 그대로 적용(토글·자동진행 없음).
         if self.view == ViewMode::Grid && !self.selected.is_empty() {
@@ -930,6 +967,9 @@ impl RawBlowApp {
     /// 컬러 태그(#27) 설정. 라벨·별점과 독립. 그리드 다중 선택 중이면 선택 전부에 일괄 적용.
     /// 같은 태그 재입력 시 무태그(None)로 토글. 보조 축이라 자동진행은 하지 않는다.
     fn set_tag(&mut self, tag: ColorTag) {
+        if self.cull_axis_locked(AiCullTarget::Tag) {
+            return;
+        }
         if self.view == ViewMode::Grid && !self.selected.is_empty() {
             let targets: Vec<usize> = self.selected.iter().copied().collect();
             for real in targets {
@@ -1101,6 +1141,10 @@ impl eframe::App for RawBlowApp {
 
         self.drain_results(ctx);
 
+        // AI 컬링(#50)은 백그라운드 비차단 — 모달과 무관하게 매 프레임 진행률을 펌프하고
+        // 완료 시 결과를 적용한다(좌측 레일 버튼이 프로그레스바로 표시).
+        self.pump_ai_cull(ctx);
+
         // 탐색기/Finder에서 폴더(또는 파일)를 창에 끌어다 놓으면 그 폴더를 연다(#42).
         self.handle_drops(ctx);
 
@@ -1171,8 +1215,6 @@ impl eframe::App for RawBlowApp {
         // 모달. 진행 중 작업(전송/정리)이 있으면 그 프로그레스바가 최우선 — 다른 모달을 가린다.
         if self.progress.is_some() {
             self.ui_progress(ctx);
-        } else if self.ai_cull.is_some() {
-            self.ui_ai_cull_progress(ctx);
         } else if {
             #[cfg(feature = "model-download")]
             { self.model_dl.is_some() }
@@ -1187,6 +1229,11 @@ impl eframe::App for RawBlowApp {
             self.ui_organize_dialog(ctx);
         } else if self.ai_cull_open {
             self.ui_ai_cull_dialog(ctx);
+        } else if self.ai_cull_cancel_confirm {
+            // AI 컬링 확인 모달은 같은 else-if 사슬에 둬 서로/다른 모달과 동시에 그려지지 않게 한다.
+            self.ui_ai_cull_cancel_confirm(ctx);
+        } else if self.ai_cull_folder_confirm.is_some() {
+            self.ui_ai_cull_folder_confirm(ctx);
         }
         if self.result.is_some() {
             self.ui_transfer_result(ctx);
@@ -1225,7 +1272,10 @@ impl RawBlowApp {
             || self.show_settings
             || self.licenses.is_some()
             || self.ai_cull_open
-            || self.ai_cull.is_some()
+            // 진행 중 컬링(ai_cull.is_some())은 **비차단** — has_modal에 넣지 않는다(다른 작업 가능).
+            // 단 컬링 관련 확인 모달은 차단.
+            || self.ai_cull_cancel_confirm
+            || self.ai_cull_folder_confirm.is_some()
             || {
                 #[cfg(feature = "model-download")]
                 { self.model_dl.is_some() }
@@ -1239,7 +1289,11 @@ impl RawBlowApp {
     /// 폴더를 끌면 그 폴더를, 파일을 끌면 파일이 든 폴더를 연다. 여러 항목을 끌면 폴더를
     /// 우선 채택한다. 전송/정리가 진행 중일 때는 폴더 전환을 막아 작업 도중 상태가 뒤집히지 않게 한다.
     fn handle_drops(&mut self, ctx: &egui::Context) {
-        if self.progress.is_some() {
+        // 모달(확인창·설정·진행 등)이 떠 있으면 드롭으로 폴더를 바꾸지 않는다(상태 충돌 방지).
+        // 백그라운드 컬링은 모달이 아니므로(has_modal=false) 이때의 드롭은 request_open_folder가
+        // 받아 확인창을 띄운다. 컬링 취소/폴더 확인 모달이 떠 있는 동안은 여기서 막혀
+        // 두 확인창이 겹치는 일이 없다.
+        if self.has_modal() {
             return;
         }
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
@@ -1265,7 +1319,8 @@ impl RawBlowApp {
         if let Some(folder) = folder {
             // 같은 폴더를 다시 열어 재스캔·인덱스 리셋하지 않는다.
             if self.folder.as_deref() != Some(folder.as_path()) {
-                self.open_folder(folder);
+                // 컬링 중이면 확인 모달 경유(인덱스 안정성).
+                self.request_open_folder(folder);
             }
         }
     }
@@ -1382,11 +1437,16 @@ impl RawBlowApp {
 
     fn pick_folder(&mut self) {
         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-            self.open_folder(dir);
+            self.request_open_folder(dir);
         }
     }
 
     fn open_transfer(&mut self) {
+        // 컬링 중에는 파일 이동(폴더 재스캔으로 인덱스 무효화)을 막는다.
+        if self.ai_cull.is_some() {
+            self.toast = Some((tr(self.lang, "AI 컬링이 끝난 뒤 전송할 수 있습니다").into(), Instant::now()));
+            return;
+        }
         let mut st = TransferDialogState::default();
         if let Some(folder) = &self.folder {
             st.dest = format!("{}_selected", folder.to_string_lossy());
@@ -1396,11 +1456,26 @@ impl RawBlowApp {
 
     /// 폴더 자동 분류 다이얼로그를 연다(#34). 기본 대상은 현재 폴더(in-place 하위폴더 생성).
     fn open_organize(&mut self) {
+        if self.ai_cull.is_some() {
+            self.toast = Some((tr(self.lang, "AI 컬링이 끝난 뒤 정리할 수 있습니다").into(), Instant::now()));
+            return;
+        }
         let mut st = OrganizeDialogState::default();
         if let Some(folder) = &self.folder {
             st.dest = folder.to_string_lossy().to_string();
         }
         self.organize = Some(st);
+    }
+
+    /// 사용자 의도의 폴더 전환 진입점(#50). 컬링이 진행 중이면 바로 열지 않고 확인 모달을
+    /// 띄운다(예 → 컬링 취소 후 연다). 컬링이 없으면 즉시 연다. 전송/정리 완료 후의 내부
+    /// 재오픈은 이 래퍼를 거치지 않고 `open_folder`를 직접 부른다.
+    fn request_open_folder(&mut self, folder: PathBuf) {
+        if self.ai_cull.is_some() {
+            self.ai_cull_folder_confirm = Some(folder);
+        } else {
+            self.open_folder(folder);
+        }
     }
 
     // ── Open Folder 화면 ──────────────────────────────────
@@ -1894,7 +1969,8 @@ impl RawBlowApp {
                     // 자동저장(saved/SESSION) 상태표시는 하단 상태바로 이동 — 여기선 제거.
                     // 폴더 아이콘은 벡터(컬러)로 직접 그린다 — 이모지(🗂)가 폰트에서 두부(□)로 깨져서(#33 후속).
                     ui.add_space(10.0); // 레일 하단 여백(bottom_up이라 버튼 아래쪽 패딩).
-                    let org_enabled = !self.items.is_empty();
+                    // 컬링 진행 중에는 폴더를 바꾸는 무거운 작업(정리)을 잠가 인덱스 안정성을 지킨다.
+                    let org_enabled = !self.items.is_empty() && self.ai_cull.is_none();
                     // 폭은 항상 사이드바 가용 너비에 맞춘다 — 환경(스크롤바 등)에 따라 좌측으로
                     // 쏠리던 문제 방지. 내용(아이콘+글자)은 셀 중앙 기준이라 자동으로 가운데 정렬.
                     let (org_rect, org_resp) = ui.allocate_exact_size(
@@ -1930,28 +2006,59 @@ impl RawBlowApp {
                     }
 
                     // AI 컬링(#50): 정리 버튼 **바로 위**(bottom_up이라 코드상 뒤가 위). 강조색 테두리로
-                    // 일반 '정리'와 구분. 항목이 있을 때만 활성.
+                    // 일반 '정리'와 구분. 항목이 있을 때만 활성. 진행 중에는 버튼이 프로그레스바로 바뀌고
+                    // 클릭하면 취소 확인창을 띄운다.
                     ui.add_space(8.0);
-                    let ai_enabled = !self.items.is_empty();
-                    let (ai_rect, ai_resp) = ui.allocate_exact_size(
-                        Vec2::new(ui.available_width(), 32.0),
-                        if ai_enabled { Sense::click() } else { Sense::hover() },
-                    );
-                    {
-                        let p = ui.painter();
-                        let txt_col = if ai_enabled { theme::ACCENT } else { theme::INK4 };
-                        let fill = if ai_enabled && ai_resp.hovered() { theme::BG4 } else { theme::BG3 };
-                        let border = if ai_enabled { theme::ACCENT } else { theme::LINE2 };
-                        p.rect(ai_rect, Rounding::same(6.0), fill, Stroke::new(1.0, border));
-                        let label = format!("✨ {}", tr(lang, "AI 컬링"));
-                        p.text(ai_rect.center(), Align2::CENTER_CENTER, label, prop(12.0), txt_col);
-                    }
-                    if ai_enabled {
+                    let cull_progress = self.ai_cull.as_ref().map(|j| (j.done, j.total));
+                    if let Some((done, total)) = cull_progress {
+                        // 진행 중: 프로그레스바 + "AI 분석 nn%" — 클릭 시 취소 확인.
+                        let (ai_rect, ai_resp) = ui.allocate_exact_size(
+                            Vec2::new(ui.available_width(), 32.0),
+                            Sense::click(),
+                        );
+                        let frac = if total > 0 { (done as f32 / total as f32).clamp(0.0, 1.0) } else { 0.0 };
+                        {
+                            let p = ui.painter();
+                            p.rect(ai_rect, Rounding::same(6.0), theme::BG3, Stroke::new(1.0, theme::ACCENT));
+                            // 채움(진행률) — 좌측에서 frac 비율만큼.
+                            if frac > 0.0 {
+                                let fill_rect = Rect::from_min_size(
+                                    ai_rect.min,
+                                    Vec2::new(ai_rect.width() * frac, ai_rect.height()),
+                                );
+                                p.rect_filled(fill_rect, Rounding::same(6.0), theme::ACCENT_DIM);
+                            }
+                            let label = format!("✨ {} {}%", tr(lang, "분석"), (frac * 100.0).round() as i32);
+                            p.text(ai_rect.center(), Align2::CENTER_CENTER, label, prop(12.0), theme::ACCENT);
+                        }
                         if ai_resp.hovered() {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                         }
                         if ai_resp.clicked() {
-                            self.ai_cull_open = true;
+                            self.ai_cull_cancel_confirm = true;
+                        }
+                    } else {
+                        let ai_enabled = !self.items.is_empty();
+                        let (ai_rect, ai_resp) = ui.allocate_exact_size(
+                            Vec2::new(ui.available_width(), 32.0),
+                            if ai_enabled { Sense::click() } else { Sense::hover() },
+                        );
+                        {
+                            let p = ui.painter();
+                            let txt_col = if ai_enabled { theme::ACCENT } else { theme::INK4 };
+                            let fill = if ai_enabled && ai_resp.hovered() { theme::BG4 } else { theme::BG3 };
+                            let border = if ai_enabled { theme::ACCENT } else { theme::LINE2 };
+                            p.rect(ai_rect, Rounding::same(6.0), fill, Stroke::new(1.0, border));
+                            let label = format!("✨ {}", tr(lang, "AI 컬링"));
+                            p.text(ai_rect.center(), Align2::CENTER_CENTER, label, prop(12.0), txt_col);
+                        }
+                        if ai_enabled {
+                            if ai_resp.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            if ai_resp.clicked() {
+                                self.ai_cull_open = true;
+                            }
                         }
                     }
 
@@ -3855,13 +3962,20 @@ impl RawBlowApp {
             let _ = tx.send(AiCullMsg::Done(out));
         });
 
-        self.ai_cull = Some(AiCullJob { rx, cancel, done: 0, total });
+        self.ai_cull = Some(AiCullJob {
+            rx,
+            cancel,
+            done: 0,
+            total,
+            generation: self.generation,
+            target: cfg.target,
+        });
     }
 
-    /// AI 컬링 진행 모달(#50): 진행률을 갱신하고 완료 시 판정을 분류축에 적용한다.
-    fn ui_ai_cull_progress(&mut self, ctx: &egui::Context) {
-        let lang = self.lang;
-        let mut job = self.ai_cull.take().unwrap();
+    /// 진행 중인 컬링의 진행률을 펌프하고(매 프레임, 비차단) 완료 시 결과를 적용한다(#50).
+    /// 폴더가 바뀌었으면(generation 불일치) 인덱스가 무효이므로 결과를 폐기한다.
+    fn pump_ai_cull(&mut self, ctx: &egui::Context) {
+        let Some(mut job) = self.ai_cull.take() else { return };
 
         let mut done_results: Option<Vec<(usize, Verdict, Option<f32>)>> = None;
         let mut disconnected = false;
@@ -3885,24 +3999,51 @@ impl RawBlowApp {
 
         if let Some(v) = done_results {
             self.ai_cull = None;
-            self.apply_cull_verdicts(v);
+            self.ai_cull_cancel_confirm = false;
+            // 폴더가 바뀌면 캡처한 real 인덱스가 다른 사진을 가리킨다 → 결과 폐기(오염 방지).
+            if job.generation == self.generation {
+                self.apply_cull_verdicts(v);
+            } else {
+                self.toast = Some((
+                    tr(self.lang, "폴더가 바뀌어 AI 컬링 결과를 버렸습니다").into(),
+                    Instant::now(),
+                ));
+            }
             return;
         }
         if disconnected {
             self.ai_cull = None;
+            self.ai_cull_cancel_confirm = false;
             return;
         }
 
-        ctx.request_repaint_after(Duration::from_millis(80));
-        let frac = if job.total > 0 {
-            (job.done as f32 / job.total as f32).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let mut do_cancel = false;
+        // 진행 중에는 빠른 리페인트로 진행률을 갱신(레일 버튼의 프로그레스바).
+        ctx.request_repaint_after(Duration::from_millis(120));
+        self.ai_cull = Some(job);
+    }
+
+    /// 진행 중 컬링을 취소한다(부분 결과는 적용하지 않음).
+    fn cancel_ai_cull(&mut self) {
+        if let Some(job) = self.ai_cull.take() {
+            job.cancel.store(true, Ordering::Relaxed);
+        }
+        self.ai_cull_cancel_confirm = false;
+    }
+
+    /// 컬링 버튼(프로그레스바) 재클릭 시 뜨는 취소 확인 모달(#50).
+    fn ui_ai_cull_cancel_confirm(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
+        // 확인 도중 컬링이 끝나면 취소할 대상이 없으므로 닫는다.
+        if self.ai_cull.is_none() {
+            self.ai_cull_cancel_confirm = false;
+            return;
+        }
+        let (done, total) = self.ai_cull.as_ref().map(|j| (j.done, j.total)).unwrap_or((0, 0));
+        let mut keep = false; // 계속 진행(닫기)
+        let mut stop = false; // 컬링 취소
 
         let screen = ctx.screen_rect();
-        egui::Area::new(egui::Id::new("aicull_prog_dim"))
+        egui::Area::new(egui::Id::new("aicull_cancel_dim"))
             .order(egui::Order::Middle)
             .fixed_pos(Pos2::ZERO)
             .show(ctx, |ui| {
@@ -3910,37 +4051,103 @@ impl RawBlowApp {
                 let _ = ui.allocate_rect(screen, Sense::click_and_drag());
             });
 
-        egui::Window::new("aicull_prog_modal")
+        egui::Window::new("aicull_cancel_modal")
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .fixed_size(Vec2::new(480.0, 0.0))
+            .fixed_size(Vec2::new(420.0, 0.0))
             .frame(modal_frame())
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
-                modal_header(ui, tr(lang, "AI 컬링 분석 중"), "");
+                modal_header(ui, tr(lang, "AI 컬링 진행 중"), tr(lang, "분석을 멈추시겠어요?"));
+                let frac = if total > 0 { (done as f32 / total as f32).clamp(0.0, 1.0) } else { 0.0 };
                 ui.add(egui::ProgressBar::new(frac).fill(theme::ACCENT).desired_height(10.0));
-                ui.add_space(10.0);
+                ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new(trf(lang, "{} / {} 장", &[&job.done.to_string(), &job.total.to_string()]))
-                        .font(mono(11.0))
-                        .color(theme::INK3),
+                    egui::RichText::new(trf(lang, "{} / {} 장", &[&done.to_string(), &total.to_string()]))
+                        .font(mono(11.0)).color(theme::INK3),
                 );
-                ui.add_space(10.0);
+                ui.add_space(12.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if toggle_btn(ui, tr(lang, "취소"), false).clicked() {
-                        do_cancel = true;
+                    if ui.add(egui::Button::new(
+                        egui::RichText::new(format!("  {}  ", tr(lang, "컬링 취소"))).color(Color32::from_rgb(0x0a, 0x14, 0x20))
+                    ).fill(theme::REJECT)).clicked() {
+                        stop = true;
+                    }
+                    ui.add_space(8.0);
+                    if toggle_btn(ui, tr(lang, "계속 진행"), false).clicked() {
+                        keep = true;
                     }
                 });
             });
 
-        if do_cancel || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            job.cancel.store(true, Ordering::Relaxed);
-            self.ai_cull = None; // 취소 시 부분 결과는 적용하지 않는다.
+        if stop {
+            self.cancel_ai_cull();
+            self.toast = Some((tr(lang, "AI 컬링을 취소했습니다").into(), Instant::now()));
+        } else if keep || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.ai_cull_cancel_confirm = false;
+        }
+    }
+
+    /// 컬링 중 폴더 전환을 시도하면 뜨는 확인 모달(#50). 예 → 컬링 취소 후 그 폴더를 연다.
+    fn ui_ai_cull_folder_confirm(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
+        // 확인 도중 컬링이 끝났으면 더 막을 이유가 없으니 바로 연다.
+        if self.ai_cull.is_none() {
+            if let Some(folder) = self.ai_cull_folder_confirm.take() {
+                self.open_folder(folder);
+            }
             return;
         }
-        self.ai_cull = Some(job);
+        let mut go = false;     // 폴더 전환(컬링 취소)
+        let mut cancel = false; // 폴더 전환 취소(컬링 유지)
+
+        let screen = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("aicull_folder_dim"))
+            .order(egui::Order::Middle)
+            .fixed_pos(Pos2::ZERO)
+            .show(ctx, |ui| {
+                ui.painter().with_clip_rect(screen).rect_filled(screen, 0.0, Color32::from_black_alpha(180));
+                let _ = ui.allocate_rect(screen, Sense::click_and_drag());
+            });
+
+        egui::Window::new("aicull_folder_modal")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .fixed_size(Vec2::new(440.0, 0.0))
+            .frame(modal_frame())
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                modal_header(
+                    ui,
+                    tr(lang, "컬링이 진행 중입니다"),
+                    tr(lang, "폴더를 바꾸면 진행 중인 AI 컬링이 취소됩니다."),
+                );
+                ui.add_space(8.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.add(egui::Button::new(
+                        egui::RichText::new(format!("  {}  ", tr(lang, "폴더 바꾸기"))).color(Color32::from_rgb(0x0a, 0x14, 0x20))
+                    ).fill(theme::ACCENT)).clicked() {
+                        go = true;
+                    }
+                    ui.add_space(8.0);
+                    if toggle_btn(ui, tr(lang, "계속 컬링"), false).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        if go {
+            self.cancel_ai_cull();
+            if let Some(folder) = self.ai_cull_folder_confirm.take() {
+                self.open_folder(folder);
+            }
+        } else if cancel || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.ai_cull_folder_confirm = None;
+        }
     }
 
     /// AI 컬링 판정을 선택한 분류축에 적용(#50). "양쪽 다 표시" — 좋음/탈락 모두 표시.
@@ -4214,6 +4421,11 @@ impl RawBlowApp {
 
         // 적용: 매칭된 모든 항목에 라벨을 일괄 적용하고 사이드카 저장을 앞당긴다.
         if apply && !self.bulk_hits.is_empty() {
+            // 컬링이 라벨 축을 잠갔으면 일괄 라벨링도 막는다(결과 덮어쓰기 혼동 방지).
+            if self.cull_axis_locked(AiCullTarget::Label) {
+                self.bulk_open = false;
+                return;
+            }
             let target = self.bulk_target;
             let mut changed = 0usize;
             for &idx in &self.bulk_hits {
