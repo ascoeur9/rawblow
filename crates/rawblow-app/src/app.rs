@@ -3956,12 +3956,14 @@ impl RawBlowApp {
         let batch_size = if use_gpu { if share_session { 32 } else { 8 } } else { 1usize };
         let n_workers = if use_gpu {
             if share_session {
-                // WebGPU 공유 세션: 워커는 디코드+CV 병렬화용(추론은 1세션에 직렬). 코어만큼.
+                // WebGPU 공유 세션: 워커는 디코드+CV 병렬화용(추론은 1세션에 직렬). 코어만큼
+                // (세션은 1개라 메모리 부담 없음).
                 cores.min(8).min(total.max(1))
             } else {
-                // CoreML 동시 세션(실측 8워커×배치8 ≈ 421 img/s). 작은 컬링엔 배치 수만큼만.
+                // CoreML 동시 세션(실측 8워커×배치8 ≈ 421 img/s). 워커마다 모델 사본을 들므로
+                // cull_worker_count로 메모리(~2GB 예산)를 존중하고, GPU 경합 방지로 8 상한·배치 수 상한.
                 let batches = total.div_ceil(batch_size);
-                cores.min(8).min(batches.max(1))
+                Self::cull_worker_count(model_bytes).min(8).min(batches.max(1))
             }
         } else {
             Self::cull_worker_count(model_bytes).min(total.max(1))
