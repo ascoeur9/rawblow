@@ -4020,6 +4020,10 @@ impl RawBlowApp {
                     let mut metas: Vec<(usize, rawblow_core::quality::QualityReport, Verdict)> =
                         Vec::with_capacity(end - start);
                     for idx in start..end {
+                        // 배치(최대 32)가 클 수 있으니 장마다 취소를 확인해 즉시 멈춘다.
+                        if cancel_w.load(Ordering::Relaxed) {
+                            break;
+                        }
                         let (real, path) = &targets[idx];
                         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             cull_decode_cv(path, criteria, use_af)
