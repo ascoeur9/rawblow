@@ -853,6 +853,26 @@ mod tests {
     }
 
     #[test]
+    fn analyze_selective_skips_disabled_signals() {
+        // 선명 패턴 이미지: 켠 신호만 계산되고 끈 신호는 empty 기본값(0)이어야 한다.
+        let img = synth(200, 200, |x, y| if (x + y) % 2 == 0 { 220 } else { 30 });
+        // 초점만 켬 → focus는 계산(>0), exposure/tilt는 기본값.
+        let only_focus = analyze_selective(&img, false, true, false);
+        assert!(only_focus.focus.sharpness > 0.0, "focus 계산됨");
+        assert_eq!(only_focus.exposure.score, 0.0, "exposure 건너뜀(기본값)");
+        assert_eq!(only_focus.tilt.confidence, 0.0, "tilt 건너뜀(기본값)");
+        // 노출만 켬 → exposure 계산, focus/tilt 기본값.
+        let only_expo = analyze_selective(&img, true, false, false);
+        assert!(only_expo.exposure.score > 0.0, "exposure 계산됨");
+        assert_eq!(only_expo.focus.sharpness, 0.0, "focus 건너뜀");
+        // 전부 끔 → 전부 기본값(빈 리포트).
+        let none = analyze_selective(&img, false, false, false);
+        assert_eq!(none.focus.sharpness, 0.0);
+        assert_eq!(none.exposure.score, 0.0);
+        assert_eq!(none.tilt.confidence, 0.0);
+    }
+
+    #[test]
     fn analyze_handles_empty_image() {
         let img = DecodedImage {
             width: 0,
