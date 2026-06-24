@@ -3835,11 +3835,12 @@ impl RawBlowApp {
                 ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0, theme::LINE));
                 ui.add_space(12.0);
                 let count = if c.scope_all { total_items } else { filtered_count };
-                // 모드별 대략 처리량(추론 기준, 디코드 제외 · M1 Max 실측): 사용자가 속도를 가늠하도록.
+                // 모드별 대략 처리량(실파이프라인=디코드 포함, M1 Max·JPEG 기준. RAW는 더 느림).
+                // 실제 컬링은 디코드가 병목이라 미적 GPU/CPU 차이는 작다.
                 let rate = if c.use_aesthetic {
-                    if c.use_gpu { "~수백 장/초 (GPU)" } else { "~190 장/초 (ViT-B/CPU)" }
+                    if c.use_gpu { "~100장/초 내외 (GPU)" } else { "~90장/초 내외 (CPU)" }
                 } else {
-                    "~수백 장/초 (CV)"
+                    "~200장/초+ (모델 불필요·가장 빠름)"
                 };
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("WILL ANALYZE").font(prop(10.0)).color(theme::INK3));
