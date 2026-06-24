@@ -209,6 +209,16 @@ struct AiCullJob {
     target: AiCullTarget,
 }
 
+/// 컬링 결과 캐시 항목(#50). 같은 파일을 같은 설정으로 재컬링할 때 디코드+채점을 건너뛴다.
+/// `sig`는 (검사 신호 on/off + AF + 모델 식별자)의 해시 — 임계값(focus_thresh 등)은 제외하므로
+/// **임계값만 바꿔 재실행하면 전부 캐시 적중**해 즉시 재판정된다(신호/모델을 바꾸면 미스→재계산).
+#[derive(Clone)]
+struct CullCacheEntry {
+    mtime: std::time::SystemTime,
+    sig: u64,
+    report: rawblow_core::quality::QualityReport,
+}
+
 /// CLIP-IQA 모델 자동 다운로드(#50) 진행 메시지.
 #[cfg(feature = "model-download")]
 enum ModelDlMsg {
@@ -292,6 +302,10 @@ pub struct RawBlowApp {
     ai_cull_cancel_confirm: bool,
     // 컬링 중 폴더를 바꾸려 할 때 뜨는 확인 모달(예 누르면 컬링 취소 후 이 폴더를 연다).
     ai_cull_folder_confirm: Option<PathBuf>,
+    // 컬링 결과 캐시(#50): (파일 경로 → mtime+설정서명+QualityReport). 재컬링 시 파일이 안 바뀌고
+    // 검사 신호·모델이 같으면 디코드/추론을 건너뛰어 즉시 재판정(임계값만 바꿔 재실행할 때 큰 이득).
+    // 워커가 공유하므로 Arc<Mutex<>>. 폴더 전환 시 비운다.
+    cull_cache: Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, CullCacheEntry>>>,
     // CLIP-IQA 모델 다운로드 진행.
     #[cfg(feature = "model-download")]
     model_dl: Option<ModelDlJob>,
@@ -436,6 +450,7 @@ impl RawBlowApp {
             ai_cull: None,
             ai_cull_cancel_confirm: false,
             ai_cull_folder_confirm: None,
+            cull_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             #[cfg(feature = "model-download")]
             model_dl: None,
             progress: None,
@@ -492,6 +507,10 @@ impl RawBlowApp {
                 let _ = sidecar::save(cur, &entries);
             }
             self.sidecar_dirty = false;
+        }
+        // 폴더가 바뀌면 컬링 결과 캐시는 무의미(다른 파일) → 비워 메모리 회수.
+        if let Ok(mut c) = self.cull_cache.lock() {
+            c.clear();
         }
         let entries = scan::scan_folder(&folder, self.cfg.recursive, self.sort);
         let mut items: Vec<Item> = entries
@@ -3996,6 +4015,18 @@ impl RawBlowApp {
         ));
         let targets = std::sync::Arc::new(targets);
 
+        // 캐시 서명: 검사 신호 + AF + 디코드 해상도 + 모델 식별자(임계값은 제외 → 임계만 바꿔
+        // 재실행 시 전부 적중). 모델 미사용이면 "none".
+        let model_id: String = if cfg.use_aesthetic { spec.file.to_string() } else { "none".into() };
+        let sig: u64 = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (criteria.use_focus, criteria.use_exposure, criteria.use_tilt, use_af, cull_edge).hash(&mut h);
+            model_id.hash(&mut h);
+            h.finish()
+        };
+        let cache = self.cull_cache.clone();
+
         let mut handles = Vec::with_capacity(n_workers);
         for _ in 0..n_workers {
             let targets = targets.clone();
@@ -4003,6 +4034,7 @@ impl RawBlowApp {
             let progress = progress.clone();
             let cancel_w = cancel.clone();
             let results = results.clone();
+            let cache = cache.clone();
             #[cfg(feature = "ai")]
             let model_path = model_path.clone();
             #[cfg(feature = "ai")]
@@ -4028,16 +4060,37 @@ impl RawBlowApp {
                         break;
                     }
                     let end = (start + batch_size).min(targets.len());
-                    // 1단계: chunk의 각 장을 디코딩+CV(패닉 격리). 디코드 이미지는 미적 추론용으로 보관.
+                    // CV 판정용(미적 제외) — 캐시 적중 시 보고서로부터 판정 재도출.
+                    let mut cv_only = criteria;
+                    cv_only.use_aesthetic = false;
+                    // 1단계: 각 장을 캐시 조회. 적중(파일·설정 동일)이면 디코드+추론 생략하고 즉시 적재.
+                    // 미스만 디코드+CV해 두고(미적 추론은 2단계 배치), 캐시 키(경로·mtime)도 보관.
                     let mut imgs: Vec<rawblow_core::decode::DecodedImage> = Vec::with_capacity(end - start);
                     let mut metas: Vec<(usize, rawblow_core::quality::QualityReport, Verdict)> =
                         Vec::with_capacity(end - start);
+                    let mut miss_keys: Vec<(PathBuf, Option<std::time::SystemTime>)> = Vec::with_capacity(end - start);
                     for idx in start..end {
                         // 배치(최대 32)가 클 수 있으니 장마다 취소를 확인해 즉시 멈춘다.
                         if cancel_w.load(Ordering::Relaxed) {
                             break;
                         }
                         let (real, path) = &targets[idx];
+                        let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+                        // 캐시 적중: 같은 파일(mtime)·같은 설정(sig)이면 보고서 재사용(디코드/추론 생략).
+                        let cached = mtime.and_then(|mt| {
+                            cache.lock().ok().and_then(|c| {
+                                c.get(path).filter(|e| e.mtime == mt && e.sig == sig).map(|e| e.report)
+                            })
+                        });
+                        if let Some(report) = cached {
+                            let cv = cv_only.verdict(&report);
+                            if let Ok(mut g) = results.lock() {
+                                g.push((*real, cv, report.aesthetic));
+                            }
+                            progress.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+                        // 미스: 디코드+CV(패닉 격리). 미적 추론은 2단계에서.
                         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             cull_decode_cv(path, criteria, use_af, cull_edge)
                         }))
@@ -4046,6 +4099,7 @@ impl RawBlowApp {
                         if let Some((img, q, cv)) = r {
                             imgs.push(img);
                             metas.push((*real, q, cv));
+                            miss_keys.push((path.clone(), mtime));
                         }
                         progress.fetch_add(1, Ordering::Relaxed);
                     }
@@ -4078,10 +4132,18 @@ impl RawBlowApp {
                             }
                         }
                     }
-                    // 3단계: 결과 적재(CV 판정 + 미적 점수). 최종 조합은 apply_cull_verdicts가 한다.
+                    // 3단계: 미스 결과 적재(CV 판정 + 미적 점수). 최종 조합은 apply_cull_verdicts가 한다.
                     if let Ok(mut g) = results.lock() {
                         for (real, q, cv) in &metas {
                             g.push((*real, *cv, q.aesthetic));
+                        }
+                    }
+                    // 4단계: 미스 보고서를 캐시에 저장(다음 재컬링에서 디코드/추론 생략).
+                    if let Ok(mut c) = cache.lock() {
+                        for ((_, q, _), (path, mtime)) in metas.iter().zip(miss_keys.iter()) {
+                            if let Some(mt) = mtime {
+                                c.insert(path.clone(), CullCacheEntry { mtime: *mt, sig, report: *q });
+                            }
                         }
                     }
                 }
