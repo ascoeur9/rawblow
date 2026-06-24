@@ -507,10 +507,14 @@ mod ai {
                         } else {
                             ModelFormat::MLProgram
                         };
+                        // 컴파일된 CoreML 모델을 캐시 → 재실행 시 ~2s 컴파일 생략(작은 컬링에서 큰 차이).
+                        let cache_dir = crate::config::config_dir().join("coreml-cache");
+                        let _ = std::fs::create_dir_all(&cache_dir);
                         let coreml = ort::ep::CoreML::default()
                             .with_model_format(fmt)
                             .with_compute_units(cu)
                             .with_specialization_strategy(SpecializationStrategy::FastPrediction)
+                            .with_model_cache_dir(cache_dir.to_string_lossy())
                             .build();
                         builder = builder
                             .with_execution_providers([coreml])
