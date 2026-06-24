@@ -3918,9 +3918,16 @@ impl RawBlowApp {
         let mut criteria = cfg.criteria();
         let use_af = cfg.use_af_focus && cfg.use_focus;
         let top_n = cfg.top_n;
-        // 디코드 해상도는 가장 디테일이 필요한 신호(초점)에 맞춘다. 초점 검사가 꺼져 있으면
-        // 노출(무관)·기울기(512 내부)·미적(224)만 필요하므로 512로 줄여 디코드를 ~1.5배 빠르게.
-        let cull_edge: u32 = if cfg.use_focus { AI_CULL_EDGE } else { 512 };
+        // 디코드 해상도를 가장 디테일이 필요한 켜진 신호에 맞춘다(디코드가 실파이프라인 병목):
+        //   초점 ON → 1024(블러 판별 디테일) / 기울기 ON → 512(엣지 방향) / 둘 다 OFF → 256
+        //   (노출은 해상도 무관, 미적은 224만 필요). 작을수록 디코드 대폭 빨라짐.
+        let cull_edge: u32 = if cfg.use_focus {
+            AI_CULL_EDGE
+        } else if cfg.use_tilt {
+            512
+        } else {
+            256
+        };
         let targets: Vec<(usize, PathBuf)> = if cfg.scope_all {
             self.items.iter().enumerate().map(|(i, it)| (i, it.entry.display.clone())).collect()
         } else {
