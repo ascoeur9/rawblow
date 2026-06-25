@@ -8,6 +8,7 @@ pub mod af;
 pub mod cache;
 pub mod color;
 pub mod config;
+pub mod cull_ext;
 pub mod decode;
 pub mod meta;
 pub mod model;
