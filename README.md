@@ -20,6 +20,7 @@
 - **컬러 태그** — **⇧1~5**로 5색 태그(주황·분홍·청록·파랑·보라)를 라벨·별점과 **독립**으로 부여. 설정에서 색별 이름 지정(예: 보정 방식), 필터·전송·파일명에 반영
 - **보기 필터** — 좌측 레일에서 **라벨**·**별점(정확히 N점)**·**컬러 태그**를 **독립으로 AND** 조합해 원하는 컷만 추려 보기
 - **그리드 다중 선택** — Ctrl(⌘)+클릭 토글, 클릭 후 Shift+클릭 범위 선택 → Q/W/E/R·별점으로 **한꺼번에** 분류
+- **AI 컬링** — 사진을 분석해 **흐림(초점)·노출·수평 기울기**, 선택적으로 **미적 점수(CLIP-IQA AI)**로 자동 분류. 좋음/탈락을 **라벨·별점·색 태그** 중 하나로 배정(수동 분류축은 안 건드림). 전부 **로컬 처리** + **GPU 가속**(Windows WebGPU / macOS CoreML), 백그라운드 비차단. 모델은 처음 쓸 때 자동 다운로드(sha256 검증)
 - **확대/이동** — 사진 클릭으로 창맞춤↔1:1, **Ctrl+휠 또는 터치패드 핀치**로 연속 확대, 확대 상태에서 **드래그로 이동**. 배율은 우측 하단에 표시
 - **ORIG(원본 보기)** — RAW를 원본 해상도로 디코딩해 실제 디테일 확인(로딩이 조금 걸릴 수 있음). 필요할 때만 수동 사용
 - **EXIF 오버레이(I)** · **RGB 히스토그램(H)**
@@ -40,9 +41,9 @@
 ## 설치 / 실행
 
 ### 받아서 바로 실행
-[**Releases**](https://github.com/ascoeur9/rawblow/releases/latest)에서 OS에 맞는 파일을 받아 더블클릭하세요(설치·런타임 불필요).
+[**Releases**](https://github.com/ascoeur9/rawblow/releases/latest)에서 OS에 맞는 파일을 받으세요.
 
-- **Windows x64** — `RawBlow-vX.Y.Z-win-x64.exe` (단독 실행)
+- **Windows x64** — `RawBlow-Setup-vX.Y.Z.exe`를 실행해 설치(필요한 런타임 모두 포함, 별도 설치 불필요). 코드 서명이 없어 첫 실행 시 SmartScreen "Windows의 PC 보호" 경고가 뜨면 **추가 정보 → 실행**.
 - **macOS (Apple Silicon)** — `RawBlow-vX.Y.Z-macos-arm64.zip` (압축 풀면 `RawBlow.app`)
   - 처음 실행 시 "개발자를 확인할 수 없음" 경고가 뜨면 **우클릭 → 열기**로 한 번 허용하세요(공증 미적용).
   - 또는 터미널에서 `xattr -dr com.apple.quarantine /Applications/RawBlow.app`

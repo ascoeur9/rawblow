@@ -16,6 +16,7 @@ A lightweight culling tool that lets you flip quickly through thousands of RAWs,
 - **Color tags** — Assign 5-color tags (orange, pink, teal, blue, purple) with **⇧1–5**, **independently** of labels and ratings. Name each color in settings (e.g., by edit style), reflected in filters, transfers, and file names
 - **View filters** — In the left rail, combine **label**, **rating (exactly N stars)**, and **color tag** **independently with AND** to narrow down to just the shots you want
 - **Multi-select in grid** — Toggle with Ctrl(⌘)+click, click then Shift+click for range selection → sort them **all at once** with Q/W/E/R / ratings
+- **AI culling** — Analyzes photos to auto-sort by **blur (focus) · exposure · horizon tilt**, plus an optional **aesthetic score (CLIP-IQA AI)**. Assigns good/reject to one of **label · rating · color tag** (your manual axes stay untouched). Fully **local** and **GPU-accelerated** (Windows WebGPU / macOS CoreML), runs in the background. The model is downloaded automatically on first use (sha256-verified)
 - **Zoom / pan** — Click a photo to switch fit-to-window↔1:1, **Ctrl+wheel or touchpad pinch** for continuous zoom, **drag to pan** while zoomed in. The zoom level is shown at the bottom right
 - **ORIG (original view)** — Decodes the RAW at full resolution to check the actual detail (loading may take a moment). Used manually only when needed
 - **EXIF overlay (I)** · **RGB histogram (H)**
@@ -36,9 +37,9 @@ A lightweight culling tool that lets you flip quickly through thousands of RAWs,
 ## Install / Run
 
 ### Download and run right away
-Grab the file for your OS from [**Releases**](https://github.com/ascoeur9/rawblow/releases/latest) and double-click it (no installation or runtime needed).
+Grab the file for your OS from [**Releases**](https://github.com/ascoeur9/rawblow/releases/latest).
 
-- **Windows x64** — `RawBlow-vX.Y.Z-win-x64.exe` (standalone)
+- **Windows x64** — Run `RawBlow-Setup-vX.Y.Z.exe` to install (all required runtimes bundled). It is unsigned, so if SmartScreen shows a "Windows protected your PC" warning, click **More info → Run anyway**.
 - **macOS (Apple Silicon)** — `RawBlow-vX.Y.Z-macos-arm64.zip` (unzip to get `RawBlow.app`)
   - On first launch, if you get a "developer cannot be verified" warning, allow it once via **right-click → Open** (not notarized).
   - Or, in a terminal, `xattr -dr com.apple.quarantine /Applications/RawBlow.app`
