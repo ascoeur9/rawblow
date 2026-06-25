@@ -2092,7 +2092,8 @@ impl RawBlowApp {
                         let frac = if total > 0 { (done as f32 / total as f32).clamp(0.0, 1.0) } else { 0.0 };
                         {
                             let p = ui.painter();
-                            p.rect(ai_rect, Rounding::same(6.0), theme::BG3, Stroke::new(1.0, theme::ACCENT));
+                            // 외곽선 없이 — 진행률은 채움(ACCENT_DIM)으로 표현.
+                            p.rect(ai_rect, Rounding::same(6.0), theme::BG3, Stroke::NONE);
                             // 채움(진행률) — 좌측에서 frac 비율만큼.
                             if frac > 0.0 {
                                 let fill_rect = Rect::from_min_size(
@@ -2120,8 +2121,8 @@ impl RawBlowApp {
                             let p = ui.painter();
                             let txt_col = if ai_enabled { theme::ACCENT } else { theme::INK4 };
                             let fill = if ai_enabled && ai_resp.hovered() { theme::BG4 } else { theme::BG3 };
-                            let border = if ai_enabled { theme::ACCENT } else { theme::LINE2 };
-                            p.rect(ai_rect, Rounding::same(6.0), fill, Stroke::new(1.0, border));
+                            // 외곽선 없이 채움만(강조 테두리가 거슬린다는 피드백). 강조는 텍스트 색으로.
+                            p.rect(ai_rect, Rounding::same(6.0), fill, Stroke::NONE);
                             let label = format!("✨ {}", tr(lang, "AI 컬링"));
                             p.text(ai_rect.center(), Align2::CENTER_CENTER, label, prop(12.0), txt_col);
                         }
