@@ -3826,6 +3826,150 @@ impl RawBlowApp {
                     }
                     ui.add_space(4.0);
                 }
+                ui.add_space(16.0);
+
+                // ── METADATA FILTER (Tier1, 모델 불필요) ──
+                section_label(ui, "METADATA FILTER");
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new(tr(lang, "방향")).font(mono(11.0)).color(theme::INK3));
+                    for (lbl, o) in [
+                        (tr(lang, "전체"), config::OrientationFilter::Any),
+                        (tr(lang, "세로"), config::OrientationFilter::Portrait),
+                        (tr(lang, "가로"), config::OrientationFilter::Landscape),
+                    ] {
+                        if check_chip(ui, lbl, None, theme::ACCENT, c.filter_orientation == o) {
+                            c.filter_orientation = o;
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if check_chip(ui, tr(lang, "ISO 상한"), None, theme::ACCENT, c.use_iso_max) {
+                        c.use_iso_max = !c.use_iso_max;
+                    }
+                    if c.use_iso_max {
+                        ui.add(egui::DragValue::new(&mut c.iso_max).range(50..=409600).speed(50));
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if check_chip(ui, tr(lang, "초점거리"), None, theme::ACCENT, c.use_focal_range) {
+                        c.use_focal_range = !c.use_focal_range;
+                    }
+                    if c.use_focal_range {
+                        ui.add(egui::DragValue::new(&mut c.focal_min_mm).range(0.0..=2000.0).suffix("mm"));
+                        ui.label(egui::RichText::new("~").color(theme::INK3));
+                        ui.add(egui::DragValue::new(&mut c.focal_max_mm).range(0.0..=2000.0).suffix("mm"));
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if check_chip(ui, tr(lang, "조리개 ≤"), None, theme::ACCENT, c.use_aperture_max) {
+                        c.use_aperture_max = !c.use_aperture_max;
+                    }
+                    if c.use_aperture_max {
+                        ui.add(egui::DragValue::new(&mut c.aperture_max).range(0.7..=32.0).speed(0.1).prefix("f/"));
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if check_chip(ui, tr(lang, "셔터 하한"), None, theme::ACCENT, c.use_shutter_min) {
+                        c.use_shutter_min = !c.use_shutter_min;
+                    }
+                    if c.use_shutter_min {
+                        let mut denom = (1.0 / c.shutter_min_secs.max(1e-6)).round() as u32;
+                        if ui.add(egui::DragValue::new(&mut denom).range(1..=8000).prefix("1/")).changed() {
+                            c.shutter_min_secs = 1.0 / denom.max(1) as f32;
+                        }
+                        ui.label(egui::RichText::new(tr(lang, "초 (손떨림 거르기)")).font(mono(9.0)).color(theme::INK4));
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(tr(lang, "카메라")).font(mono(11.0)).color(theme::INK3));
+                    ui.text_edit_singleline(&mut c.camera_contains);
+                });
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(tr(lang, "렌즈")).font(mono(11.0)).color(theme::INK3));
+                    ui.text_edit_singleline(&mut c.lens_contains);
+                });
+                ui.add_space(16.0);
+
+                // ── DEDUP / BEST-OF (Tier2+3a, 모델 불필요) ──
+                section_label(ui, "DEDUP / BEST-OF");
+                if check_chip(ui, tr(lang, "연사 베스트-N"), None, theme::ACCENT, c.use_burst) {
+                    c.use_burst = !c.use_burst;
+                }
+                if c.use_burst {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(tr(lang, "간격 ≤")).font(mono(11.0)).color(theme::INK3));
+                        ui.add(egui::DragValue::new(&mut c.burst_gap_secs).range(1..=30).suffix(tr(lang, "초")));
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new(tr(lang, "그룹당 최고")).font(mono(11.0)).color(theme::INK3));
+                        ui.add(egui::DragValue::new(&mut c.burst_keep).range(1..=20).suffix(tr(lang, "장")));
+                    });
+                }
+                if check_chip(ui, tr(lang, "시각적 중복 묶기"), None, theme::ACCENT, c.use_dedup) {
+                    c.use_dedup = !c.use_dedup;
+                }
+                if c.use_dedup {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(tr(lang, "유사도(해밍≤)")).font(mono(11.0)).color(theme::INK3));
+                        ui.add(egui::Slider::new(&mut c.dedup_hamming, 2..=16));
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new(tr(lang, "클러스터당")).font(mono(11.0)).color(theme::INK3));
+                        ui.add(egui::DragValue::new(&mut c.dedup_keep).range(1..=20).suffix(tr(lang, "장")));
+                    });
+                }
+                if c.use_burst || c.use_dedup {
+                    ui.label(egui::RichText::new(tr(lang, "그룹 내 베스트는 점수(미적>선명도) 기준 선택")).font(mono(9.0)).color(theme::INK4));
+                }
+                ui.add_space(16.0);
+
+                // ── AI AXES (Tier3b, 임베딩 모델 필요 — 옵션만) ──
+                section_label(ui, "AI AXES");
+                ui.horizontal_wrapped(|ui| {
+                    if check_chip(ui, tr(lang, "장르 픽"), None, theme::ACCENT, c.use_genre) {
+                        c.use_genre = !c.use_genre;
+                    }
+                    if c.use_genre {
+                        if check_chip(ui, tr(lang, "인물"), None, theme::ACCENT, c.genre_portrait) {
+                            c.genre_portrait = true;
+                        }
+                        if check_chip(ui, tr(lang, "풍경"), None, theme::ACCENT, !c.genre_portrait) {
+                            c.genre_portrait = false;
+                        }
+                    }
+                    if check_chip(ui, tr(lang, "AI 선명도"), None, theme::ACCENT, c.use_sharp_ai) {
+                        c.use_sharp_ai = !c.use_sharp_ai;
+                    }
+                });
+                if check_chip(ui, tr(lang, "커스텀 프롬프트"), None, theme::ACCENT, c.use_custom_prompt) {
+                    c.use_custom_prompt = !c.use_custom_prompt;
+                }
+                if c.use_custom_prompt {
+                    ui.text_edit_singleline(&mut c.custom_prompt);
+                }
+                ui.label(egui::RichText::new(tr(lang, "CLIP 임베딩 모델 통합 후 동작(현재는 옵션 저장만)")).font(mono(9.0)).color(theme::WARN));
+                ui.add_space(16.0);
+
+                // ── DETECT (Tier4, 검출 모델 필요 — 옵션만) ──
+                section_label(ui, "DETECT");
+                ui.horizontal_wrapped(|ui| {
+                    if check_chip(ui, tr(lang, "얼굴 있는 컷만"), None, theme::ACCENT, c.use_face) {
+                        c.use_face = !c.use_face;
+                    }
+                    if check_chip(ui, tr(lang, "눈 뜬 컷만"), None, theme::ACCENT, c.use_eyes_open) {
+                        c.use_eyes_open = !c.use_eyes_open;
+                    }
+                    if check_chip(ui, tr(lang, "객체 포함"), None, theme::ACCENT, c.use_object) {
+                        c.use_object = !c.use_object;
+                    }
+                });
+                if c.use_object {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(tr(lang, "클래스")).font(mono(11.0)).color(theme::INK3));
+                        ui.text_edit_singleline(&mut c.object_class);
+                    });
+                }
+                ui.label(egui::RichText::new(tr(lang, "YuNet/YOLO 통합 후 동작(현재는 옵션 저장만)")).font(mono(9.0)).color(theme::WARN));
+                ui.add_space(16.0);
+
                 if !c.any_enabled() {
                     ui.label(egui::RichText::new(tr(lang, "검사 항목을 하나 이상 켜세요.")).font(mono(10.0)).color(theme::WARN));
                 }

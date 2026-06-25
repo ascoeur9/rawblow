@@ -174,6 +174,69 @@ pub struct AiCullConfig {
     pub top_n: usize,
     /// true=전체 항목, false=현재 필터를 통과한 항목만 채점.
     pub scope_all: bool,
+
+    // ───── 메타데이터 필터(Tier1, 모델 불필요) ─────
+    /// 방향 한정(세로/가로/전체).
+    pub filter_orientation: OrientationFilter,
+    pub use_iso_max: bool,
+    /// ISO 상한(초과 컷 제외). 고감도 노이즈 거르기.
+    pub iso_max: u32,
+    pub use_focal_range: bool,
+    pub focal_min_mm: f32,
+    pub focal_max_mm: f32,
+    pub use_aperture_max: bool,
+    /// 조리개 f값 상한(이하만 통과 — 밝은 렌즈/얕은 심도 컷만).
+    pub aperture_max: f32,
+    pub use_shutter_min: bool,
+    /// 셔터속도 하한(초). 미만(더 느림)이면 손떨림 후보로 제외.
+    pub shutter_min_secs: f32,
+    /// 카메라/렌즈 모델 부분일치(빈 문자열=무제한).
+    pub camera_contains: String,
+    pub lens_contains: String,
+
+    // ───── 연사 베스트-N(Tier2, 모델 불필요) ─────
+    pub use_burst: bool,
+    /// 인접 컷 간격(초) 이하면 같은 연사로 묶음.
+    pub burst_gap_secs: u32,
+    /// 연사 그룹마다 점수 상위 N장만 Good.
+    pub burst_keep: u32,
+
+    // ───── 시각적 근접중복(Tier3a, 모델 불필요) ─────
+    pub use_dedup: bool,
+    /// dHash 해밍거리 이하면 유사컷으로 클러스터.
+    pub dedup_hamming: u32,
+    /// 유사 클러스터마다 상위 N장만 Good.
+    pub dedup_keep: u32,
+
+    // ───── CLIP 의미 축(Tier3b, 임베딩 모델 필요) ─────
+    /// 장르 픽: 인물(genre_portrait=true) 또는 풍경 위주.
+    pub use_genre: bool,
+    pub genre_portrait: bool,
+    /// AI 선명도(CLIP) 하한.
+    pub use_sharp_ai: bool,
+    pub sharp_min: f32,
+    /// 커스텀 프롬프트(예: "dramatic lighting") 하한.
+    pub use_custom_prompt: bool,
+    pub custom_prompt: String,
+    pub custom_min: f32,
+
+    // ───── 검출(Tier4, 검출 모델 필요) ─────
+    /// 얼굴 있는 컷만 Good(인물 컬링).
+    pub use_face: bool,
+    /// 눈 뜬 컷만(얼굴 검출 기반).
+    pub use_eyes_open: bool,
+    /// 특정 객체(COCO 클래스명) 포함 컷만.
+    pub use_object: bool,
+    pub object_class: String,
+}
+
+/// 방향 필터(Tier1).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum OrientationFilter {
+    #[default]
+    Any,
+    Portrait,
+    Landscape,
 }
 
 impl Default for AiCullConfig {
@@ -198,6 +261,35 @@ impl Default for AiCullConfig {
             bad_tag: crate::model::ColorTag::Orange,
             top_n: 0,
             scope_all: true,
+            filter_orientation: OrientationFilter::Any,
+            use_iso_max: false,
+            iso_max: 6400,
+            use_focal_range: false,
+            focal_min_mm: 0.0,
+            focal_max_mm: 1000.0,
+            use_aperture_max: false,
+            aperture_max: 2.8,
+            use_shutter_min: false,
+            shutter_min_secs: 1.0 / 60.0,
+            camera_contains: String::new(),
+            lens_contains: String::new(),
+            use_burst: false,
+            burst_gap_secs: 2,
+            burst_keep: 1,
+            use_dedup: false,
+            dedup_hamming: 6,
+            dedup_keep: 1,
+            use_genre: false,
+            genre_portrait: true,
+            use_sharp_ai: false,
+            sharp_min: 0.5,
+            use_custom_prompt: false,
+            custom_prompt: String::new(),
+            custom_min: 0.5,
+            use_face: false,
+            use_eyes_open: false,
+            use_object: false,
+            object_class: String::new(),
         }
     }
 }
@@ -219,7 +311,53 @@ impl AiCullConfig {
 
     /// 켜진 검사가 하나도 없으면 채점 의미 없음.
     pub fn any_enabled(&self) -> bool {
-        self.use_focus || self.use_exposure || self.use_tilt || self.use_aesthetic
+        self.use_focus
+            || self.use_exposure
+            || self.use_tilt
+            || self.use_aesthetic
+            || self.filter_orientation != OrientationFilter::Any
+            || self.use_iso_max
+            || self.use_focal_range
+            || self.use_aperture_max
+            || self.use_shutter_min
+            || !self.camera_contains.trim().is_empty()
+            || !self.lens_contains.trim().is_empty()
+            || self.use_burst
+            || self.use_dedup
+            || self.use_genre
+            || self.use_sharp_ai
+            || self.use_custom_prompt
+            || self.use_face
+            || self.use_eyes_open
+            || self.use_object
+    }
+
+    /// Tier1 메타 필터로 변환(UI config → 코어 필터).
+    pub fn meta_filter(&self) -> crate::cull_ext::MetaFilter {
+        use crate::cull_ext::{MetaFilter, Orientation};
+        MetaFilter {
+            orientation: match self.filter_orientation {
+                OrientationFilter::Any => None,
+                OrientationFilter::Portrait => Some(Orientation::Portrait),
+                OrientationFilter::Landscape => Some(Orientation::Landscape),
+            },
+            iso_max: self.use_iso_max.then_some(self.iso_max),
+            iso_min: None,
+            aperture_max: self.use_aperture_max.then_some(self.aperture_max),
+            aperture_min: None,
+            shutter_min_secs: self.use_shutter_min.then_some(self.shutter_min_secs),
+            shutter_max_secs: None,
+            focal_min_mm: self.use_focal_range.then_some(self.focal_min_mm),
+            focal_max_mm: self.use_focal_range.then_some(self.focal_max_mm),
+            camera_contains: {
+                let t = self.camera_contains.trim();
+                (!t.is_empty()).then(|| t.to_string())
+            },
+            lens_contains: {
+                let t = self.lens_contains.trim();
+                (!t.is_empty()).then(|| t.to_string())
+            },
+        }
     }
 
     /// 미적 점수에 쓸 모델 명세: GPU 모드면 RN50 fp32, 아니면 선택한 백본 int8.
