@@ -3702,9 +3702,11 @@ impl RawBlowApp {
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .fixed_size(Vec2::new(540.0, 0.0))
+            .max_height(ctx.screen_rect().height() - 48.0)
             .frame(modal_frame())
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
                 modal_header(
                     ui,
                     tr(lang, "AI 컬링"),
@@ -4085,6 +4087,7 @@ impl RawBlowApp {
                         }
                     });
                 });
+                }); // egui::ScrollArea::vertical
             });
 
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
