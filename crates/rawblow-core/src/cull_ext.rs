@@ -334,6 +334,83 @@ pub fn cluster_near_dups(hashes: &[u64], max_hamming: u32) -> Vec<Vec<usize>> {
     map.into_values().collect()
 }
 
+// ───────────────────────── 그룹 컬링 통합(메타 제외 → 연사 → 중복) ─────────────────────────
+
+/// 한 컷의 컬링 입력. `good`=CV/미적 1차 판정, `rank`=그룹 내 베스트 선택 점수(미적>선명도).
+#[derive(Debug, Clone)]
+pub struct CullItem {
+    pub good: bool,
+    pub rank: f32,
+    pub dhash: Option<u64>,
+    pub shot_time: Option<i64>,
+    pub meta: PhotoMeta,
+}
+
+/// 그룹 컬링 파라미터(UI config에서 변환).
+#[derive(Debug, Clone)]
+pub struct GroupCullParams {
+    pub use_meta: bool,
+    pub meta_filter: MetaFilter,
+    pub use_burst: bool,
+    pub burst_gap_secs: i64,
+    pub burst_keep: usize,
+    pub use_dedup: bool,
+    pub dedup_hamming: u32,
+    pub dedup_keep: usize,
+}
+
+fn keep_top(orig: &[usize], ranks: &[f32], keep: usize) -> HashSet<usize> {
+    let mut v = orig.to_vec();
+    v.sort_by(|&a, &b| {
+        ranks[b].partial_cmp(&ranks[a]).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(&b))
+    });
+    v.into_iter().take(keep.max(1)).collect()
+}
+
+/// 메타 필터로 대상을 좁히고(불통과=제외, 손대지 않음), 연사·시각중복 그룹마다 rank 상위 keep만
+/// Good 유지(나머지는 Bad로 강등). 반환: 각 인덱스별 `None`=제외, `Some(true/false)`=Good/Bad.
+pub fn apply_group_culling(items: &[CullItem], p: &GroupCullParams) -> Vec<Option<bool>> {
+    let n = items.len();
+    let mut incl_mask = vec![true; n];
+    if p.use_meta {
+        for (i, it) in items.iter().enumerate() {
+            incl_mask[i] = p.meta_filter.passes(&it.meta);
+        }
+    }
+    let included: Vec<usize> = (0..n).filter(|&i| incl_mask[i]).collect();
+    let ranks: Vec<f32> = items.iter().map(|it| it.rank).collect();
+    let mut good: Vec<bool> = items.iter().map(|it| it.good).collect();
+
+    // 연사: included를 원래(촬영) 순서대로 시각 간격 그룹핑.
+    if p.use_burst {
+        let times: Vec<Option<i64>> = included.iter().map(|&i| items[i].shot_time).collect();
+        for g in group_bursts(&times, p.burst_gap_secs) {
+            let orig: Vec<usize> = g.iter().map(|&k| included[k]).collect();
+            let keep = keep_top(&orig, &ranks, p.burst_keep);
+            for &oi in &orig {
+                if !keep.contains(&oi) {
+                    good[oi] = false;
+                }
+            }
+        }
+    }
+    // 시각중복: dhash 있는 included만 클러스터(없으면 단독 취급).
+    if p.use_dedup {
+        let valid: Vec<usize> = included.iter().cloned().filter(|&i| items[i].dhash.is_some()).collect();
+        let vhash: Vec<u64> = valid.iter().map(|&i| items[i].dhash.unwrap()).collect();
+        for c in cluster_near_dups(&vhash, p.dedup_hamming) {
+            let orig: Vec<usize> = c.iter().map(|&k| valid[k]).collect();
+            let keep = keep_top(&orig, &ranks, p.dedup_keep);
+            for &oi in &orig {
+                if !keep.contains(&oi) {
+                    good[oi] = false;
+                }
+            }
+        }
+    }
+    (0..n).map(|i| incl_mask[i].then_some(good[i])).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,5 +585,51 @@ mod tests {
         assert!(keep.contains(&1), "유사쌍에서 고점 b 채택");
         assert!(!keep.contains(&0), "저점 a 제외");
         assert!(keep.contains(&2), "단독 c는 유지");
+    }
+
+    fn meta_iso_time(iso: Option<u32>, time: Option<i64>) -> PhotoMeta {
+        PhotoMeta { iso, datetime_secs: time, ..Default::default() }
+    }
+
+    #[test]
+    fn group_culling_meta_then_burst() {
+        let items = vec![
+            CullItem { good: true, rank: 0.3, dhash: None, shot_time: Some(100), meta: meta_iso_time(Some(400), Some(100)) },
+            CullItem { good: true, rank: 0.9, dhash: None, shot_time: Some(101), meta: meta_iso_time(Some(400), Some(101)) },
+            CullItem { good: true, rank: 0.5, dhash: None, shot_time: Some(200), meta: meta_iso_time(Some(400), Some(200)) },
+            CullItem { good: true, rank: 0.99, dhash: None, shot_time: Some(201), meta: meta_iso_time(Some(25600), Some(201)) },
+        ];
+        let p = GroupCullParams {
+            use_meta: true,
+            meta_filter: MetaFilter { iso_max: Some(6400), ..Default::default() },
+            use_burst: true, burst_gap_secs: 2, burst_keep: 1,
+            use_dedup: false, dedup_hamming: 6, dedup_keep: 1,
+        };
+        let out = apply_group_culling(&items, &p);
+        assert_eq!(out[3], None, "고ISO 제외(손대지 않음)");
+        assert_eq!(out[1], Some(true), "연사 [0,1] 고점 유지");
+        assert_eq!(out[0], Some(false), "연사 저점 강등");
+        assert_eq!(out[2], Some(true), "단독 유지");
+    }
+
+    #[test]
+    fn group_culling_dedup_keeps_best() {
+        let h = dhash(&gradient(120, 90, 0));
+        let h2 = dhash(&gradient(120, 90, 0));
+        let hd = dhash(&solid(120, 90, [200, 30, 30]));
+        let items = vec![
+            CullItem { good: true, rank: 0.4, dhash: Some(h), shot_time: None, meta: PhotoMeta::default() },
+            CullItem { good: true, rank: 0.8, dhash: Some(h2), shot_time: None, meta: PhotoMeta::default() },
+            CullItem { good: true, rank: 0.6, dhash: Some(hd), shot_time: None, meta: PhotoMeta::default() },
+        ];
+        let p = GroupCullParams {
+            use_meta: false, meta_filter: MetaFilter::default(),
+            use_burst: false, burst_gap_secs: 2, burst_keep: 1,
+            use_dedup: true, dedup_hamming: 6, dedup_keep: 1,
+        };
+        let out = apply_group_culling(&items, &p);
+        assert_eq!(out[1], Some(true), "유사쌍 고점 유지");
+        assert_eq!(out[0], Some(false), "유사쌍 저점 강등");
+        assert_eq!(out[2], Some(true), "단독 유지");
     }
 }

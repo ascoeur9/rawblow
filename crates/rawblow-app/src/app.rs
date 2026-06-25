@@ -189,8 +189,21 @@ struct ProgressJob {
 /// AI 컬링(#50) 백그라운드 채점 완료 메시지. 진행률은 공유 원자 카운터(`AiCullJob::progress`)로
 /// 전달하므로(워커가 여러 개라 메시지 순서가 뒤섞이지 않게), 채널은 최종 결과만 보낸다.
 enum AiCullMsg {
-    /// 채점 완료. (원본 items 인덱스, CV 판정, CLIP-IQA P(good)) 목록.
-    Done(Vec<(usize, rawblow_core::quality::Verdict, Option<f32>)>),
+    /// 채점 완료. (원본 items 인덱스, CV 판정, CLIP-IQA P(good)) 목록 + 그룹 컬링용 부가정보.
+    Done(
+        Vec<(usize, rawblow_core::quality::Verdict, Option<f32>)>,
+        std::collections::HashMap<usize, CullExtra>,
+    ),
+}
+
+/// 그룹 컬링(메타·연사·중복)용 컷별 부가정보. 본 판정 흐름과 분리해 워커가 부가 수집한다.
+#[derive(Clone, Default)]
+struct CullExtra {
+    /// 그룹 내 베스트 랭킹용 선명도(미적 점수 없을 때 fallback).
+    sharp: f32,
+    dhash: Option<u64>,
+    shot_time: Option<i64>,
+    meta: rawblow_core::cull_ext::PhotoMeta,
 }
 
 /// 진행 중인 AI 컬링 채점(#50). 워커 풀(여러 스레드)이 디코딩+채점을 병렬로 수행하고,
@@ -219,6 +232,8 @@ struct CullCacheEntry {
     mtime: std::time::SystemTime,
     sig: u64,
     report: rawblow_core::quality::QualityReport,
+    /// dHash(시각중복용). 미적/CV만 돌린 옛 캐시엔 없을 수 있음(None) → dedup 필요 시 재디코드.
+    dhash: Option<u64>,
 }
 
 /// 디스크 직렬화용 미러(세션 간 재컬링 즉시화). SystemTime은 UNIX epoch 나노초로 저장.
@@ -228,6 +243,8 @@ struct CullCacheDisk {
     mtime_nanos: u64,
     sig: u64,
     report: rawblow_core::quality::QualityReport,
+    #[serde(default)]
+    dhash: Option<u64>,
 }
 
 /// 컬링 캐시 파일 경로(`config_dir/cull-cache.json`).
@@ -248,7 +265,7 @@ fn load_cull_cache_from(path: &std::path::Path) -> std::collections::HashMap<Pat
     for d in list {
         map.insert(
             PathBuf::from(d.path),
-            CullCacheEntry { mtime: UNIX_EPOCH + Duration::from_nanos(d.mtime_nanos), sig: d.sig, report: d.report },
+            CullCacheEntry { mtime: UNIX_EPOCH + Duration::from_nanos(d.mtime_nanos), sig: d.sig, report: d.report, dhash: d.dhash },
         );
     }
     map
@@ -266,13 +283,34 @@ fn save_cull_cache_to(path: &std::path::Path, map: &std::collections::HashMap<Pa
         .iter()
         .filter_map(|(p, e)| {
             let nanos = e.mtime.duration_since(UNIX_EPOCH).ok()?.as_nanos() as u64;
-            Some(CullCacheDisk { path: p.to_string_lossy().into_owned(), mtime_nanos: nanos, sig: e.sig, report: e.report })
+            Some(CullCacheDisk { path: p.to_string_lossy().into_owned(), mtime_nanos: nanos, sig: e.sig, report: e.report, dhash: e.dhash })
         })
         .collect();
     list.truncate(50_000);
     if let Ok(s) = serde_json::to_string(&list) {
         let _ = std::fs::write(path, s);
     }
+}
+
+/// 그룹 컬링용 컷별 부가정보 구성. need_meta면 EXIF(헤더만, 저렴)를 읽어 촬영시각·메타를 채운다.
+fn cull_extra(
+    report: &rawblow_core::quality::QualityReport,
+    dhash: Option<u64>,
+    path: &std::path::Path,
+    need_meta: bool,
+) -> CullExtra {
+    let (shot_time, meta) = if need_meta {
+        match read_exif(path) {
+            Some(e) => {
+                let m = rawblow_core::cull_ext::PhotoMeta::from_exif(&e);
+                (m.datetime_secs, m)
+            }
+            None => (None, Default::default()),
+        }
+    } else {
+        (None, Default::default())
+    };
+    CullExtra { sharp: report.focus.sharpness, dhash, shot_time, meta }
 }
 
 /// CLIP-IQA 모델 자동 다운로드(#50) 진행 메시지.
@@ -4215,6 +4253,19 @@ impl RawBlowApp {
         let results = std::sync::Arc::new(std::sync::Mutex::new(
             Vec::<(usize, Verdict, Option<f32>)>::with_capacity(total),
         ));
+        // 그룹 컬링(메타·연사·중복) 부가정보. 필요할 때만 EXIF/dHash를 수집(없으면 비용 0).
+        let extras = std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::<usize, CullExtra>::with_capacity(total),
+        ));
+        let need_dhash = cfg.use_dedup;
+        let need_meta = cfg.use_burst
+            || cfg.filter_orientation != config::OrientationFilter::Any
+            || cfg.use_iso_max
+            || cfg.use_focal_range
+            || cfg.use_aperture_max
+            || cfg.use_shutter_min
+            || !cfg.camera_contains.trim().is_empty()
+            || !cfg.lens_contains.trim().is_empty();
         let targets = std::sync::Arc::new(targets);
 
         // 캐시 서명: 검사 신호 + AF + 디코드 해상도 + 모델 식별자(임계값은 제외 → 임계만 바꿔
@@ -4237,6 +4288,7 @@ impl RawBlowApp {
             let progress = progress.clone();
             let cancel_w = cancel.clone();
             let results = results.clone();
+            let extras = extras.clone();
             let cache = cache.clone();
             let cache_hits = cache_hits.clone();
             #[cfg(feature = "ai")]
@@ -4283,13 +4335,21 @@ impl RawBlowApp {
                         // 캐시 적중: 같은 파일(mtime)·같은 설정(sig)이면 보고서 재사용(디코드/추론 생략).
                         let cached = mtime.and_then(|mt| {
                             cache.lock().ok().and_then(|c| {
-                                c.get(path).filter(|e| e.mtime == mt && e.sig == sig).map(|e| e.report)
+                                c.get(path)
+                                    .filter(|e| e.mtime == mt && e.sig == sig && (!need_dhash || e.dhash.is_some()))
+                                    .map(|e| (e.report, e.dhash))
                             })
                         });
-                        if let Some(report) = cached {
+                        if let Some((report, dh)) = cached {
                             let cv = cv_only.verdict(&report);
                             if let Ok(mut g) = results.lock() {
                                 g.push((*real, cv, report.aesthetic));
+                            }
+                            if need_meta || need_dhash {
+                                let ex = cull_extra(&report, dh, path, need_meta);
+                                if let Ok(mut m) = extras.lock() {
+                                    m.insert(*real, ex);
+                                }
                             }
                             cache_hits.fetch_add(1, Ordering::Relaxed);
                             progress.fetch_add(1, Ordering::Relaxed);
@@ -4338,16 +4398,33 @@ impl RawBlowApp {
                         }
                     }
                     // 3단계: 미스 결과 적재(CV 판정 + 미적 점수). 최종 조합은 apply_cull_verdicts가 한다.
+                    // dHash(시각중복 필요 시) — 디코드된 이미지에서. imgs[k] ↔ metas[k] ↔ miss_keys[k].
+                    let dhashes: Vec<Option<u64>> = if need_dhash {
+                        imgs.iter().map(|im| Some(rawblow_core::cull_ext::dhash(im))).collect()
+                    } else {
+                        vec![None; metas.len()]
+                    };
                     if let Ok(mut g) = results.lock() {
                         for (real, q, cv) in &metas {
                             g.push((*real, *cv, q.aesthetic));
                         }
                     }
+                    if need_meta || need_dhash {
+                        if let Ok(mut m) = extras.lock() {
+                            for (k, (real, q, _)) in metas.iter().enumerate() {
+                                let path = &miss_keys[k].0;
+                                m.insert(*real, cull_extra(q, dhashes.get(k).copied().flatten(), path, need_meta));
+                            }
+                        }
+                    }
                     // 4단계: 미스 보고서를 캐시에 저장(다음 재컬링에서 디코드/추론 생략).
                     if let Ok(mut c) = cache.lock() {
-                        for ((_, q, _), (path, mtime)) in metas.iter().zip(miss_keys.iter()) {
+                        for (k, ((_, q, _), (path, mtime))) in metas.iter().zip(miss_keys.iter()).enumerate() {
                             if let Some(mt) = mtime {
-                                c.insert(path.clone(), CullCacheEntry { mtime: *mt, sig, report: *q });
+                                c.insert(
+                                    path.clone(),
+                                    CullCacheEntry { mtime: *mt, sig, report: *q, dhash: dhashes.get(k).copied().flatten() },
+                                );
                             }
                         }
                     }
@@ -4364,7 +4441,11 @@ impl RawBlowApp {
                 Ok(m) => m.into_inner().unwrap_or_default(),
                 Err(arc) => arc.lock().map(|g| g.clone()).unwrap_or_default(),
             };
-            let _ = tx.send(AiCullMsg::Done(out));
+            let ex = match std::sync::Arc::try_unwrap(extras) {
+                Ok(m) => m.into_inner().unwrap_or_default(),
+                Err(arc) => arc.lock().map(|g| g.clone()).unwrap_or_default(),
+            };
+            let _ = tx.send(AiCullMsg::Done(out, ex));
         });
 
         self.ai_cull = Some(AiCullJob {
@@ -4383,21 +4464,21 @@ impl RawBlowApp {
     fn pump_ai_cull(&mut self, ctx: &egui::Context) {
         let Some(job) = self.ai_cull.take() else { return };
 
-        let mut done_results: Option<Vec<(usize, Verdict, Option<f32>)>> = None;
+        let mut done_results: Option<(Vec<(usize, Verdict, Option<f32>)>, std::collections::HashMap<usize, CullExtra>)> = None;
         let mut disconnected = false;
         match job.rx.try_recv() {
-            Ok(AiCullMsg::Done(v)) => done_results = Some(v),
+            Ok(AiCullMsg::Done(v, ex)) => done_results = Some((v, ex)),
             Err(crossbeam_channel::TryRecvError::Empty) => {}
             Err(crossbeam_channel::TryRecvError::Disconnected) => disconnected = true,
         }
 
-        if let Some(v) = done_results {
+        if let Some((v, ex)) = done_results {
             self.ai_cull = None;
             self.ai_cull_cancel_confirm = false;
             // 폴더가 바뀌면 캡처한 real 인덱스가 다른 사진을 가리킨다 → 결과 폐기(오염 방지).
             if job.generation == self.generation {
                 let hits = job.cache_hits.load(Ordering::Relaxed);
-                self.apply_cull_verdicts(v, hits);
+                self.apply_cull_verdicts(v, ex, hits);
                 // 갱신된 캐시를 디스크에 저장(다음 세션 재컬링 즉시화). 메인 스레드 I/O 히치를 피해
                 // 스냅샷만 잠금 안에서 뜨고(빠른 memcpy) 직렬화·쓰기는 백그라운드에서.
                 let cache = self.cull_cache.clone();
@@ -4554,7 +4635,12 @@ impl RawBlowApp {
 
     /// AI 컬링 판정을 선택한 분류축에 적용(#50). "양쪽 다 표시" — 좋음/탈락 모두 표시.
     /// `cache_hits`: 캐시에서 재사용해 디코드/추론을 건너뛴 장 수(토스트 표시).
-    fn apply_cull_verdicts(&mut self, mut results: Vec<(usize, Verdict, Option<f32>)>, cache_hits: usize) {
+    fn apply_cull_verdicts(
+        &mut self,
+        mut results: Vec<(usize, Verdict, Option<f32>)>,
+        extras: std::collections::HashMap<usize, CullExtra>,
+        cache_hits: usize,
+    ) {
         let lang = self.lang;
         let c = self.cfg.ai_cull.clone();
 
@@ -4571,10 +4657,60 @@ impl RawBlowApp {
             format!(" (P(good) {:.2}–{:.2})", min, max)
         };
 
-        let (mut good, mut bad) = (0usize, 0usize);
-        for (real, v, _) in results {
-            let Some(it) = self.items.get_mut(real) else { continue };
-            let is_good = matches!(v, Verdict::Good);
+        // 그룹 컬링(메타 제외 → 연사 베스트 → 시각중복). 활성 시에만. None=제외(손대지 않음).
+        let meta_active = c.filter_orientation != config::OrientationFilter::Any
+            || c.use_iso_max
+            || c.use_focal_range
+            || c.use_aperture_max
+            || c.use_shutter_min
+            || !c.camera_contains.trim().is_empty()
+            || !c.lens_contains.trim().is_empty();
+        let group_active = meta_active || c.use_burst || c.use_dedup;
+        let group_verdicts: Vec<Option<bool>> = if group_active {
+            use rawblow_core::cull_ext::{CullItem, GroupCullParams};
+            let items: Vec<CullItem> = results
+                .iter()
+                .map(|(real, v, a)| {
+                    let ex = extras.get(real);
+                    CullItem {
+                        good: matches!(v, Verdict::Good),
+                        rank: a.unwrap_or_else(|| ex.map(|e| e.sharp).unwrap_or(0.0)),
+                        dhash: ex.and_then(|e| e.dhash),
+                        shot_time: ex.and_then(|e| e.shot_time),
+                        meta: ex.map(|e| e.meta.clone()).unwrap_or_default(),
+                    }
+                })
+                .collect();
+            let p = GroupCullParams {
+                use_meta: meta_active,
+                meta_filter: c.meta_filter(),
+                use_burst: c.use_burst,
+                burst_gap_secs: c.burst_gap_secs as i64,
+                burst_keep: c.burst_keep as usize,
+                use_dedup: c.use_dedup,
+                dedup_hamming: c.dedup_hamming,
+                dedup_keep: c.dedup_keep as usize,
+            };
+            rawblow_core::cull_ext::apply_group_culling(&items, &p)
+        } else {
+            Vec::new()
+        };
+
+        let (mut good, mut bad, mut skipped) = (0usize, 0usize, 0usize);
+        for (i, (real, v, _)) in results.iter().enumerate() {
+            // 그룹 컬링 결과가 본 판정을 덮어쓴다(None=제외, 손대지 않음).
+            let is_good = if group_active {
+                match group_verdicts.get(i).copied().flatten() {
+                    Some(g) => g,
+                    None => {
+                        skipped += 1;
+                        continue;
+                    }
+                }
+            } else {
+                matches!(v, Verdict::Good)
+            };
+            let Some(it) = self.items.get_mut(*real) else { continue };
             if is_good { good += 1; } else { bad += 1; }
             match c.target {
                 AiCullTarget::Label => {
@@ -4589,16 +4725,14 @@ impl RawBlowApp {
             }
         }
         self.sidecar_dirty = true;
-        let cache_info = if cache_hits > 0 {
-            format!(" · 캐시 {}장", cache_hits)
-        } else {
-            String::new()
-        };
+        let cache_info = if cache_hits > 0 { format!(" · 캐시 {}장", cache_hits) } else { String::new() };
+        let skip_info = if skipped > 0 { format!(" · 제외 {}장", skipped) } else { String::new() };
         self.toast = Some((
             format!(
-                "{}{}{}",
+                "{}{}{}{}",
                 trf(lang, "AI 컬링 완료 · 좋음 {} · 탈락 {}", &[&good.to_string(), &bad.to_string()]),
                 score_info,
+                skip_info,
                 cache_info
             ),
             Instant::now(),
