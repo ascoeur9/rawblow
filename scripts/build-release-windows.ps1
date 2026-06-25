@@ -4,84 +4,127 @@
 #     .\scripts\build-release-windows.ps1
 #
 # 하는 일:
-#   1) RUSTFLAGS를 정확히 한 번에 설정 (+crt-static + remap-path-prefix)
-#      → 빌드 세션의 잔존 환경변수에 영향받지 않음
-#   2) cargo build --release -p rawblow-app
-#   3) dumpbin /dependents 자동 검증 — VCRUNTIME140.dll / api-ms-win-crt-*.dll
-#      의존이 잡히면 종료 코드 1로 실패 (정적 CRT 누락 = 이슈 #10 재발 방지)
+#   1) RUSTFLAGS 설정 (--remap-path-prefix). crt-static은 쓰지 않는다(아래 "왜" 참조).
+#   2) cargo build --release -p rawblow-app  (기본 피처 = ai 포함, ONNX 미적 컬링)
+#   3) dist\RawBlow-v<버전>-windows-x86_64\ 에 배포 묶음 구성:
+#        RawBlow.exe
+#        + ORT/Dawn GPU 런타임 DLL(dxcompiler/dxil/webgpu_dawn) — target\release에서
+#        + VC++ 런타임 DLL(vcruntime140/_1, msvcp140/_1) — MSVC 재배포 폴더에서
+#   4) dumpbin /dependents 로 묶음 자체완결성 검증 — exe·DLL이 참조하는 non-OS DLL이
+#      전부 묶음 안에 있어야 통과. 하나라도 빠지면 exit 1 (이슈 #10 재발 방지).
+#   5) NSIS(makensis)로 단일 setup.exe 인스톨러 빌드 → dist\RawBlow-Setup-v<버전>.exe.
+#      (NSIS 필요: winget install NSIS.NSIS. NSIS는 zlib 라이선스로 상용 무료.)
 #
-# 왜 필요한가:
-#   .cargo/config.toml의 `[target.x86_64-pc-windows-msvc] rustflags`는 환경변수
-#   `RUSTFLAGS`가 설정된 순간 통째로 덮어써진다(append 아님). 이전 PowerShell
-#   세션에서 다른 RUSTFLAGS를 한 번이라도 설정해 두면 거기서 정적 CRT가 빠진 채
-#   빌드되어 VC++ 재배포 미설치 PC에서 LoadLibrary error 126이 발생한다.
-#   이 스크립트가 그 변동성을 차단한다.
+# 왜 crt-static을 못 쓰는가 (중요):
+#   ai 피처의 ORT(ONNX Runtime) download-binaries prebuilt는 /MD(동적 CRT)로 빌드돼 있어
+#   +crt-static(/MT)과 링크 충돌한다(LNK2019: __imp__wfopen 등). 따라서 동적 CRT로 빌드하고
+#   VC++ 런타임 DLL을 묶음에 동봉해 재배포 미설치 PC에서도 실행되게 한다. 또한 GPU EP(webgpu)는
+#   Dawn DLL 3종을 exe 옆에 요구하므로 윈도우 ai 빌드는 애초에 단독 exe가 불가능하다.
+#   (ai 없이 단독 exe가 필요하면: cargo build --release -p rawblow-app --no-default-features
+#    + RUSTFLAGS에 +crt-static 추가. 단 미적 AI는 빠진다.)
 
 [CmdletBinding()]
 param(
     [string]$Package = "rawblow-app",
     [string]$BinName = "rawblow",
-    [switch]$SkipVerify
+    [switch]$SkipVerify,
+    [switch]$SkipInstaller
 )
 
 $ErrorActionPreference = "Stop"
-
-# 저장소 루트 = 이 스크립트의 상위 디렉토리.
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $RepoRoot
 try {
-    Write-Host "[1/3] RUSTFLAGS 설정 (+crt-static, --remap-path-prefix)" -ForegroundColor Cyan
-    # USERPROFILE 누락 환경(예: SYSTEM 컨텍스트) 대비 fallback.
+    Write-Host "[1/5] RUSTFLAGS 설정 (--remap-path-prefix, crt-static 미사용)" -ForegroundColor Cyan
     $home_dir = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
-    $env:RUSTFLAGS = "-C target-feature=+crt-static --remap-path-prefix=$home_dir=~"
+    $env:RUSTFLAGS = "--remap-path-prefix=$home_dir=~"
     Write-Host "       RUSTFLAGS = $env:RUSTFLAGS"
 
-    Write-Host "[2/3] cargo build --release -p $Package" -ForegroundColor Cyan
+    Write-Host "[2/5] cargo build --release -p $Package" -ForegroundColor Cyan
     & cargo build --release -p $Package
-    if ($LASTEXITCODE -ne 0) {
-        throw "cargo build 실패 (exit $LASTEXITCODE)"
-    }
+    if ($LASTEXITCODE -ne 0) { throw "cargo build 실패 (exit $LASTEXITCODE)" }
 
-    $exe = Join-Path $RepoRoot "target\release\$BinName.exe"
-    if (-not (Test-Path $exe)) {
-        throw "산출물을 찾을 수 없음: $exe"
+    $rel = Join-Path $RepoRoot "target\release"
+    $exe = Join-Path $rel "$BinName.exe"
+    if (-not (Test-Path $exe)) { throw "산출물을 찾을 수 없음: $exe" }
+
+    # 버전(워크스페이스 Cargo.toml).
+    $m = Select-String -Path (Join-Path $RepoRoot "Cargo.toml") -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+    $ver = if ($m) { $m.Matches.Groups[1].Value } else { (Get-Item $exe).VersionInfo.ProductVersion }
+
+    Write-Host "[3/5] 배포 묶음 구성 (v$ver)" -ForegroundColor Cyan
+    $stage = Join-Path $RepoRoot ("dist\RawBlow-v{0}-windows-x86_64" -f $ver)
+    if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+    New-Item -ItemType Directory -Force $stage | Out-Null
+
+    Copy-Item $exe (Join-Path $stage "RawBlow.exe")
+    # target\release의 런타임 DLL(ORT/Dawn) 전부 — cargo가 빌드 시 배치한 것.
+    Get-ChildItem (Join-Path $rel "*.dll") -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName $stage }
+
+    # VC++ 런타임 DLL — MSVC 재배포 폴더에서 최신 버전을 찾아 동봉.
+    $crtRoot = Get-ChildItem -Path @("${env:ProgramFiles}\Microsoft Visual Studio","${env:ProgramFiles(x86)}\Microsoft Visual Studio") `
+        -Recurse -Directory -Filter "Microsoft.VC*.CRT" -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match "\\x64\\" -and $_.FullName -notmatch "onecore" } |
+        Sort-Object FullName -Descending | Select-Object -First 1
+    if (-not $crtRoot) { throw "VC++ 재배포(Microsoft.VC*.CRT\x64) 폴더를 찾지 못함 — MSVC Build Tools 필요" }
+    foreach ($d in @("vcruntime140.dll","vcruntime140_1.dll","msvcp140.dll","msvcp140_1.dll")) {
+        $src = Join-Path $crtRoot.FullName $d
+        if (Test-Path $src) { Copy-Item $src $stage } else { Write-Warning "VC++ DLL 없음: $d" }
     }
-    Write-Host "       산출물: $exe"
+    Get-ChildItem $stage | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,2)}} | Format-Table -AutoSize | Out-Host
 
     if ($SkipVerify) {
-        Write-Host "[3/3] 검증 생략 (-SkipVerify)" -ForegroundColor Yellow
-        return
-    }
-
-    Write-Host "[3/3] dumpbin /dependents 검증" -ForegroundColor Cyan
-    $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
-    if (-not $dumpbin) {
-        # MSVC Build Tools 설치 시 자동 추가되는 위치까지는 PATH가 없을 수 있음.
-        # vswhere로 위치를 찾는다.
-        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-        if (Test-Path $vswhere) {
-            $vsroot = & $vswhere -latest -products * -find "VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
-            if ($vsroot) { $dumpbin = Get-Command $vsroot }
+        Write-Host "[4/5] 검증 생략 (-SkipVerify)" -ForegroundColor Yellow
+    } else {
+        Write-Host "[4/5] dumpbin 자체완결성 검증" -ForegroundColor Cyan
+        $db = Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe","${env:ProgramFiles}\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
+        if (-not $db) {
+            Write-Warning "dumpbin.exe를 찾지 못해 검증 생략. 묶음은 생성됨."
+        } else {
+            # OS 내장으로 간주: api-ms-win-* + 알려진 시스템 DLL.
+            $osDlls = @("kernel32.dll","ntdll.dll","ole32.dll","oleaut32.dll","advapi32.dll","user32.dll",
+                "imm32.dll","shell32.dll","ws2_32.dll","shlwapi.dll","opengl32.dll","gdi32.dll","dwmapi.dll",
+                "uxtheme.dll","dbghelp.dll","setupapi.dll","dxgi.dll","bcrypt.dll","bcryptprimitives.dll",
+                "crypt32.dll","secur32.dll","winmm.dll","version.dll")
+            $present = (Get-ChildItem "$stage\*.dll").Name | ForEach-Object { $_.ToLower() }
+            $missing = @()
+            foreach ($f in (Get-ChildItem "$stage\*.exe","$stage\*.dll")) {
+                $deps = & $db.FullName /dependents $f.FullName 2>$null |
+                    Select-String -Pattern "^\s+\S+\.dll\s*$" | ForEach-Object { $_.Line.Trim().ToLower() }
+                foreach ($d in $deps) {
+                    if ($d -like "api-ms-win-*") { continue }
+                    if ($osDlls -contains $d) { continue }
+                    if ($present -contains $d) { continue }
+                    $missing += ("{0} -> {1}" -f $f.Name, $d)
+                }
+            }
+            if ($missing) {
+                Write-Host "❌ 누락된 non-OS DLL (재배포 미설치 PC에서 실행 불가):" -ForegroundColor Red
+                $missing | Select-Object -Unique | ForEach-Object { Write-Host "   $_" -ForegroundColor Red }
+                exit 1
+            }
+            Write-Host "✅ 모든 non-OS 의존 DLL이 묶음에 포함됨 — 배포 OK" -ForegroundColor Green
         }
     }
-    if (-not $dumpbin) {
-        Write-Warning "dumpbin.exe를 찾지 못해 검증을 건너뜁니다 (MSVC Build Tools 필요). 결과 exe는 만들었습니다."
+
+    if ($SkipInstaller) {
+        Write-Host "[5/5] 인스톨러 생략 (-SkipInstaller). 스테이징: $stage" -ForegroundColor Yellow
         return
     }
-
-    $out = & $dumpbin.Source /dependents $exe
-    $bad = $out | Select-String -Pattern "vcruntime|api-ms-win-crt" -CaseSensitive:$false
-    if ($bad) {
-        Write-Host ""
-        Write-Host "❌ 정적 CRT 누락 — 다음 DLL 의존이 발견되어 배포 부적합:" -ForegroundColor Red
-        $bad | ForEach-Object { Write-Host "   $($_.Line.Trim())" -ForegroundColor Red }
-        Write-Host ""
-        Write-Host "원인 후보: 셸 세션의 RUSTFLAGS가 다른 값으로 캐시되어 있거나" -ForegroundColor Yellow
-        Write-Host "cargo가 다른 .cargo/config로 빌드됐을 가능성. PowerShell을 새로" -ForegroundColor Yellow
-        Write-Host "열고 다시 시도하거나 ``Remove-Item Env:RUSTFLAGS`` 후 재실행 권장." -ForegroundColor Yellow
-        exit 1
-    }
-    Write-Host "✅ VCRUNTIME / api-ms-win-crt 의존 없음 — 배포 OK" -ForegroundColor Green
+    Write-Host "[5/5] NSIS 인스톨러 빌드" -ForegroundColor Cyan
+    $makensis = @(
+        "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
+        "${env:ProgramFiles}\NSIS\makensis.exe",
+        "$env:LOCALAPPDATA\Programs\NSIS\makensis.exe"
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $makensis) { throw "makensis.exe 없음 — NSIS 설치 필요: winget install NSIS.NSIS" }
+    $nsi = Join-Path $PSScriptRoot "rawblow.nsi"
+    $distDir = Join-Path $RepoRoot "dist"
+    & $makensis "/DAPPVERSION=$ver" "/DSTAGEDIR=$stage" "/DOUTDIR=$distDir" $nsi
+    if ($LASTEXITCODE -ne 0) { throw "makensis 실패 (exit $LASTEXITCODE)" }
+    $setup = Join-Path $distDir ("RawBlow-Setup-v{0}.exe" -f $ver)
+    Write-Host ("✅ {0} ({1} MB)" -f $setup, [math]::Round((Get-Item $setup).Length/1MB,1)) -ForegroundColor Green
 }
 finally {
     Pop-Location
