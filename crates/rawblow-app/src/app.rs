@@ -3739,12 +3739,17 @@ impl RawBlowApp {
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .fixed_size(Vec2::new(540.0, 0.0))
-            .max_height(ctx.screen_rect().height() - 48.0)
+            // 폭만 540으로 고정하고 높이는 내용에 맞춰 자동 — 아래 ScrollArea가 화면 높이로 상한을 둔다.
+            // fixed_size(.., 0.0)는 높이까지 0으로 고정해, 전체를 감싼 ScrollArea가 ~0 높이로 찌그러졌다(회귀).
+            .min_width(540.0)
+            .max_width(540.0)
             .frame(modal_frame())
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(ctx.screen_rect().height() - 96.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
                 modal_header(
                     ui,
                     tr(lang, "AI 컬링"),

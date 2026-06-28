@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/rawblow-core", "crates/rawblow-app"]
 
 [workspace.package]
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 authors = ["Hare"]
 # ?낆젏(All rights reserved). ?쒖? OSS ?쇱씠?좎뒪 ?꾨떂 ??LICENSE ?뚯씪 李몄“. crates.io 誘멸쾶??

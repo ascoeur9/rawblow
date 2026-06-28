@@ -97,6 +97,12 @@ gh release create vX.Y.Z "RawBlow-vX.Y.Z-<os>.exe" \
 
 ## 변경 이력 (Changelog)
 
+### v0.5.2
+- **AI 컬링 다이얼로그 높이 찌그러짐 수정** — 다이얼로그가 세로로 매우 작게 떠 내용이 거의 안 보이던 버그
+  수정. 전체 내용을 `ScrollArea`로 감싸면서 창에 `fixed_size(540, 0)`(높이 0 고정)이 남아 ScrollArea가
+  ~0 높이로 찌그러진 회귀였다. 폭만 540으로 고정(`min/max_width`)하고 높이는 내용에 맞춰 자동, ScrollArea에
+  `max_height = 화면높이 − 96` + `auto_shrink([false, true])`를 줘서 내용이 길면 그 안에서 스크롤되게 했다.
+
 ### v0.5.1
 - **니콘 Z5II AF 포인트 표시(#50)** — Z 미러리스 AFInfo2 단일점(픽셀좌표) 경로를 특정 버전
   화이트리스트 대신 **V04xx 계열 전체**로 일반화. 단일점은 `AFAreaX/YPosition ÷ AFImageWidth/Height`라
