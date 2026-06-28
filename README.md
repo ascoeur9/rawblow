@@ -45,7 +45,7 @@
 
 - **Windows x64** — `RawBlow-Setup-vX.Y.Z.exe`를 실행해 설치(필요한 런타임 모두 포함, 별도 설치 불필요). 코드 서명이 없어 첫 실행 시 SmartScreen "Windows의 PC 보호" 경고가 뜨면 **추가 정보 → 실행**.
 - **macOS (Apple Silicon)** — `RawBlow-vX.Y.Z-macos-arm64.zip` (압축 풀면 `RawBlow.app`)
-  - 처음 실행 시 "개발자를 확인할 수 없음" 경고가 뜨면 **우클릭 → 열기**로 한 번 허용하세요(공증 미적용).
+  - 처음 실행 시 "확인되지 않은 개발자" 경고가 뜨면(공증 미적용): 경고창에서 **완료**를 누른 뒤 **시스템 설정 → 개인정보 보호 및 보안 → 보안** 섹션 맨 아래의 **그래도 열기**를 누르세요. (macOS 15 Sequoia부터는 예전의 **우클릭 → 열기** 우회가 더 이상 동작하지 않습니다.)
   - 또는 터미널에서 `xattr -dr com.apple.quarantine /Applications/RawBlow.app`
 
 ### 소스에서 빌드 (Linux, 그 외)

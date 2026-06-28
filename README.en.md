@@ -41,7 +41,7 @@ Grab the file for your OS from [**Releases**](https://github.com/ascoeur9/rawblo
 
 - **Windows x64** — Run `RawBlow-Setup-vX.Y.Z.exe` to install (all required runtimes bundled). It is unsigned, so if SmartScreen shows a "Windows protected your PC" warning, click **More info → Run anyway**.
 - **macOS (Apple Silicon)** — `RawBlow-vX.Y.Z-macos-arm64.zip` (unzip to get `RawBlow.app`)
-  - On first launch, if you get a "developer cannot be verified" warning, allow it once via **right-click → Open** (not notarized).
+  - On first launch, if you get an "unidentified developer" warning (not notarized): click **Done** in the dialog, then open **System Settings → Privacy & Security → Security** and click **Open Anyway** near the bottom. (Since macOS 15 Sequoia, the old **right-click → Open** bypass no longer works.)
   - Or, in a terminal, `xattr -dr com.apple.quarantine /Applications/RawBlow.app`
 
 ### Build from source (Linux, others)
