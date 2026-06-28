@@ -206,6 +206,8 @@ struct CullExtra {
     meta: rawblow_core::cull_ext::PhotoMeta,
     /// 얼굴 존재(YuNet). "얼굴 있는 컷"·"장르 인물/풍경" 하드필터에 사용. 미검사면 None.
     face: Option<bool>,
+    /// CLIP sharp 축 P(sharp). "AI 선명도" 하드필터에 사용. 미검사면 None.
+    sharp_ai: Option<f32>,
 }
 
 /// 진행 중인 AI 컬링 채점(#50). 워커 풀(여러 스레드)이 디코딩+채점을 병렬로 수행하고,
@@ -312,7 +314,7 @@ fn cull_extra(
     } else {
         (None, Default::default())
     };
-    CullExtra { sharp: report.focus.sharpness, dhash, shot_time, meta, face: report.face }
+    CullExtra { sharp: report.focus.sharpness, dhash, shot_time, meta, face: report.face, sharp_ai: report.sharp_ai }
 }
 
 /// CLIP-IQA 모델 자동 다운로드(#50) 진행 메시지.
@@ -4076,7 +4078,7 @@ impl RawBlowApp {
                 }
                 ui.add_space(16.0);
 
-                // ── AI AXES ── 장르 픽은 얼굴 검출(YuNet)로 실동작. AI 선명도·커스텀은 CLIP 임베딩 모델 후속.
+                // ── AI AXES ── 장르 픽=얼굴 검출(YuNet), AI 선명도=CLIP 다축 sharp 축으로 실동작. 커스텀만 후속.
                 section_label(ui, "AI AXES");
                 ui.horizontal_wrapped(|ui| {
                     if check_chip(ui, tr(lang, "장르 픽"), None, theme::ACCENT, c.use_genre) {
@@ -4103,8 +4105,27 @@ impl RawBlowApp {
                 if c.use_genre {
                     ui.label(egui::RichText::new(tr(lang, "장르 픽: 얼굴 검출(YuNet) 기반 — 인물=얼굴 있음 / 풍경=얼굴 없음")).font(mono(9.0)).color(theme::INK4));
                 }
-                if c.use_sharp_ai || c.use_custom_prompt {
-                    ui.label(egui::RichText::new(tr(lang, "AI 선명도·커스텀 프롬프트: CLIP 임베딩 모델 통합 후 동작(현재는 옵션 저장만)")).font(mono(9.0)).color(theme::WARN));
+                // AI 선명도(CLIP sharp 축): P(sharp) 하한 슬라이더 + 모델 상태/다운로드.
+                if c.use_sharp_ai {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(tr(lang, "선명도 하한 P(sharp)")).font(mono(11.0)).color(theme::INK3));
+                        ui.add(egui::Slider::new(&mut c.sharp_min, 0.1..=0.9).fixed_decimals(2));
+                    });
+                    if !Self::model_present(config::CLIP_AXES_MODEL) {
+                        ui.label(egui::RichText::new(tr(lang, "CLIP 다축 모델(89MB) 없음 — 아래 버튼으로 받으세요")).font(mono(10.0)).color(theme::WARN));
+                        #[cfg(feature = "model-download")]
+                        if ui.add(egui::Button::new(
+                            egui::RichText::new(format!("  {} (CLIP 다축 89MB)  ", tr(lang, "AI 선명도 모델 다운로드")))
+                                .color(Color32::from_rgb(0x0a, 0x14, 0x20))
+                        ).fill(theme::ACCENT)).clicked() {
+                            do_download = Some(config::CLIP_AXES_MODEL);
+                        }
+                    } else {
+                        ui.label(egui::RichText::new(tr(lang, "✓ CLIP 다축 모델 준비됨")).font(mono(10.0)).color(theme::ACCENT));
+                    }
+                }
+                if c.use_custom_prompt {
+                    ui.label(egui::RichText::new(tr(lang, "커스텀 프롬프트: 런타임 텍스트 인코더 통합 후 동작(현재는 옵션 저장만)")).font(mono(9.0)).color(theme::WARN));
                 }
                 ui.add_space(16.0);
 
@@ -4246,7 +4267,8 @@ impl RawBlowApp {
                         let aesthetic_blocks = c.use_aesthetic && !Self::model_present(c.model_spec());
                         // 얼굴/장르 옵션이 켜졌는데 YuNet 모델이 없으면 시작 차단(다운로드 유도).
                         let face_blocks = (c.use_face || c.use_genre) && !Self::model_present(config::FACE_MODEL);
-                    let can_start = c.any_enabled() && count > 0 && !aesthetic_blocks && !face_blocks;
+                        let sharp_blocks = c.use_sharp_ai && !Self::model_present(config::CLIP_AXES_MODEL);
+                    let can_start = c.any_enabled() && count > 0 && !aesthetic_blocks && !face_blocks && !sharp_blocks;
                         if ui
                             .add_enabled(
                                 can_start,
@@ -4284,6 +4306,8 @@ impl RawBlowApp {
             {
                 let label = if spec.file == config::FACE_MODEL.file {
                     tr(lang, "YuNet (얼굴)").to_string()
+                } else if spec.file == config::CLIP_AXES_MODEL.file {
+                    tr(lang, "CLIP 다축 (AI 선명도)").to_string()
                 } else if self.cfg.ai_cull.use_gpu {
                     tr(lang, "RN50 (GPU 고속)").to_string()
                 } else {
@@ -4358,6 +4382,19 @@ impl RawBlowApp {
         #[cfg(not(feature = "ai"))]
         let face_model_path: Option<PathBuf> = None;
         let need_face = face_model_path.is_some();
+
+        // CLIP 다축(AI 선명도): sharp 축 사용. 모델 없으면 비활성.
+        #[cfg(feature = "ai")]
+        let axes_model_path: Option<PathBuf> = if cfg.use_sharp_ai
+            && Self::model_present(config::CLIP_AXES_MODEL)
+        {
+            Some(Self::model_path(config::CLIP_AXES_MODEL))
+        } else {
+            None
+        };
+        #[cfg(not(feature = "ai"))]
+        let axes_model_path: Option<PathBuf> = None;
+        let need_sharp = axes_model_path.is_some();
         // GPU 모드: CoreML/WebGPU EP, intra 무관. 워커는 동시 세션으로 GPU 처리량을 채운다(메모리 ≈ N×모델).
         // CPU 모드: intra=1 세션을 코어 수만큼.
         let use_gpu = cfg.use_gpu && model_path.is_some();
@@ -4428,8 +4465,9 @@ impl RawBlowApp {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             (criteria.use_focus, criteria.use_exposure, criteria.use_tilt, use_af, cull_edge).hash(&mut h);
             model_id.hash(&mut h);
-            // 얼굴 검사 여부는 보고서(report.face)를 바꾸므로 캐시 네임스페이스를 분리한다.
+            // 얼굴·sharp 검사 여부는 보고서를 바꾸므로 캐시 네임스페이스를 분리한다.
             need_face.hash(&mut h);
+            need_sharp.hash(&mut h);
             h.finish()
         };
         let cache = self.cull_cache.clone();
@@ -4451,6 +4489,8 @@ impl RawBlowApp {
             let shared_model = shared_model.clone();
             #[cfg(feature = "ai")]
             let face_model_path = face_model_path.clone();
+            #[cfg(feature = "ai")]
+            let axes_model_path = axes_model_path.clone();
             handles.push(std::thread::spawn(move || {
                 // 공유 세션 모드면 Arc 클론, 아니면 워커 전용 세션 로드(CPU=intra1, CoreML=동시).
                 // 로드 실패 시 CV-only 폴백.
@@ -4468,6 +4508,12 @@ impl RawBlowApp {
                 let face_model: Option<std::sync::Arc<rawblow_core::face_detect::FaceModel>> = face_model_path
                     .as_ref()
                     .and_then(|p| rawblow_core::face_detect::FaceModel::load(p).ok())
+                    .map(std::sync::Arc::new);
+                // CLIP 다축 모델(AI 선명도). 워커별 CPU 로드. 실패면 sharp 검사 생략.
+                #[cfg(feature = "ai")]
+                let axes_model: Option<std::sync::Arc<rawblow_core::axes::AxesModel>> = axes_model_path
+                    .as_ref()
+                    .and_then(|p| rawblow_core::axes::AxesModel::load(p).ok())
                     .map(std::sync::Arc::new);
                 loop {
                     if cancel_w.load(Ordering::Relaxed) {
@@ -4507,7 +4553,7 @@ impl RawBlowApp {
                             if let Ok(mut g) = results.lock() {
                                 g.push((*real, cv, report.aesthetic));
                             }
-                            if need_meta || need_dhash || need_face {
+                            if need_meta || need_dhash || need_face || need_sharp {
                                 let ex = cull_extra(&report, dh, path, need_meta);
                                 if let Ok(mut m) = extras.lock() {
                                     m.insert(*real, ex);
@@ -4528,6 +4574,11 @@ impl RawBlowApp {
                             #[cfg(feature = "ai")]
                             if let Some(fm) = face_model.as_ref() {
                                 q.face = Some(fm.has_face(&img));
+                            }
+                            // AI 선명도(CLIP sharp 축): 보고서에 기록(캐시됨).
+                            #[cfg(feature = "ai")]
+                            if let Some(am) = axes_model.as_ref() {
+                                q.sharp_ai = am.scores(&img).map(|s| s[rawblow_core::axes::AXIS_SHARP]);
                             }
                             imgs.push(img);
                             metas.push((*real, q, cv));
@@ -4576,7 +4627,7 @@ impl RawBlowApp {
                             g.push((*real, *cv, q.aesthetic));
                         }
                     }
-                    if need_meta || need_dhash || need_face {
+                    if need_meta || need_dhash || need_face || need_sharp {
                         if let Ok(mut m) = extras.lock() {
                             for (k, (real, q, _)) in metas.iter().enumerate() {
                                 let path = &miss_keys[k].0;
@@ -4868,17 +4919,24 @@ impl RawBlowApp {
         //   얼굴 있는 컷만 → 얼굴 없으면 탈락 / 장르 인물 → 얼굴 없으면 탈락 / 장르 풍경 → 얼굴 있으면 탈락.
         //   face=None(모델 없음·미검출)은 안전하게 제외하지 않는다.
         let face_excluded = |real: &usize| -> bool {
-            if !(c.use_face || c.use_genre) {
-                return false;
-            }
-            match extras.get(real).and_then(|e| e.face) {
-                Some(has) => {
-                    (c.use_face && !has)
-                        || (c.use_genre && c.genre_portrait && !has)
-                        || (c.use_genre && !c.genre_portrait && has)
+            let ex = extras.get(real);
+            // 얼굴/장르(YuNet).
+            let face_bad = if c.use_face || c.use_genre {
+                match ex.and_then(|e| e.face) {
+                    Some(has) => {
+                        (c.use_face && !has)
+                            || (c.use_genre && c.genre_portrait && !has)
+                            || (c.use_genre && !c.genre_portrait && has)
+                    }
+                    None => false,
                 }
-                None => false,
-            }
+            } else {
+                false
+            };
+            // AI 선명도(CLIP sharp 축): P(sharp) < sharp_min이면 탈락.
+            let sharp_bad = c.use_sharp_ai
+                && ex.and_then(|e| e.sharp_ai).map(|s| s < c.sharp_min).unwrap_or(false);
+            face_bad || sharp_bad
         };
 
         for (i, (real, v, _)) in results.iter().enumerate() {
@@ -5981,6 +6039,7 @@ mod tests {
             tilt: rawblow_core::quality::TiltReport { degrees: 1.5, confidence: 0.6 },
             aesthetic: Some(0.42),
             face: None,
+            sharp_ai: None,
         };
         let mtime = UNIX_EPOCH + Duration::from_nanos(1_700_000_000_123_456_789);
         let mut map = HashMap::new();

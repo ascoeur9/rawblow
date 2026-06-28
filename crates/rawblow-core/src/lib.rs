@@ -5,6 +5,7 @@
 //! 참조하지 않으므로 헤드리스 환경에서도 전 범위 단위테스트가 가능하다.
 
 pub mod af;
+pub mod axes;
 pub mod cache;
 pub mod color;
 pub mod config;

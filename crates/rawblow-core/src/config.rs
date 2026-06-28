@@ -140,6 +140,15 @@ pub const FACE_MODEL: ModelSpec = ModelSpec {
     bytes: 232_589,
 };
 
+/// CLIP 다축 모델(ViT-B/32 int8): 프롬프트쌍 4개(quality·genre_portrait·sharp·compose)를 구워넣어
+/// (N,4) P(positive) 출력. "AI 선명도"(sharp 축)에 사용(#51 후속). 입력 224² CLIP 정규화.
+pub const CLIP_AXES_MODEL: ModelSpec = ModelSpec {
+    file: "clip-axes-ViT-B-32.int8.onnx",
+    url: "https://github.com/ascoeur9/rawblow/releases/download/models-v1/clip-axes-ViT-B-32.int8.onnx",
+    sha256: "f0cf17921d2b0aaa2c489d209b61e02cb7cf235c066f38e49451c0d7f8b74606",
+    bytes: 88_939_201,
+};
+
 /// AI 컬링 결과를 어느 분류축에 배정할지(#50). 라벨·별점·태그는 서로 독립이므로
 /// 사용자가 수동으로 쓰는 축을 덮어쓰지 않도록 하나만 고른다.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]

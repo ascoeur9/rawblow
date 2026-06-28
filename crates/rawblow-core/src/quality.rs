@@ -57,6 +57,9 @@ pub struct QualityReport {
     /// 얼굴 존재 여부(YuNet, #51 후속). "얼굴 있는 컷"·"장르 인물/풍경"에서 사용. 미검사면 None.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub face: Option<bool>,
+    /// CLIP 다축 sharp 축 P(sharp) 0..1(#51 후속). "AI 선명도"에서 사용. 미검사면 None.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sharp_ai: Option<f32>,
 }
 
 impl QualityReport {
@@ -74,6 +77,7 @@ impl QualityReport {
             tilt: TiltReport { degrees: 0.0, confidence: 0.0 },
             aesthetic: None,
             face: None,
+            sharp_ai: None,
         }
     }
 }
