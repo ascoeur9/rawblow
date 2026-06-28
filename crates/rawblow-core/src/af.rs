@@ -3,7 +3,9 @@
 //! Canon.pm / Panasonic.pm / Sony.pm 정의를 따르며, Windows 실파일 검증 결과는
 //! `docs/plan-af-points.md` §4-3 참조. 지원: Canon CR2/JPG(AFInfo·AFInfo2),
 //! Panasonic RW2/JPG(AFPointPosition·AFAreaSize), Sony ARW(FocusLocation),
-//! Nikon Z8/Z9 NEF(AFInfo2 V0400 — 오토에어리어 측거 존 비트마스크/단일점, #45).
+//! Nikon Z8/Z9 NEF(AFInfo2 V0400 — 오토에어리어 측거 존 비트마스크/단일점, #45),
+//! Nikon Z 미러리스 NEF(AFInfo2 V04xx — 단일점 픽셀좌표는 그리드 무관해 미검증 바디도
+//! 표시; 존 비트마스크는 0400만, #50).
 //! 미지원 바디·태그 없음·파싱 실패는 전부 None — 호출부는 조용히 미표시한다.
 
 use std::path::Path;
@@ -376,36 +378,45 @@ fn sony_af(t: &Tiff, ifd: usize) -> Option<AfInfo> {
     })
 }
 
-// ── Nikon: AFInfo2 V0400 — Z8/Z9(Expeed 7) (#45) ────────────────────────────
+// ── Nikon: AFInfo2 V04xx — 미러리스 Z 계열(Expeed 6/7) (#45, #50) ────────────
 // 인자는 Nikon Type3 MakerNote의 임베드 TIFF(오프셋 10부터)다. 레이아웃은 ExifTool
 // Nikon.pm `AFInfo2V0400`:
-//   off 0   AFInfo2Version (ASCII[4]) — "0400"이 Z8/Z9.
+//   off 0   AFInfo2Version (ASCII[4]) — "04xx"가 Z 미러리스(0400=Z8/Z9, 0402=Z5II …).
 //   off 5   AFAreaMode (197=Auto, 207=3D-tracking … 카메라가 측거 존 선택).
 //   off 7   AFCoordinatesAvailable (0=AFPointsUsed 비트마스크 사용, 1=AFAreaX/YPosition 픽셀).
 //   off 10  AFPointsUsed: 51바이트(408비트) 비트마스크, **LSB-first**, afPoints405 순서
 //           (15행 A–O × 27열 1–27). 켜진 비트 = 활성 측거점(존).
 //   off 0x3e/0x40  AFImageWidth/Height(int16u).  off 0x42/0x44  AFAreaX/YPosition(좌상단 원점, px).
+// 두 경로의 성격이 다르다:
+//   · 단일점(coords=1)은 픽셀좌표를 이미지 크기로 나누는 거라 **바디·그리드와 무관**하고,
+//     좌표가 이미지 범위 안인지로 자체 검증된다 → V04xx면 미검증 모델이라도 표시(#50).
+//   · 존 비트마스크(coords=0)는 아래 그리드 기하가 Z8/Z9(493점) 전용이라 0400만 허용한다.
 // 그리드→이미지 매핑: ExifTool 분리값(가로 260px·세로 286px)과 전체 PDAF 29×17,
 // 8256×5504 기준으로 도출 → 405점은 그 안쪽 27×15(가장자리 1줄 제외), 중심=프레임 중앙.
 fn nikon_af(nikon_tiff: &[u8]) -> Option<AfInfo> {
     let t = Tiff::new(nikon_tiff)?;
     let ifd0 = t.u32(4)? as usize;
     let (off, len) = t.data(&t.find(ifd0, 0x00b7)?)?; // AFInfo2(0x00b7)
-    if len < 0x46 || nikon_tiff.get(off..off + 4)? != b"0400" {
-        return None; // Z8/Z9(0400)만 — 다른 Z 바디(0401/0402)는 그리드가 달라 별도.
+    let ver = nikon_tiff.get(off..off + 4)?;
+    // V04xx(미러리스)만 이 레이아웃을 쓴다 — DSLR(01xx~03xx)은 구조가 전혀 다르므로 제외.
+    if len < 0x46 || &ver[..2] != b"04" {
+        return None;
     }
     let coords_avail = *nikon_tiff.get(off + 7)?;
 
     // 단일점(좌표 사용 가능): AFAreaX/YPosition(px, 좌상단 원점) ÷ AFImageWidth/Height.
+    // 그리드와 무관 + 범위 검증으로 자체 정합 → 버전 화이트리스트 없이 V04xx 전체 처리.
     if coords_avail == 1 {
         let (iw, ih) = (t.u16(off + 0x3e)? as f64, t.u16(off + 0x40)? as f64);
         let (ax, ay) = (t.u16(off + 0x42)? as f64, t.u16(off + 0x44)? as f64);
-        if iw < 1.0 || ih < 1.0 {
+        // 크기가 유효하고 측거점이 이미지 안에 있어야 한다. 벗어나면 레이아웃 불일치로 보고
+        // 조용히 미표시(clamp로 가짜 점을 그리지 않는다 — 미검증 바디 오표시 방지).
+        if iw < 1.0 || ih < 1.0 || ax > iw || ay > ih {
             return None;
         }
         let pt = AfPoint {
-            cx: (ax / iw).clamp(0.0, 1.0),
-            cy: (ay / ih).clamp(0.0, 1.0),
+            cx: ax / iw,
+            cy: ay / ih,
             w: (260.0 / iw).min(0.1), // 박스 ≈ 인접 측거점 간격.
             h: (286.0 / ih).min(0.1),
             in_focus: true,
@@ -415,6 +426,11 @@ fn nikon_af(nikon_tiff: &[u8]) -> Option<AfInfo> {
     }
 
     // 오토에어리어/3D 추적: 51바이트 비트마스크 → afPoints405(15행×27열) 활성 점들(존).
+    // 그리드 좌표는 Z8/Z9(493점, 0400) 기준이라 다른 V04xx 바디는 None으로 둔다
+    // (그리드가 달라 잘못 찍느니 미표시 — 단일점만 위에서 범용 처리).
+    if ver != b"0400" {
+        return None;
+    }
     let mask = nikon_tiff.get(off + 10..off + 10 + 51)?;
     const COLS: usize = 27;
     const ROWS: usize = 15;
@@ -690,5 +706,61 @@ mod tests {
         let mut other = vec![0u8; 80];
         other[0..4].copy_from_slice(b"0401");
         assert!(nikon_af(&nikon_embedded_tiff(&other)).is_none());
+    }
+
+    /// Nikon Z5II AFInfo2 V0402 — 단일점(픽셀좌표)은 그리드와 무관해 0400과 동일 처리(#50).
+    /// 실제 z5ii_sample/DSC_0040.NEF 값(6048×4032, X=3274,Y=2176)으로 회귀 고정.
+    #[test]
+    fn nikon_v0402_z5ii_point() {
+        let mut blob = vec![0u8; 80];
+        blob[0..4].copy_from_slice(b"0402");
+        blob[5] = 207; // AFAreaMode=3D-tracking
+        blob[7] = 1; // AFCoordinatesAvailable=1 → 단일점 픽셀좌표
+        let put = |b: &mut [u8], o: usize, v: u16| b[o..o + 2].copy_from_slice(&v.to_le_bytes());
+        put(&mut blob, 0x3e, 6048); // AFImageWidth
+        put(&mut blob, 0x40, 4032); // AFImageHeight
+        put(&mut blob, 0x42, 3274); // AFAreaXPosition
+        put(&mut blob, 0x44, 2176); // AFAreaYPosition
+        let info = nikon_af(&nikon_embedded_tiff(&blob)).expect("z5ii point");
+        assert_eq!(info.source, "nikon-point");
+        assert_eq!(info.points.len(), 1);
+        let p = info.points[0];
+        assert!((p.cx - 3274.0 / 6048.0).abs() < 1e-6 && (p.cy - 2176.0 / 4032.0).abs() < 1e-6);
+        assert!(p.in_focus && p.selected);
+
+        // 0402의 존 비트마스크 경로는 그리드 미검증 → None(잘못 찍느니 미표시).
+        let mut zone = vec![0u8; 80];
+        zone[0..4].copy_from_slice(b"0402");
+        zone[7] = 0; // 비트마스크 사용
+        zone[10] |= 1; // 측거점 하나 켬
+        assert!(nikon_af(&nikon_embedded_tiff(&zone)).is_none());
+    }
+
+    /// 미검증 V04xx 바디라도 단일점(픽셀좌표)은 그리드 무관 + 범위검증으로 안전 표시(#50).
+    #[test]
+    fn nikon_v04xx_unknown_body_point() {
+        let put = |b: &mut [u8], o: usize, v: u16| b[o..o + 2].copy_from_slice(&v.to_le_bytes());
+        let mk = |ver: &[u8], iw: u16, ih: u16, x: u16, y: u16| {
+            let mut blob = vec![0u8; 80];
+            blob[0..4].copy_from_slice(ver);
+            blob[7] = 1; // 단일점
+            put(&mut blob, 0x3e, iw);
+            put(&mut blob, 0x40, ih);
+            put(&mut blob, 0x42, x);
+            put(&mut blob, 0x44, y);
+            blob
+        };
+
+        // 화이트리스트에 없는 가상의 미래 버전 — 단일점이면 표시된다.
+        let info = nikon_af(&nikon_embedded_tiff(&mk(b"0408", 8256, 5504, 4128, 2752)))
+            .expect("unknown 04xx point");
+        assert_eq!(info.source, "nikon-point");
+        assert!((info.points[0].cx - 0.5).abs() < 1e-6 && (info.points[0].cy - 0.5).abs() < 1e-6);
+
+        // 범위 밖 좌표(레이아웃 불일치 신호) → clamp로 가짜 점 그리지 않고 None.
+        assert!(nikon_af(&nikon_embedded_tiff(&mk(b"0408", 8256, 5504, 9000, 2752))).is_none());
+
+        // DSLR 계열(01xx~03xx)은 레이아웃 자체가 달라 단일점이라도 제외.
+        assert!(nikon_af(&nikon_embedded_tiff(&mk(b"0300", 6000, 4000, 3000, 2000))).is_none());
     }
 }
