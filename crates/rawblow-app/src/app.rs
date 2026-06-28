@@ -452,6 +452,20 @@ pub struct RawBlowApp {
     meta_rx: crossbeam_channel::Receiver<MetaResult>,
     meta_tx: crossbeam_channel::Sender<MetaResult>,
     meta_inflight: bool,
+    // AI 컬링 카메라/렌즈 리스트박스용 distinct 목록(#51 후속). EXIF prefix read를 UI 스레드에서
+    // 돌리면 NAS에서 멈추므로, 다이얼로그가 처음 열릴 때 백그라운드로 한 번 수집해 캐시한다.
+    // `cull_meta_gen`이 현재 generation과 같으면 이미 수집(또는 진행 중) — 폴더가 바뀌면 재수집.
+    cull_meta_cameras: Vec<String>,
+    cull_meta_lenses: Vec<String>,
+    cull_meta_gen: Option<u64>,
+    cull_meta_rx: Option<crossbeam_channel::Receiver<CullMetaResult>>,
+}
+
+/// AI 컬링 메타 수집 결과(카메라/렌즈 distinct, 정렬됨).
+struct CullMetaResult {
+    generation: u64,
+    cameras: Vec<String>,
+    lenses: Vec<String>,
 }
 
 /// 백그라운드 메타 로더 결과. 요청 시점에 없던 조각(exif/af)만 채워 보낸다.
@@ -577,6 +591,10 @@ impl RawBlowApp {
             meta_rx,
             meta_tx,
             meta_inflight: false,
+            cull_meta_cameras: Vec::new(),
+            cull_meta_lenses: Vec::new(),
+            cull_meta_gen: None,
+            cull_meta_rx: None,
             cfg,
         };
 
@@ -787,6 +805,83 @@ impl RawBlowApp {
         }
         if self.meta_inflight {
             ctx.request_repaint_after(Duration::from_millis(80));
+        }
+    }
+
+    /// AI 컬링 카메라/렌즈 리스트박스용 distinct 목록을 백그라운드로 한 번 수집한다(#51 후속).
+    /// 현재 generation에 대해 아직 수집을 시작하지 않았을 때만 띄운다 — 폴더가 바뀌면 generation이
+    /// 올라가 자동 재수집. EXIF prefix read를 워커 스레드에서 돌려 UI(특히 NAS)를 막지 않는다.
+    fn ensure_cull_meta_scan(&mut self, ctx: &egui::Context) {
+        if self.cull_meta_gen == Some(self.generation) {
+            return; // 이번 폴더는 이미 수집(또는 진행 중).
+        }
+        self.cull_meta_gen = Some(self.generation);
+        self.cull_meta_cameras.clear();
+        self.cull_meta_lenses.clear();
+        // 이미 로드된 EXIF는 재독 없이 바로 쓰고, 나머지만 워커에서 prefix read.
+        let mut have_cam: std::collections::BTreeSet<String> = Default::default();
+        let mut have_lens: std::collections::BTreeSet<String> = Default::default();
+        let mut paths: Vec<PathBuf> = Vec::new();
+        for it in &self.items {
+            if it.exif_loaded {
+                if let Some(e) = &it.exif {
+                    if let Some(c) = e.camera.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                        have_cam.insert(c.to_string());
+                    }
+                    if let Some(l) = e.lens.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                        have_lens.insert(l.to_string());
+                    }
+                }
+            } else {
+                paths.push(it.entry.display.clone());
+            }
+        }
+        self.cull_meta_cameras = have_cam.iter().cloned().collect();
+        self.cull_meta_lenses = have_lens.iter().cloned().collect();
+        if paths.is_empty() {
+            return; // 전부 캐시에 있었음 — 워커 불필요.
+        }
+        let (tx, rx) = crossbeam_channel::unbounded();
+        self.cull_meta_rx = Some(rx);
+        let gen = self.generation;
+        std::thread::spawn(move || {
+            let mut cams = have_cam;
+            let mut lenses = have_lens;
+            for p in paths {
+                if let Some(e) = read_exif(&p) {
+                    if let Some(c) = e.camera.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                        cams.insert(c.to_string());
+                    }
+                    if let Some(l) = e.lens.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                        lenses.insert(l.to_string());
+                    }
+                }
+            }
+            let _ = tx.send(CullMetaResult {
+                generation: gen,
+                cameras: cams.into_iter().collect(),
+                lenses: lenses.into_iter().collect(),
+            });
+        });
+        ctx.request_repaint_after(Duration::from_millis(120));
+    }
+
+    /// 카메라/렌즈 수집 결과 반영(폴더가 바뀐 결과는 버린다).
+    fn drain_cull_meta(&mut self, ctx: &egui::Context) {
+        if let Some(rx) = &self.cull_meta_rx {
+            match rx.try_recv() {
+                Ok(res) => {
+                    if res.generation == self.generation {
+                        self.cull_meta_cameras = res.cameras;
+                        self.cull_meta_lenses = res.lenses;
+                    }
+                    self.cull_meta_rx = None;
+                }
+                Err(crossbeam_channel::TryRecvError::Disconnected) => self.cull_meta_rx = None,
+                Err(crossbeam_channel::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(120));
+                }
+            }
         }
     }
 
@@ -1289,6 +1384,7 @@ impl eframe::App for RawBlowApp {
 
         // 현재 항목 메타(EXIF·AF)는 백그라운드 로드 — 사진 넘김을 막지 않는다.
         self.drain_meta(ctx);
+        self.drain_cull_meta(ctx);
         self.request_meta(ctx);
         self.request_preload();
         self.request_prefetch_window(); // 현재 위치 주변만 디스크 캐시 워밍(폴더 전체 플러드 금지).
@@ -3709,6 +3805,12 @@ impl RawBlowApp {
     }
 
     fn ui_ai_cull_dialog(&mut self, ctx: &egui::Context) {
+        // 카메라/렌즈 리스트박스용 목록을 (필요하면) 백그라운드로 수집 시작 + 클로저용 복제.
+        self.ensure_cull_meta_scan(ctx);
+        let cull_cameras = self.cull_meta_cameras.clone();
+        let cull_lenses = self.cull_meta_lenses.clone();
+        let cull_meta_loading = self.cull_meta_rx.is_some();
+
         let lang = self.lang;
         let mut c = self.cfg.ai_cull.clone();
         let mut do_start = false;
@@ -3829,23 +3931,27 @@ impl RawBlowApp {
                     let spec = c.model_spec();
                     let model_ok = Self::model_present(spec);
                     if model_ok {
-                        // 선택 모드: 상위 N장 vs 임계값.
-                        let use_topn = c.top_n > 0;
-                        ui.horizontal(|ui| {
-                            if check_chip(ui, tr(lang, "상위 N장"), None, theme::ACCENT, use_topn) {
-                                c.top_n = if use_topn { 0 } else { 20 };
-                            }
-                            if use_topn {
-                                ui.add_space(8.0);
+                        // 선택 모드: 상위 N장 vs 임계값 — 항상 둘 다 보이는 세그먼트 토글로 자유 전환(#51).
+                        // (이전엔 상위 N장 선택 시 임계값 칩이 숨어 되돌아갈 수 없었다.)
+                        let topn_sel = if c.top_n > 0 { 0 } else { 1 };
+                        if let Some(i) = segmented(
+                            ui,
+                            &[
+                                (tr(lang, "상위 N장"), tr(lang, "최고 점수만")),
+                                (tr(lang, "임계값"), tr(lang, "P(good) 하한")),
+                            ],
+                            topn_sel,
+                        ) {
+                            // 상위 N장으로 전환 시 기존 N(없으면 20) 유지, 임계값으로 전환 시 0.
+                            c.top_n = if i == 0 { c.top_n.max(20) } else { 0 };
+                        }
+                        ui.add_space(6.0);
+                        if c.top_n > 0 {
+                            ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new(tr(lang, "최고")).font(mono(11.0)).color(theme::INK3));
                                 ui.add(egui::DragValue::new(&mut c.top_n).range(1..=9999).suffix(tr(lang, "장")));
-                            } else {
-                                if check_chip(ui, tr(lang, "임계값"), None, theme::ACCENT, !use_topn) {
-                                    // 이미 선택됨 — 토글 불필요
-                                }
-                            }
-                        });
-                        if !use_topn {
+                            });
+                        } else {
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new(tr(lang, "P(good) 하한")).font(mono(11.0)).color(theme::INK3));
                                 ui.add(egui::Slider::new(&mut c.aesthetic_min, 0.1..=0.9).fixed_decimals(2));
@@ -3925,14 +4031,16 @@ impl RawBlowApp {
                         ui.label(egui::RichText::new(tr(lang, "초 (손떨림 거르기)")).font(mono(9.0)).color(theme::INK4));
                     }
                 });
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(tr(lang, "카메라")).font(mono(11.0)).color(theme::INK3));
-                    ui.text_edit_singleline(&mut c.camera_contains);
-                });
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(tr(lang, "렌즈")).font(mono(11.0)).color(theme::INK3));
-                    ui.text_edit_singleline(&mut c.lens_contains);
-                });
+                // 카메라/렌즈는 직접 입력 대신 현재 폴더에 실제로 있는 값에서 고른다(#51 후속).
+                // 빈 선택 = "(전체)" → 필터 없음(meta_filter()가 빈 문자열을 None으로 처리).
+                let body_label = tr(lang, "카메라");
+                let lens_label = tr(lang, "렌즈");
+                let all_label = tr(lang, "(전체)");
+                meta_select(ui, "cull_camera_sel", body_label, all_label, &cull_cameras, &mut c.camera_contains);
+                meta_select(ui, "cull_lens_sel", lens_label, all_label, &cull_lenses, &mut c.lens_contains);
+                if cull_meta_loading {
+                    ui.label(egui::RichText::new(tr(lang, "메타 수집 중… (잠시 후 목록이 채워집니다)")).font(mono(9.0)).color(theme::INK4));
+                }
                 ui.add_space(16.0);
 
                 // ── DEDUP / BEST-OF (Tier2+3a, 모델 불필요) ──
@@ -5516,6 +5624,24 @@ fn section_label(ui: &mut egui::Ui, text: &str) {
     ui.add_space(2.0);
     ui.label(egui::RichText::new(text).font(prop(10.0)).color(theme::INK3));
     ui.add_space(5.0);
+}
+
+/// 메타 선택 콤보박스: 라벨 + 드롭다운(현재 폴더에 실재하는 값 목록). 빈 선택 = `all_label`(=필터 없음).
+/// `value`에는 선택한 전체 문자열이 들어가고, 백엔드는 이를 대소문자 무시 부분일치로 매칭한다.
+fn meta_select(ui: &mut egui::Ui, id: &str, label: &str, all_label: &str, options: &[String], value: &mut String) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(label).font(mono(11.0)).color(theme::INK3));
+        let shown = if value.trim().is_empty() { all_label } else { value.as_str() };
+        egui::ComboBox::from_id_salt(id)
+            .selected_text(egui::RichText::new(shown).font(mono(11.0)))
+            .width(320.0)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(value, String::new(), all_label);
+                for opt in options {
+                    ui.selectable_value(value, opt.clone(), opt.as_str());
+                }
+            });
+    });
 }
 
 /// 전체 너비 1px 구분선.
