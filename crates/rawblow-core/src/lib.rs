@@ -14,6 +14,7 @@ pub mod decode;
 pub mod face_detect;
 pub mod meta;
 pub mod model;
+pub mod object_detect;
 pub mod organize;
 pub mod quality;
 pub mod scan;

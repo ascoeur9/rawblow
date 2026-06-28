@@ -60,6 +60,9 @@ pub struct QualityReport {
     /// CLIP 다축 sharp 축 P(sharp) 0..1(#51 후속). "AI 선명도"에서 사용. 미검사면 None.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sharp_ai: Option<f32>,
+    /// 설정된 객체 클래스 포함 여부(YOLO, #51 후속). "객체 포함"에서 사용. 미검사면 None.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_match: Option<bool>,
 }
 
 impl QualityReport {
@@ -78,6 +81,7 @@ impl QualityReport {
             aesthetic: None,
             face: None,
             sharp_ai: None,
+            object_match: None,
         }
     }
 }

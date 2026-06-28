@@ -149,6 +149,15 @@ pub const CLIP_AXES_MODEL: ModelSpec = ModelSpec {
     bytes: 88_939_201,
 };
 
+/// 객체 검출 모델: **YOLOv10n**(onnx-community, 9.4MB, NMS-free). "객체 포함"(COCO 80클래스)용.
+/// 출력 (1,300,6)=[x1,y1,x2,y2,conf,cls]. 입력 640² RGB(/255), #51 후속.
+pub const OBJECT_MODEL: ModelSpec = ModelSpec {
+    file: "yolov10n.onnx",
+    url: "https://github.com/ascoeur9/rawblow/releases/download/models-v1/yolov10n.onnx",
+    sha256: "a77dd863933f184a19e84361c64b788228a7c7dacc2c78939239a96ad3efca3b",
+    bytes: 9_386_116,
+};
+
 /// AI 컬링 결과를 어느 분류축에 배정할지(#50). 라벨·별점·태그는 서로 독립이므로
 /// 사용자가 수동으로 쓰는 축을 덮어쓰지 않도록 하나만 고른다.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]

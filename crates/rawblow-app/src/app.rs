@@ -208,6 +208,8 @@ struct CullExtra {
     face: Option<bool>,
     /// CLIP sharp 축 P(sharp). "AI 선명도" 하드필터에 사용. 미검사면 None.
     sharp_ai: Option<f32>,
+    /// 설정 객체 클래스 포함 여부(YOLO). "객체 포함" 하드필터에 사용. 미검사면 None.
+    object_match: Option<bool>,
 }
 
 /// 진행 중인 AI 컬링 채점(#50). 워커 풀(여러 스레드)이 디코딩+채점을 병렬로 수행하고,
@@ -314,7 +316,7 @@ fn cull_extra(
     } else {
         (None, Default::default())
     };
-    CullExtra { sharp: report.focus.sharpness, dhash, shot_time, meta, face: report.face, sharp_ai: report.sharp_ai }
+    CullExtra { sharp: report.focus.sharpness, dhash, shot_time, meta, face: report.face, sharp_ai: report.sharp_ai, object_match: report.object_match }
 }
 
 /// CLIP-IQA 모델 자동 다운로드(#50) 진행 메시지.
@@ -4129,7 +4131,7 @@ impl RawBlowApp {
                 }
                 ui.add_space(16.0);
 
-                // ── DETECT ── 얼굴 있는 컷은 YuNet으로 실동작. 눈뜸·객체는 모델 통합 후속.
+                // ── DETECT ── 얼굴(YuNet)·객체(YOLOv10n) 실동작. 눈뜸만 후속(눈감음 분류기 필요).
                 section_label(ui, "DETECT");
                 ui.horizontal_wrapped(|ui| {
                     if check_chip(ui, tr(lang, "얼굴 있는 컷만"), None, theme::ACCENT, c.use_face) {
@@ -4144,9 +4146,30 @@ impl RawBlowApp {
                 });
                 if c.use_object {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(tr(lang, "클래스")).font(mono(11.0)).color(theme::INK3));
+                        ui.label(egui::RichText::new(tr(lang, "클래스(COCO 80)")).font(mono(11.0)).color(theme::INK3));
                         ui.text_edit_singleline(&mut c.object_class);
                     });
+                    // 클래스 해석 결과 안내(예: person·dog·chair…).
+                    match rawblow_core::object_detect::coco_index(&c.object_class) {
+                        Some(idx) => {
+                            ui.label(egui::RichText::new(trf(lang, "→ '{}' 인식", &[rawblow_core::object_detect::COCO_NAMES[idx as usize]])).font(mono(9.0)).color(theme::INK4));
+                        }
+                        None => {
+                            ui.label(egui::RichText::new(tr(lang, "COCO 클래스명을 입력하세요(person·dog·car·chair·bottle…)")).font(mono(9.0)).color(theme::WARN));
+                        }
+                    }
+                    if !Self::model_present(config::OBJECT_MODEL) {
+                        ui.label(egui::RichText::new(tr(lang, "객체 모델(YOLOv10n, 9MB) 없음 — 아래 버튼으로 받으세요")).font(mono(10.0)).color(theme::WARN));
+                        #[cfg(feature = "model-download")]
+                        if ui.add(egui::Button::new(
+                            egui::RichText::new(format!("  {} (YOLOv10n 9MB)  ", tr(lang, "객체 모델 다운로드")))
+                                .color(Color32::from_rgb(0x0a, 0x14, 0x20))
+                        ).fill(theme::ACCENT)).clicked() {
+                            do_download = Some(config::OBJECT_MODEL);
+                        }
+                    } else {
+                        ui.label(egui::RichText::new(tr(lang, "✓ 객체 모델 준비됨 (YOLOv10n)")).font(mono(10.0)).color(theme::ACCENT));
+                    }
                 }
                 // 얼굴 모델 상태(장르·얼굴 공용). 없으면 다운로드 버튼.
                 if (c.use_face || c.use_genre) && !Self::model_present(config::FACE_MODEL) {
@@ -4161,8 +4184,8 @@ impl RawBlowApp {
                 } else if c.use_face || c.use_genre {
                     ui.label(egui::RichText::new(tr(lang, "✓ 얼굴 모델 준비됨 (YuNet)")).font(mono(10.0)).color(theme::ACCENT));
                 }
-                if c.use_eyes_open || c.use_object {
-                    ui.label(egui::RichText::new(tr(lang, "눈 뜬 컷·객체 포함: 모델 통합 후 동작(현재는 옵션 저장만)")).font(mono(9.0)).color(theme::WARN));
+                if c.use_eyes_open {
+                    ui.label(egui::RichText::new(tr(lang, "눈 뜬 컷: 눈감음 분류기 통합 후 동작(현재는 옵션 저장만)")).font(mono(9.0)).color(theme::WARN));
                 }
                 ui.add_space(16.0);
 
@@ -4268,7 +4291,11 @@ impl RawBlowApp {
                         // 얼굴/장르 옵션이 켜졌는데 YuNet 모델이 없으면 시작 차단(다운로드 유도).
                         let face_blocks = (c.use_face || c.use_genre) && !Self::model_present(config::FACE_MODEL);
                         let sharp_blocks = c.use_sharp_ai && !Self::model_present(config::CLIP_AXES_MODEL);
-                    let can_start = c.any_enabled() && count > 0 && !aesthetic_blocks && !face_blocks && !sharp_blocks;
+                        // 객체: 모델 없거나 클래스명을 해석 못 하면 차단.
+                        let object_blocks = c.use_object
+                            && (!Self::model_present(config::OBJECT_MODEL)
+                                || rawblow_core::object_detect::coco_index(&c.object_class).is_none());
+                    let can_start = c.any_enabled() && count > 0 && !aesthetic_blocks && !face_blocks && !sharp_blocks && !object_blocks;
                         if ui
                             .add_enabled(
                                 can_start,
@@ -4308,6 +4335,8 @@ impl RawBlowApp {
                     tr(lang, "YuNet (얼굴)").to_string()
                 } else if spec.file == config::CLIP_AXES_MODEL.file {
                     tr(lang, "CLIP 다축 (AI 선명도)").to_string()
+                } else if spec.file == config::OBJECT_MODEL.file {
+                    tr(lang, "YOLOv10n (객체)").to_string()
                 } else if self.cfg.ai_cull.use_gpu {
                     tr(lang, "RN50 (GPU 고속)").to_string()
                 } else {
@@ -4395,6 +4424,25 @@ impl RawBlowApp {
         #[cfg(not(feature = "ai"))]
         let axes_model_path: Option<PathBuf> = None;
         let need_sharp = axes_model_path.is_some();
+
+        // 객체 검출(YOLO): "객체 포함". 클래스 텍스트를 COCO 인덱스로 해석, 모델·인덱스 둘 다 있어야.
+        #[cfg(feature = "ai")]
+        let object_class_idx: Option<u8> =
+            if cfg.use_object { rawblow_core::object_detect::coco_index(&cfg.object_class) } else { None };
+        #[cfg(not(feature = "ai"))]
+        let object_class_idx: Option<u8> = None;
+        #[cfg(feature = "ai")]
+        let object_model_path: Option<PathBuf> = if cfg.use_object
+            && object_class_idx.is_some()
+            && Self::model_present(config::OBJECT_MODEL)
+        {
+            Some(Self::model_path(config::OBJECT_MODEL))
+        } else {
+            None
+        };
+        #[cfg(not(feature = "ai"))]
+        let object_model_path: Option<PathBuf> = None;
+        let need_object = object_model_path.is_some();
         // GPU 모드: CoreML/WebGPU EP, intra 무관. 워커는 동시 세션으로 GPU 처리량을 채운다(메모리 ≈ N×모델).
         // CPU 모드: intra=1 세션을 코어 수만큼.
         let use_gpu = cfg.use_gpu && model_path.is_some();
@@ -4465,9 +4513,10 @@ impl RawBlowApp {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             (criteria.use_focus, criteria.use_exposure, criteria.use_tilt, use_af, cull_edge).hash(&mut h);
             model_id.hash(&mut h);
-            // 얼굴·sharp 검사 여부는 보고서를 바꾸므로 캐시 네임스페이스를 분리한다.
+            // 얼굴·sharp·객체 검사 여부는 보고서를 바꾸므로 캐시 네임스페이스를 분리한다.
             need_face.hash(&mut h);
             need_sharp.hash(&mut h);
+            (need_object, object_class_idx).hash(&mut h);
             h.finish()
         };
         let cache = self.cull_cache.clone();
@@ -4491,6 +4540,8 @@ impl RawBlowApp {
             let face_model_path = face_model_path.clone();
             #[cfg(feature = "ai")]
             let axes_model_path = axes_model_path.clone();
+            #[cfg(feature = "ai")]
+            let object_model_path = object_model_path.clone();
             handles.push(std::thread::spawn(move || {
                 // 공유 세션 모드면 Arc 클론, 아니면 워커 전용 세션 로드(CPU=intra1, CoreML=동시).
                 // 로드 실패 시 CV-only 폴백.
@@ -4514,6 +4565,12 @@ impl RawBlowApp {
                 let axes_model: Option<std::sync::Arc<rawblow_core::axes::AxesModel>> = axes_model_path
                     .as_ref()
                     .and_then(|p| rawblow_core::axes::AxesModel::load(p).ok())
+                    .map(std::sync::Arc::new);
+                // YOLO 객체 모델(객체 포함). 워커별 CPU 로드. 실패면 객체 검사 생략.
+                #[cfg(feature = "ai")]
+                let object_model: Option<std::sync::Arc<rawblow_core::object_detect::ObjectModel>> = object_model_path
+                    .as_ref()
+                    .and_then(|p| rawblow_core::object_detect::ObjectModel::load(p).ok())
                     .map(std::sync::Arc::new);
                 loop {
                     if cancel_w.load(Ordering::Relaxed) {
@@ -4553,7 +4610,7 @@ impl RawBlowApp {
                             if let Ok(mut g) = results.lock() {
                                 g.push((*real, cv, report.aesthetic));
                             }
-                            if need_meta || need_dhash || need_face || need_sharp {
+                            if need_meta || need_dhash || need_face || need_sharp || need_object {
                                 let ex = cull_extra(&report, dh, path, need_meta);
                                 if let Ok(mut m) = extras.lock() {
                                     m.insert(*real, ex);
@@ -4579,6 +4636,11 @@ impl RawBlowApp {
                             #[cfg(feature = "ai")]
                             if let Some(am) = axes_model.as_ref() {
                                 q.sharp_ai = am.scores(&img).map(|s| s[rawblow_core::axes::AXIS_SHARP]);
+                            }
+                            // 객체 포함(YOLO): 설정 클래스 포함 여부를 보고서에 기록(캐시됨).
+                            #[cfg(feature = "ai")]
+                            if let (Some(om), Some(idx)) = (object_model.as_ref(), object_class_idx) {
+                                q.object_match = Some(om.contains(&img, idx));
                             }
                             imgs.push(img);
                             metas.push((*real, q, cv));
@@ -4627,7 +4689,7 @@ impl RawBlowApp {
                             g.push((*real, *cv, q.aesthetic));
                         }
                     }
-                    if need_meta || need_dhash || need_face || need_sharp {
+                    if need_meta || need_dhash || need_face || need_sharp || need_object {
                         if let Ok(mut m) = extras.lock() {
                             for (k, (real, q, _)) in metas.iter().enumerate() {
                                 let path = &miss_keys[k].0;
@@ -4936,7 +4998,10 @@ impl RawBlowApp {
             // AI 선명도(CLIP sharp 축): P(sharp) < sharp_min이면 탈락.
             let sharp_bad = c.use_sharp_ai
                 && ex.and_then(|e| e.sharp_ai).map(|s| s < c.sharp_min).unwrap_or(false);
-            face_bad || sharp_bad
+            // 객체 포함(YOLO): 설정 클래스가 없으면 탈락.
+            let object_bad = c.use_object
+                && ex.and_then(|e| e.object_match).map(|has| !has).unwrap_or(false);
+            face_bad || sharp_bad || object_bad
         };
 
         for (i, (real, v, _)) in results.iter().enumerate() {
@@ -6040,6 +6105,7 @@ mod tests {
             aesthetic: Some(0.42),
             face: None,
             sharp_ai: None,
+            object_match: None,
         };
         let mtime = UNIX_EPOCH + Duration::from_nanos(1_700_000_000_123_456_789);
         let mut map = HashMap::new();
