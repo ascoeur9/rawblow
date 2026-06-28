@@ -54,6 +54,9 @@ pub struct QualityReport {
     /// CLIP-IQA P(good) 0..1(높을수록 미적으로 좋음). 모델 미사용이면 None.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aesthetic: Option<f32>,
+    /// 얼굴 존재 여부(YuNet, #51 후속). "얼굴 있는 컷"·"장르 인물/풍경"에서 사용. 미검사면 None.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub face: Option<bool>,
 }
 
 impl QualityReport {
@@ -70,6 +73,7 @@ impl QualityReport {
             focus: FocusReport { sharpness: 0.0, acutance: 0.0, in_focus: false },
             tilt: TiltReport { degrees: 0.0, confidence: 0.0 },
             aesthetic: None,
+            face: None,
         }
     }
 }

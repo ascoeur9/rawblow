@@ -204,6 +204,8 @@ struct CullExtra {
     dhash: Option<u64>,
     shot_time: Option<i64>,
     meta: rawblow_core::cull_ext::PhotoMeta,
+    /// 얼굴 존재(YuNet). "얼굴 있는 컷"·"장르 인물/풍경" 하드필터에 사용. 미검사면 None.
+    face: Option<bool>,
 }
 
 /// 진행 중인 AI 컬링 채점(#50). 워커 풀(여러 스레드)이 디코딩+채점을 병렬로 수행하고,
@@ -310,7 +312,7 @@ fn cull_extra(
     } else {
         (None, Default::default())
     };
-    CullExtra { sharp: report.focus.sharpness, dhash, shot_time, meta }
+    CullExtra { sharp: report.focus.sharpness, dhash, shot_time, meta, face: report.face }
 }
 
 /// CLIP-IQA 모델 자동 다운로드(#50) 진행 메시지.
@@ -4074,7 +4076,7 @@ impl RawBlowApp {
                 }
                 ui.add_space(16.0);
 
-                // ── AI AXES (Tier3b, 임베딩 모델 필요 — 옵션만) ──
+                // ── AI AXES ── 장르 픽은 얼굴 검출(YuNet)로 실동작. AI 선명도·커스텀은 CLIP 임베딩 모델 후속.
                 section_label(ui, "AI AXES");
                 ui.horizontal_wrapped(|ui| {
                     if check_chip(ui, tr(lang, "장르 픽"), None, theme::ACCENT, c.use_genre) {
@@ -4098,10 +4100,15 @@ impl RawBlowApp {
                 if c.use_custom_prompt {
                     ui.text_edit_singleline(&mut c.custom_prompt);
                 }
-                ui.label(egui::RichText::new(tr(lang, "CLIP 임베딩 모델 통합 후 동작(현재는 옵션 저장만)")).font(mono(9.0)).color(theme::WARN));
+                if c.use_genre {
+                    ui.label(egui::RichText::new(tr(lang, "장르 픽: 얼굴 검출(YuNet) 기반 — 인물=얼굴 있음 / 풍경=얼굴 없음")).font(mono(9.0)).color(theme::INK4));
+                }
+                if c.use_sharp_ai || c.use_custom_prompt {
+                    ui.label(egui::RichText::new(tr(lang, "AI 선명도·커스텀 프롬프트: CLIP 임베딩 모델 통합 후 동작(현재는 옵션 저장만)")).font(mono(9.0)).color(theme::WARN));
+                }
                 ui.add_space(16.0);
 
-                // ── DETECT (Tier4, 검출 모델 필요 — 옵션만) ──
+                // ── DETECT ── 얼굴 있는 컷은 YuNet으로 실동작. 눈뜸·객체는 모델 통합 후속.
                 section_label(ui, "DETECT");
                 ui.horizontal_wrapped(|ui| {
                     if check_chip(ui, tr(lang, "얼굴 있는 컷만"), None, theme::ACCENT, c.use_face) {
@@ -4120,7 +4127,22 @@ impl RawBlowApp {
                         ui.text_edit_singleline(&mut c.object_class);
                     });
                 }
-                ui.label(egui::RichText::new(tr(lang, "YuNet/YOLO 통합 후 동작(현재는 옵션 저장만)")).font(mono(9.0)).color(theme::WARN));
+                // 얼굴 모델 상태(장르·얼굴 공용). 없으면 다운로드 버튼.
+                if (c.use_face || c.use_genre) && !Self::model_present(config::FACE_MODEL) {
+                    ui.label(egui::RichText::new(tr(lang, "얼굴 모델(YuNet, 0.2MB) 없음 — 아래 버튼으로 받으세요")).font(mono(10.0)).color(theme::WARN));
+                    #[cfg(feature = "model-download")]
+                    if ui.add(egui::Button::new(
+                        egui::RichText::new(format!("  {} (YuNet 0.2MB)  ", tr(lang, "얼굴 모델 다운로드")))
+                            .color(Color32::from_rgb(0x0a, 0x14, 0x20))
+                    ).fill(theme::ACCENT)).clicked() {
+                        do_download = Some(config::FACE_MODEL);
+                    }
+                } else if c.use_face || c.use_genre {
+                    ui.label(egui::RichText::new(tr(lang, "✓ 얼굴 모델 준비됨 (YuNet)")).font(mono(10.0)).color(theme::ACCENT));
+                }
+                if c.use_eyes_open || c.use_object {
+                    ui.label(egui::RichText::new(tr(lang, "눈 뜬 컷·객체 포함: 모델 통합 후 동작(현재는 옵션 저장만)")).font(mono(9.0)).color(theme::WARN));
+                }
                 ui.add_space(16.0);
 
                 if !c.any_enabled() {
@@ -4222,7 +4244,9 @@ impl RawBlowApp {
                     ui.label(egui::RichText::new(tr(lang, rate)).font(mono(9.5)).color(theme::INK4));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let aesthetic_blocks = c.use_aesthetic && !Self::model_present(c.model_spec());
-                    let can_start = c.any_enabled() && count > 0 && !aesthetic_blocks;
+                        // 얼굴/장르 옵션이 켜졌는데 YuNet 모델이 없으면 시작 차단(다운로드 유도).
+                        let face_blocks = (c.use_face || c.use_genre) && !Self::model_present(config::FACE_MODEL);
+                    let can_start = c.any_enabled() && count > 0 && !aesthetic_blocks && !face_blocks;
                         if ui
                             .add_enabled(
                                 can_start,
@@ -4258,7 +4282,9 @@ impl RawBlowApp {
             self.ai_cull_open = false;
             #[cfg(feature = "model-download")]
             {
-                let label = if self.cfg.ai_cull.use_gpu {
+                let label = if spec.file == config::FACE_MODEL.file {
+                    tr(lang, "YuNet (얼굴)").to_string()
+                } else if self.cfg.ai_cull.use_gpu {
                     tr(lang, "RN50 (GPU 고속)").to_string()
                 } else {
                     self.cfg.ai_cull.backbone.label().to_string()
@@ -4319,6 +4345,19 @@ impl RawBlowApp {
         if model_path.is_none() {
             criteria.use_aesthetic = false;
         }
+
+        // 얼굴 검출(YuNet): "얼굴 있는 컷"·"장르 인물/풍경"에 필요. 모델 없으면 비활성(오판 방지).
+        #[cfg(feature = "ai")]
+        let face_model_path: Option<PathBuf> = if (cfg.use_face || cfg.use_genre)
+            && Self::model_present(config::FACE_MODEL)
+        {
+            Some(Self::model_path(config::FACE_MODEL))
+        } else {
+            None
+        };
+        #[cfg(not(feature = "ai"))]
+        let face_model_path: Option<PathBuf> = None;
+        let need_face = face_model_path.is_some();
         // GPU 모드: CoreML/WebGPU EP, intra 무관. 워커는 동시 세션으로 GPU 처리량을 채운다(메모리 ≈ N×모델).
         // CPU 모드: intra=1 세션을 코어 수만큼.
         let use_gpu = cfg.use_gpu && model_path.is_some();
@@ -4389,6 +4428,8 @@ impl RawBlowApp {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             (criteria.use_focus, criteria.use_exposure, criteria.use_tilt, use_af, cull_edge).hash(&mut h);
             model_id.hash(&mut h);
+            // 얼굴 검사 여부는 보고서(report.face)를 바꾸므로 캐시 네임스페이스를 분리한다.
+            need_face.hash(&mut h);
             h.finish()
         };
         let cache = self.cull_cache.clone();
@@ -4408,6 +4449,8 @@ impl RawBlowApp {
             let model_path = model_path.clone();
             #[cfg(feature = "ai")]
             let shared_model = shared_model.clone();
+            #[cfg(feature = "ai")]
+            let face_model_path = face_model_path.clone();
             handles.push(std::thread::spawn(move || {
                 // 공유 세션 모드면 Arc 클론, 아니면 워커 전용 세션 로드(CPU=intra1, CoreML=동시).
                 // 로드 실패 시 CV-only 폴백.
@@ -4420,6 +4463,12 @@ impl RawBlowApp {
                         .and_then(|p| rawblow_core::quality::AestheticModel::load_tuned(p, accel, intra).ok())
                         .map(std::sync::Arc::new)
                 };
+                // 얼굴 모델은 가벼워 워커별 CPU 로드(YuNet ~232KB). 로드 실패면 얼굴 검사 생략.
+                #[cfg(feature = "ai")]
+                let face_model: Option<std::sync::Arc<rawblow_core::face_detect::FaceModel>> = face_model_path
+                    .as_ref()
+                    .and_then(|p| rawblow_core::face_detect::FaceModel::load(p).ok())
+                    .map(std::sync::Arc::new);
                 loop {
                     if cancel_w.load(Ordering::Relaxed) {
                         break;
@@ -4458,7 +4507,7 @@ impl RawBlowApp {
                             if let Ok(mut g) = results.lock() {
                                 g.push((*real, cv, report.aesthetic));
                             }
-                            if need_meta || need_dhash {
+                            if need_meta || need_dhash || need_face {
                                 let ex = cull_extra(&report, dh, path, need_meta);
                                 if let Ok(mut m) = extras.lock() {
                                     m.insert(*real, ex);
@@ -4474,7 +4523,12 @@ impl RawBlowApp {
                         }))
                         .ok()
                         .flatten();
-                        if let Some((img, q, cv)) = r {
+                        if let Some((img, mut q, cv)) = r {
+                            // 얼굴 검사(YuNet): 디코드된 이미지에서 존재만 판정해 보고서에 기록(캐시됨).
+                            #[cfg(feature = "ai")]
+                            if let Some(fm) = face_model.as_ref() {
+                                q.face = Some(fm.has_face(&img));
+                            }
                             imgs.push(img);
                             metas.push((*real, q, cv));
                             miss_keys.push((path.clone(), mtime));
@@ -4522,7 +4576,7 @@ impl RawBlowApp {
                             g.push((*real, *cv, q.aesthetic));
                         }
                     }
-                    if need_meta || need_dhash {
+                    if need_meta || need_dhash || need_face {
                         if let Ok(mut m) = extras.lock() {
                             for (k, (real, q, _)) in metas.iter().enumerate() {
                                 let path = &miss_keys[k].0;
@@ -4810,6 +4864,23 @@ impl RawBlowApp {
         };
 
         let (mut good, mut bad, mut skipped) = (0usize, 0usize, 0usize);
+        // 얼굴/장르 하드필터(YuNet): 조건 불충족이면 탈락으로 강등(미적·CV 점수와 무관, #51 후속).
+        //   얼굴 있는 컷만 → 얼굴 없으면 탈락 / 장르 인물 → 얼굴 없으면 탈락 / 장르 풍경 → 얼굴 있으면 탈락.
+        //   face=None(모델 없음·미검출)은 안전하게 제외하지 않는다.
+        let face_excluded = |real: &usize| -> bool {
+            if !(c.use_face || c.use_genre) {
+                return false;
+            }
+            match extras.get(real).and_then(|e| e.face) {
+                Some(has) => {
+                    (c.use_face && !has)
+                        || (c.use_genre && c.genre_portrait && !has)
+                        || (c.use_genre && !c.genre_portrait && has)
+                }
+                None => false,
+            }
+        };
+
         for (i, (real, v, _)) in results.iter().enumerate() {
             // 그룹 컬링 결과가 본 판정을 덮어쓴다(None=제외, 손대지 않음).
             let is_good = if group_active {
@@ -4823,6 +4894,8 @@ impl RawBlowApp {
             } else {
                 matches!(v, Verdict::Good)
             };
+            // 얼굴/장르 하드필터로 강등.
+            let is_good = is_good && !face_excluded(real);
             let Some(it) = self.items.get_mut(*real) else { continue };
             if is_good { good += 1; } else { bad += 1; }
             match c.target {
@@ -5907,6 +5980,7 @@ mod tests {
             focus: rawblow_core::quality::FocusReport { sharpness: 0.7, acutance: 12.0, in_focus: true },
             tilt: rawblow_core::quality::TiltReport { degrees: 1.5, confidence: 0.6 },
             aesthetic: Some(0.42),
+            face: None,
         };
         let mtime = UNIX_EPOCH + Duration::from_nanos(1_700_000_000_123_456_789);
         let mut map = HashMap::new();

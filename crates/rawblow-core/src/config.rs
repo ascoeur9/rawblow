@@ -131,6 +131,15 @@ pub const GPU_MODEL: ModelSpec = ModelSpec {
     bytes: 153_218_127,
 };
 
+/// 얼굴 검출 모델: **YuNet 2023mar**(OpenCV Zoo, 232KB). "얼굴 있는 컷"·"장르 인물/풍경"용.
+/// 고정 입력 640×640 BGR, per-cell cls·obj로 얼굴 존재만 판정(정확한 박스 불필요, #51 후속).
+pub const FACE_MODEL: ModelSpec = ModelSpec {
+    file: "yunet.onnx",
+    url: "https://github.com/ascoeur9/rawblow/releases/download/models-v1/yunet.onnx",
+    sha256: "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+    bytes: 232_589,
+};
+
 /// AI 컬링 결과를 어느 분류축에 배정할지(#50). 라벨·별점·태그는 서로 독립이므로
 /// 사용자가 수동으로 쓰는 축을 덮어쓰지 않도록 하나만 고른다.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
