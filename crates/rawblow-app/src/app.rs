@@ -3896,6 +3896,11 @@ impl RawBlowApp {
                                     .inner_margin(egui::Margin::symmetric(22.0, 16.0))
                                     .show(ui, |ui| {
                                         ui.set_width(inner_w);
+                // 본문 위젯 높이를 칩(약 28px)에 맞춰 통일 — 콤보·드래그값·슬라이더·버튼이
+                // 칩과 같은 높이로 정렬되도록(#53 레이아웃 정리). 행 간격도 일정하게.
+                ui.spacing_mut().interact_size.y = 26.0;
+                ui.spacing_mut().button_padding = Vec2::new(8.0, 5.0);
+                ui.spacing_mut().item_spacing = Vec2::new(6.0, 8.0);
 
                 section_label(ui, "CHECKS");
                 ui.horizontal_wrapped(|ui| {
@@ -3914,237 +3919,282 @@ impl RawBlowApp {
                 });
                 ui.add_space(16.0);
 
-                section_label(ui, "OPTIONS");
-                if c.use_focus {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(tr(lang, "흐림 임계(선명도↑ 엄격)")).font(mono(11.0)).color(theme::INK3));
-                        ui.add(egui::Slider::new(&mut c.focus_thresh, 0.2..=0.8).fixed_decimals(2));
-                    });
-                    if check_chip(ui, tr(lang, "AF 측거점에서만 초점 측정"), None, theme::ACCENT, c.use_af_focus) {
-                        c.use_af_focus = !c.use_af_focus;
-                    }
-                    ui.add_space(4.0);
+                // ── OPTIONS ── 켠 검사의 세부값. METADATA와 동일 위계: [이름/토글 | 값].
+                if c.use_focus || c.use_exposure || c.use_tilt || c.use_aesthetic {
+                    section_label(ui, "OPTIONS");
                 }
-                if c.use_exposure {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(tr(lang, "노출 양호도 하한")).font(mono(11.0)).color(theme::INK3));
-                        ui.add(egui::Slider::new(&mut c.exposure_min, 0.2..=0.9).fixed_decimals(2));
-                    });
-                    ui.add_space(4.0);
-                }
-                if c.use_tilt {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(tr(lang, "허용 기울기")).font(mono(11.0)).color(theme::INK3));
-                        ui.add(egui::Slider::new(&mut c.tilt_max_deg, 0.5..=10.0).suffix("°").fixed_decimals(1));
-                    });
-                }
-                if c.use_aesthetic {
-                    // GPU 고속 모드 토글: RN50을 CoreML(mac)/WebGPU(win)로 배치·병렬 추론.
-                    if check_chip(ui, tr(lang, "⚡ GPU 고속 모드"), None, theme::ACCENT, c.use_gpu) {
-                        c.use_gpu = !c.use_gpu;
-                    }
-                    if c.use_gpu {
-                        ui.label(
-                            egui::RichText::new(tr(lang, "RN50을 GPU로 배치·병렬 추론 — 매우 빠름(수백 장/초). 화질은 ViT보다 낮음."))
-                                .font(mono(9.5)).color(theme::INK3),
-                        );
-                    } else {
-                        // 백본 선택(CPU int8).
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(tr(lang, "백본 모델")).font(mono(11.0)).color(theme::INK3));
-                            ui.add_space(4.0);
-                            for b in ClipIqaBackbone::ALL {
-                                let sel = c.backbone == b;
-                                let present = Self::model_present(b.spec());
-                                let col = if present { theme::ACCENT } else { theme::INK3 };
-                                if check_chip(ui, b.label(), None, col, sel) {
-                                    c.backbone = b;
-                                }
+                let opt_spec = c.model_spec();
+                let opt_model_ok = c.use_aesthetic && Self::model_present(opt_spec);
+                egui::Grid::new("aicull_options_grid")
+                    .num_columns(2)
+                    .min_col_width(140.0)
+                    .spacing([14.0, 8.0])
+                    .show(ui, |ui| {
+                        if c.use_focus {
+                            ui.label(egui::RichText::new(tr(lang, "흐림 임계")).font(mono(11.0)).color(theme::INK3));
+                            ui.add(egui::Slider::new(&mut c.focus_thresh, 0.2..=0.8).fixed_decimals(2));
+                            ui.end_row();
+                            if check_chip(ui, tr(lang, "AF 측거점만"), None, theme::ACCENT, c.use_af_focus) {
+                                c.use_af_focus = !c.use_af_focus;
                             }
-                        });
-                        ui.label(
-                            egui::RichText::new(tr(lang, "ViT-B/32 권장. CPU에선 ViT-B가 가장 빠름. (강력한 GPU면 위 GPU 모드가 더 빠름)"))
-                                .font(mono(9.5)).color(theme::INK3),
-                        );
-                    }
-                    let spec = c.model_spec();
-                    let model_ok = Self::model_present(spec);
-                    if model_ok {
-                        // 선택 모드: 상위 N장 vs 임계값 — 항상 둘 다 보이는 세그먼트 토글로 자유 전환(#51).
-                        // (이전엔 상위 N장 선택 시 임계값 칩이 숨어 되돌아갈 수 없었다.)
-                        let topn_sel = if c.top_n > 0 { 0 } else { 1 };
-                        if let Some(i) = segmented(
-                            ui,
-                            &[
-                                (tr(lang, "상위 N장"), tr(lang, "최고 점수만")),
-                                (tr(lang, "임계값"), tr(lang, "P(good) 하한")),
-                            ],
-                            topn_sel,
-                        ) {
-                            // 상위 N장으로 전환 시 기존 N(없으면 20) 유지, 임계값으로 전환 시 0.
-                            c.top_n = if i == 0 { c.top_n.max(20) } else { 0 };
+                            ui.label("");
+                            ui.end_row();
                         }
-                        ui.add_space(6.0);
-                        if c.top_n > 0 {
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(tr(lang, "최고")).font(mono(11.0)).color(theme::INK3));
-                                ui.add(egui::DragValue::new(&mut c.top_n).range(1..=9999).suffix(tr(lang, "장")));
-                            });
-                        } else {
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(tr(lang, "P(good) 하한")).font(mono(11.0)).color(theme::INK3));
-                                ui.add(egui::Slider::new(&mut c.aesthetic_min, 0.1..=0.9).fixed_decimals(2));
-                                ui.label(egui::RichText::new(tr(lang, "↑ 엄격할수록 탈락↑")).font(mono(9.0)).color(theme::INK3));
-                            });
+                        if c.use_exposure {
+                            ui.label(egui::RichText::new(tr(lang, "노출 하한")).font(mono(11.0)).color(theme::INK3));
+                            ui.add(egui::Slider::new(&mut c.exposure_min, 0.2..=0.9).fixed_decimals(2));
+                            ui.end_row();
                         }
-                        ui.label(
-                            egui::RichText::new(tr(lang, "✓ 모델 준비됨"))
-                                .font(mono(10.0)).color(theme::ACCENT),
-                        );
+                        if c.use_tilt {
+                            ui.label(egui::RichText::new(tr(lang, "허용 기울기")).font(mono(11.0)).color(theme::INK3));
+                            ui.add(egui::Slider::new(&mut c.tilt_max_deg, 0.5..=10.0).suffix("°").fixed_decimals(1));
+                            ui.end_row();
+                        }
+                        if c.use_aesthetic {
+                            if check_chip(ui, tr(lang, "⚡ GPU 고속 모드"), None, theme::ACCENT, c.use_gpu) {
+                                c.use_gpu = !c.use_gpu;
+                            }
+                            ui.label("");
+                            ui.end_row();
+                            if !c.use_gpu {
+                                ui.label(egui::RichText::new(tr(lang, "백본")).font(mono(11.0)).color(theme::INK3));
+                                ui.horizontal(|ui| {
+                                    for b in ClipIqaBackbone::ALL {
+                                        let sel = c.backbone == b;
+                                        let present = Self::model_present(b.spec());
+                                        let col = if present { theme::ACCENT } else { theme::INK3 };
+                                        if check_chip(ui, b.label(), None, col, sel) {
+                                            c.backbone = b;
+                                        }
+                                    }
+                                });
+                                ui.end_row();
+                            }
+                            if opt_model_ok {
+                                ui.label(egui::RichText::new(tr(lang, "선택 기준")).font(mono(11.0)).color(theme::INK3));
+                                let topn_sel = if c.top_n > 0 { 0 } else { 1 };
+                                if let Some(i) = segmented(
+                                    ui,
+                                    &[
+                                        (tr(lang, "상위 N장"), tr(lang, "최고 점수")),
+                                        (tr(lang, "임계값"), tr(lang, "P(good) 하한")),
+                                    ],
+                                    topn_sel,
+                                ) {
+                                    c.top_n = if i == 0 { c.top_n.max(20) } else { 0 };
+                                }
+                                ui.end_row();
+                                if c.top_n > 0 {
+                                    ui.label(egui::RichText::new(tr(lang, "최고 N장")).font(mono(11.0)).color(theme::INK3));
+                                    ui.add(egui::DragValue::new(&mut c.top_n).range(1..=9999).suffix(tr(lang, "장")));
+                                } else {
+                                    ui.label(egui::RichText::new(tr(lang, "P(good) ≥")).font(mono(11.0)).color(theme::INK3));
+                                    ui.add(egui::Slider::new(&mut c.aesthetic_min, 0.1..=0.9).fixed_decimals(2));
+                                }
+                                ui.end_row();
+                            }
+                        }
+                    });
+                if c.use_aesthetic {
+                    if opt_model_ok {
+                        ui.label(egui::RichText::new(tr(lang, "✓ 미적 모델 준비됨")).font(mono(9.5)).color(theme::ACCENT));
                     } else {
-                        ui.label(
-                            egui::RichText::new(tr(lang, "모델 없음 — 아래 다운로드 버튼을 눌러주세요"))
-                                .font(mono(10.0)).color(theme::WARN),
-                        );
+                        ui.label(egui::RichText::new(tr(lang, "미적 모델 없음 — 아래 버튼으로 받으세요")).font(mono(10.0)).color(theme::WARN));
                         #[cfg(feature = "model-download")]
                         if ui.add(egui::Button::new(
-                            egui::RichText::new(format!("  {} ({:.0} MB)  ", tr(lang, "다운로드"), spec.bytes as f64 / 1e6))
+                            egui::RichText::new(format!("  {} ({:.0} MB)  ", tr(lang, "미적 모델 다운로드"), opt_spec.bytes as f64 / 1e6))
                                 .color(Color32::from_rgb(0x0a, 0x14, 0x20))
                         ).fill(theme::ACCENT)).clicked() {
-                            do_download = Some(spec);
+                            do_download = Some(opt_spec);
                         }
                     }
-                    ui.add_space(4.0);
                 }
                 ui.add_space(16.0);
 
-                // ── METADATA FILTER (Tier1, 모델 불필요) ──
+                // ── METADATA FILTER (Tier1, 모델 불필요) ── 2열 Grid로 줄맞춤:
+                //   왼쪽=항목 토글/이름, 오른쪽=값/콤보. 값들이 같은 x에서 시작해 정렬된다(#53).
                 section_label(ui, "METADATA FILTER");
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new(tr(lang, "방향")).font(mono(11.0)).color(theme::INK3));
-                    for (lbl, o) in [
-                        (tr(lang, "전체"), config::OrientationFilter::Any),
-                        (tr(lang, "세로"), config::OrientationFilter::Portrait),
-                        (tr(lang, "가로"), config::OrientationFilter::Landscape),
-                    ] {
-                        if check_chip(ui, lbl, None, theme::ACCENT, c.filter_orientation == o) {
-                            c.filter_orientation = o;
-                        }
-                    }
-                });
-                ui.horizontal(|ui| {
-                    if check_chip(ui, tr(lang, "ISO 상한"), None, theme::ACCENT, c.use_iso_max) {
-                        c.use_iso_max = !c.use_iso_max;
-                    }
-                    if c.use_iso_max {
-                        ui.add(egui::DragValue::new(&mut c.iso_max).range(50..=409600).speed(50));
-                    }
-                });
-                ui.horizontal(|ui| {
-                    if check_chip(ui, tr(lang, "초점거리"), None, theme::ACCENT, c.use_focal_range) {
-                        c.use_focal_range = !c.use_focal_range;
-                    }
-                    if c.use_focal_range {
-                        ui.add(egui::DragValue::new(&mut c.focal_min_mm).range(0.0..=2000.0).suffix("mm"));
-                        ui.label(egui::RichText::new("~").color(theme::INK3));
-                        ui.add(egui::DragValue::new(&mut c.focal_max_mm).range(0.0..=2000.0).suffix("mm"));
-                    }
-                });
-                ui.horizontal(|ui| {
-                    if check_chip(ui, tr(lang, "조리개 ≤"), None, theme::ACCENT, c.use_aperture_max) {
-                        c.use_aperture_max = !c.use_aperture_max;
-                    }
-                    if c.use_aperture_max {
-                        ui.add(egui::DragValue::new(&mut c.aperture_max).range(0.7..=32.0).speed(0.1).prefix("f/"));
-                    }
-                });
-                ui.horizontal(|ui| {
-                    if check_chip(ui, tr(lang, "셔터 하한"), None, theme::ACCENT, c.use_shutter_min) {
-                        c.use_shutter_min = !c.use_shutter_min;
-                    }
-                    if c.use_shutter_min {
-                        let mut denom = (1.0 / c.shutter_min_secs.max(1e-6)).round() as u32;
-                        if ui.add(egui::DragValue::new(&mut denom).range(1..=8000).prefix("1/")).changed() {
-                            c.shutter_min_secs = 1.0 / denom.max(1) as f32;
-                        }
-                        ui.label(egui::RichText::new(tr(lang, "초 (손떨림 거르기)")).font(mono(9.0)).color(theme::INK4));
-                    }
-                });
-                // 카메라/렌즈는 직접 입력 대신 현재 폴더에 실제로 있는 값에서 고른다(#51 후속).
-                // 빈 선택 = "(전체)" → 필터 없음(meta_filter()가 빈 문자열을 None으로 처리).
-                let body_label = tr(lang, "카메라");
-                let lens_label = tr(lang, "렌즈");
                 let all_label = tr(lang, "(전체)");
-                meta_select(ui, "cull_camera_sel", body_label, all_label, &cull_cameras, &mut c.camera_contains);
-                meta_select(ui, "cull_lens_sel", lens_label, all_label, &cull_lenses, &mut c.lens_contains);
+                egui::Grid::new("aicull_meta_grid")
+                    .num_columns(2)
+                    .min_col_width(140.0)
+                    .spacing([14.0, 8.0])
+                    .show(ui, |ui| {
+                        // 방향(택1).
+                        ui.label(egui::RichText::new(tr(lang, "방향")).font(mono(11.0)).color(theme::INK3));
+                        ui.horizontal(|ui| {
+                            for (lbl, o) in [
+                                (tr(lang, "전체"), config::OrientationFilter::Any),
+                                (tr(lang, "세로"), config::OrientationFilter::Portrait),
+                                (tr(lang, "가로"), config::OrientationFilter::Landscape),
+                            ] {
+                                if check_chip(ui, lbl, None, theme::ACCENT, c.filter_orientation == o) {
+                                    c.filter_orientation = o;
+                                }
+                            }
+                        });
+                        ui.end_row();
+                        // ISO 상한.
+                        if check_chip(ui, tr(lang, "ISO 상한"), None, theme::ACCENT, c.use_iso_max) {
+                            c.use_iso_max = !c.use_iso_max;
+                        }
+                        if c.use_iso_max {
+                            ui.add(egui::DragValue::new(&mut c.iso_max).range(50..=409600).speed(50));
+                        } else {
+                            ui.label("");
+                        }
+                        ui.end_row();
+                        // 초점거리(범위).
+                        if check_chip(ui, tr(lang, "초점거리"), None, theme::ACCENT, c.use_focal_range) {
+                            c.use_focal_range = !c.use_focal_range;
+                        }
+                        if c.use_focal_range {
+                            ui.horizontal(|ui| {
+                                ui.add(egui::DragValue::new(&mut c.focal_min_mm).range(0.0..=2000.0).suffix("mm"));
+                                ui.label(egui::RichText::new("~").color(theme::INK3));
+                                ui.add(egui::DragValue::new(&mut c.focal_max_mm).range(0.0..=2000.0).suffix("mm"));
+                            });
+                        } else {
+                            ui.label("");
+                        }
+                        ui.end_row();
+                        // 조리개 상한.
+                        if check_chip(ui, tr(lang, "조리개 ≤"), None, theme::ACCENT, c.use_aperture_max) {
+                            c.use_aperture_max = !c.use_aperture_max;
+                        }
+                        if c.use_aperture_max {
+                            ui.add(egui::DragValue::new(&mut c.aperture_max).range(0.7..=32.0).speed(0.1).prefix("f/"));
+                        } else {
+                            ui.label("");
+                        }
+                        ui.end_row();
+                        // 셔터 하한.
+                        if check_chip(ui, tr(lang, "셔터 하한"), None, theme::ACCENT, c.use_shutter_min) {
+                            c.use_shutter_min = !c.use_shutter_min;
+                        }
+                        if c.use_shutter_min {
+                            ui.horizontal(|ui| {
+                                let mut denom = (1.0 / c.shutter_min_secs.max(1e-6)).round() as u32;
+                                if ui.add(egui::DragValue::new(&mut denom).range(1..=8000).prefix("1/")).changed() {
+                                    c.shutter_min_secs = 1.0 / denom.max(1) as f32;
+                                }
+                                ui.label(egui::RichText::new(tr(lang, "초 (손떨림)")).font(mono(9.0)).color(theme::INK4));
+                            });
+                        } else {
+                            ui.label("");
+                        }
+                        ui.end_row();
+                        // 카메라/렌즈는 현재 폴더에 실재하는 값에서 고른다(#51). "(전체)"=필터 없음.
+                        for (id, label, opts, val) in [
+                            ("cull_camera_sel", tr(lang, "카메라"), &cull_cameras, &mut c.camera_contains),
+                            ("cull_lens_sel", tr(lang, "렌즈"), &cull_lenses, &mut c.lens_contains),
+                        ] {
+                            ui.label(egui::RichText::new(label).font(mono(11.0)).color(theme::INK3));
+                            let shown = if val.trim().is_empty() { all_label } else { val.as_str() };
+                            egui::ComboBox::from_id_salt(id)
+                                .selected_text(egui::RichText::new(shown).font(mono(11.0)))
+                                .width(300.0)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(val, String::new(), all_label);
+                                    for opt in opts {
+                                        ui.selectable_value(val, opt.clone(), opt.as_str());
+                                    }
+                                });
+                            ui.end_row();
+                        }
+                    });
                 if cull_meta_loading {
                     ui.label(egui::RichText::new(tr(lang, "메타 수집 중… (잠시 후 목록이 채워집니다)")).font(mono(9.0)).color(theme::INK4));
                 }
                 ui.add_space(16.0);
 
-                // ── DEDUP / BEST-OF (Tier2+3a, 모델 불필요) ──
+                // ── DEDUP / BEST-OF (Tier2+3a) ── METADATA와 동일 위계: [토글 | 값(오른쪽)].
                 section_label(ui, "DEDUP / BEST-OF");
-                if check_chip(ui, tr(lang, "연사 베스트-N"), None, theme::ACCENT, c.use_burst) {
-                    c.use_burst = !c.use_burst;
-                }
-                if c.use_burst {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(tr(lang, "간격 ≤")).font(mono(11.0)).color(theme::INK3));
-                        ui.add(egui::DragValue::new(&mut c.burst_gap_secs).range(1..=30).suffix(tr(lang, "초")));
-                        ui.add_space(8.0);
-                        ui.label(egui::RichText::new(tr(lang, "그룹당 최고")).font(mono(11.0)).color(theme::INK3));
-                        ui.add(egui::DragValue::new(&mut c.burst_keep).range(1..=20).suffix(tr(lang, "장")));
+                egui::Grid::new("aicull_dedup_grid")
+                    .num_columns(2)
+                    .min_col_width(140.0)
+                    .spacing([14.0, 8.0])
+                    .show(ui, |ui| {
+                        if check_chip(ui, tr(lang, "연사 베스트-N"), None, theme::ACCENT, c.use_burst) {
+                            c.use_burst = !c.use_burst;
+                        }
+                        if c.use_burst {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(tr(lang, "간격 ≤")).font(mono(11.0)).color(theme::INK3));
+                                ui.add(egui::DragValue::new(&mut c.burst_gap_secs).range(1..=30).suffix(tr(lang, "초")));
+                                ui.add_space(10.0);
+                                ui.label(egui::RichText::new(tr(lang, "그룹당")).font(mono(11.0)).color(theme::INK3));
+                                ui.add(egui::DragValue::new(&mut c.burst_keep).range(1..=20).suffix(tr(lang, "장")));
+                            });
+                        } else {
+                            ui.label("");
+                        }
+                        ui.end_row();
+                        if check_chip(ui, tr(lang, "시각적 중복 묶기"), None, theme::ACCENT, c.use_dedup) {
+                            c.use_dedup = !c.use_dedup;
+                        }
+                        if c.use_dedup {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(tr(lang, "해밍 ≤")).font(mono(11.0)).color(theme::INK3));
+                                ui.add(egui::DragValue::new(&mut c.dedup_hamming).range(2..=16));
+                                ui.add_space(10.0);
+                                ui.label(egui::RichText::new(tr(lang, "클러스터당")).font(mono(11.0)).color(theme::INK3));
+                                ui.add(egui::DragValue::new(&mut c.dedup_keep).range(1..=20).suffix(tr(lang, "장")));
+                            });
+                        } else {
+                            ui.label("");
+                        }
+                        ui.end_row();
                     });
-                }
-                if check_chip(ui, tr(lang, "시각적 중복 묶기"), None, theme::ACCENT, c.use_dedup) {
-                    c.use_dedup = !c.use_dedup;
-                }
-                if c.use_dedup {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(tr(lang, "유사도(해밍≤)")).font(mono(11.0)).color(theme::INK3));
-                        ui.add(egui::Slider::new(&mut c.dedup_hamming, 2..=16));
-                        ui.add_space(8.0);
-                        ui.label(egui::RichText::new(tr(lang, "클러스터당")).font(mono(11.0)).color(theme::INK3));
-                        ui.add(egui::DragValue::new(&mut c.dedup_keep).range(1..=20).suffix(tr(lang, "장")));
-                    });
-                }
                 if c.use_burst || c.use_dedup {
                     ui.label(egui::RichText::new(tr(lang, "그룹 내 베스트는 점수(미적>선명도) 기준 선택")).font(mono(9.0)).color(theme::INK4));
                 }
                 ui.add_space(16.0);
 
-                // ── AI AXES ── 장르 픽=얼굴 검출(YuNet), AI 선명도=CLIP 다축 sharp 축으로 실동작.
-                // (커스텀 프롬프트는 런타임 텍스트 인코더가 필요해 메뉴에서 제외 — #53. config 필드는 유지.)
+                // ── AI AXES ── 장르=YuNet, AI 선명도=CLIP sharp. [토글 | 값] 위계 통일.
+                // (커스텀 프롬프트는 텍스트 인코더 필요로 메뉴 제외 — #53. config 필드는 유지.)
                 section_label(ui, "AI AXES");
-                ui.horizontal_wrapped(|ui| {
-                    if check_chip(ui, tr(lang, "장르 픽"), None, theme::ACCENT, c.use_genre) {
-                        c.use_genre = !c.use_genre;
-                    }
-                    if check_chip(ui, tr(lang, "AI 선명도"), None, theme::ACCENT, c.use_sharp_ai) {
-                        c.use_sharp_ai = !c.use_sharp_ai;
-                    }
-                });
+                egui::Grid::new("aicull_aiaxes_grid")
+                    .num_columns(2)
+                    .min_col_width(140.0)
+                    .spacing([14.0, 8.0])
+                    .show(ui, |ui| {
+                        if check_chip(ui, tr(lang, "장르 픽"), None, theme::ACCENT, c.use_genre) {
+                            c.use_genre = !c.use_genre;
+                        }
+                        if c.use_genre {
+                            let gsel = if c.genre_portrait { 0 } else { 1 };
+                            if let Some(i) = segmented(
+                                ui,
+                                &[
+                                    (tr(lang, "인물"), tr(lang, "얼굴 있음")),
+                                    (tr(lang, "풍경"), tr(lang, "얼굴 없음")),
+                                ],
+                                gsel,
+                            ) {
+                                c.genre_portrait = i == 0;
+                            }
+                        } else {
+                            ui.label("");
+                        }
+                        ui.end_row();
+                        if check_chip(ui, tr(lang, "AI 선명도"), None, theme::ACCENT, c.use_sharp_ai) {
+                            c.use_sharp_ai = !c.use_sharp_ai;
+                        }
+                        if c.use_sharp_ai {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(tr(lang, "P(sharp) ≥")).font(mono(11.0)).color(theme::INK3));
+                                ui.add(egui::Slider::new(&mut c.sharp_min, 0.1..=0.9).fixed_decimals(2));
+                            });
+                        } else {
+                            ui.label("");
+                        }
+                        ui.end_row();
+                    });
                 if c.use_genre {
-                    // 인물/풍경은 택1 — 라디오형 칩(해제 혼동, #53) 대신 세그먼트 토글.
-                    let gsel = if c.genre_portrait { 0 } else { 1 };
-                    if let Some(i) = segmented(
-                        ui,
-                        &[
-                            (tr(lang, "인물"), tr(lang, "얼굴 있는 컷")),
-                            (tr(lang, "풍경"), tr(lang, "얼굴 없는 컷")),
-                        ],
-                        gsel,
-                    ) {
-                        c.genre_portrait = i == 0;
-                    }
                     ui.label(egui::RichText::new(tr(lang, "장르 픽: 얼굴 검출(YuNet) 기반")).font(mono(9.0)).color(theme::INK4));
                 }
-                // AI 선명도(CLIP sharp 축): P(sharp) 하한 슬라이더 + 모델 상태/다운로드.
                 if c.use_sharp_ai {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(tr(lang, "선명도 하한 P(sharp)")).font(mono(11.0)).color(theme::INK3));
-                        ui.add(egui::Slider::new(&mut c.sharp_min, 0.1..=0.9).fixed_decimals(2));
-                    });
                     if !Self::model_present(config::CLIP_AXES_MODEL) {
                         ui.label(egui::RichText::new(tr(lang, "CLIP 다축 모델(89MB) 없음 — 아래 버튼으로 받으세요")).font(mono(10.0)).color(theme::WARN));
                         #[cfg(feature = "model-download")]
@@ -4163,40 +4213,48 @@ impl RawBlowApp {
                 // ── DETECT ── 얼굴(YuNet)·객체(YOLOv10n) 실동작.
                 // (눈 뜬 컷은 눈감음 분류기가 필요해 메뉴에서 제외 — #53. config 필드는 유지.)
                 section_label(ui, "DETECT");
-                ui.horizontal_wrapped(|ui| {
-                    if check_chip(ui, tr(lang, "얼굴 있는 컷만"), None, theme::ACCENT, c.use_face) {
-                        c.use_face = !c.use_face;
-                    }
-                    if check_chip(ui, tr(lang, "객체 포함"), None, theme::ACCENT, c.use_object) {
-                        c.use_object = !c.use_object;
-                    }
-                });
-                if c.use_object {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(tr(lang, "클래스(COCO 80)")).font(mono(11.0)).color(theme::INK3));
-                        ui.text_edit_singleline(&mut c.object_class);
+                egui::Grid::new("aicull_detect_grid")
+                    .num_columns(2)
+                    .min_col_width(140.0)
+                    .spacing([14.0, 8.0])
+                    .show(ui, |ui| {
+                        if check_chip(ui, tr(lang, "얼굴 있는 컷만"), None, theme::ACCENT, c.use_face) {
+                            c.use_face = !c.use_face;
+                        }
+                        ui.label("");
+                        ui.end_row();
+                        if check_chip(ui, tr(lang, "객체 포함"), None, theme::ACCENT, c.use_object) {
+                            c.use_object = !c.use_object;
+                        }
+                        if c.use_object {
+                            ui.horizontal(|ui| {
+                                ui.add(egui::TextEdit::singleline(&mut c.object_class).desired_width(120.0).hint_text(tr(lang, "person")));
+                                // 클래스 해석 결과 안내.
+                                match rawblow_core::object_detect::coco_index(&c.object_class) {
+                                    Some(idx) => {
+                                        ui.label(egui::RichText::new(trf(lang, "→ {}", &[rawblow_core::object_detect::COCO_NAMES[idx as usize]])).font(mono(9.5)).color(theme::INK4));
+                                    }
+                                    None => {
+                                        ui.label(egui::RichText::new(tr(lang, "COCO 클래스명")).font(mono(9.0)).color(theme::WARN));
+                                    }
+                                }
+                            });
+                        } else {
+                            ui.label("");
+                        }
+                        ui.end_row();
                     });
-                    // 클래스 해석 결과 안내(예: person·dog·chair…).
-                    match rawblow_core::object_detect::coco_index(&c.object_class) {
-                        Some(idx) => {
-                            ui.label(egui::RichText::new(trf(lang, "→ '{}' 인식", &[rawblow_core::object_detect::COCO_NAMES[idx as usize]])).font(mono(9.0)).color(theme::INK4));
-                        }
-                        None => {
-                            ui.label(egui::RichText::new(tr(lang, "COCO 클래스명을 입력하세요(person·dog·car·chair·bottle…)")).font(mono(9.0)).color(theme::WARN));
-                        }
+                if c.use_object && !Self::model_present(config::OBJECT_MODEL) {
+                    ui.label(egui::RichText::new(tr(lang, "객체 모델(YOLOv10n, 9MB) 없음 — 아래 버튼으로 받으세요")).font(mono(10.0)).color(theme::WARN));
+                    #[cfg(feature = "model-download")]
+                    if ui.add(egui::Button::new(
+                        egui::RichText::new(format!("  {} (YOLOv10n 9MB)  ", tr(lang, "객체 모델 다운로드")))
+                            .color(Color32::from_rgb(0x0a, 0x14, 0x20))
+                    ).fill(theme::ACCENT)).clicked() {
+                        do_download = Some(config::OBJECT_MODEL);
                     }
-                    if !Self::model_present(config::OBJECT_MODEL) {
-                        ui.label(egui::RichText::new(tr(lang, "객체 모델(YOLOv10n, 9MB) 없음 — 아래 버튼으로 받으세요")).font(mono(10.0)).color(theme::WARN));
-                        #[cfg(feature = "model-download")]
-                        if ui.add(egui::Button::new(
-                            egui::RichText::new(format!("  {} (YOLOv10n 9MB)  ", tr(lang, "객체 모델 다운로드")))
-                                .color(Color32::from_rgb(0x0a, 0x14, 0x20))
-                        ).fill(theme::ACCENT)).clicked() {
-                            do_download = Some(config::OBJECT_MODEL);
-                        }
-                    } else {
-                        ui.label(egui::RichText::new(tr(lang, "✓ 객체 모델 준비됨 (YOLOv10n)")).font(mono(10.0)).color(theme::ACCENT));
-                    }
+                } else if c.use_object {
+                    ui.label(egui::RichText::new(tr(lang, "✓ 객체 모델 준비됨 (YOLOv10n)")).font(mono(10.0)).color(theme::ACCENT));
                 }
                 // 얼굴 모델 상태(장르·얼굴 공용). 없으면 다운로드 버튼.
                 if (c.use_face || c.use_genre) && !Self::model_present(config::FACE_MODEL) {
@@ -5892,24 +5950,6 @@ fn section_label(ui: &mut egui::Ui, text: &str) {
     ui.add_space(2.0);
     ui.label(egui::RichText::new(text).font(prop(10.0)).color(theme::INK3));
     ui.add_space(5.0);
-}
-
-/// 메타 선택 콤보박스: 라벨 + 드롭다운(현재 폴더에 실재하는 값 목록). 빈 선택 = `all_label`(=필터 없음).
-/// `value`에는 선택한 전체 문자열이 들어가고, 백엔드는 이를 대소문자 무시 부분일치로 매칭한다.
-fn meta_select(ui: &mut egui::Ui, id: &str, label: &str, all_label: &str, options: &[String], value: &mut String) {
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(label).font(mono(11.0)).color(theme::INK3));
-        let shown = if value.trim().is_empty() { all_label } else { value.as_str() };
-        egui::ComboBox::from_id_salt(id)
-            .selected_text(egui::RichText::new(shown).font(mono(11.0)))
-            .width(320.0)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(value, String::new(), all_label);
-                for opt in options {
-                    ui.selectable_value(value, opt.clone(), opt.as_str());
-                }
-            });
-    });
 }
 
 /// 전체 너비 1px 구분선.
