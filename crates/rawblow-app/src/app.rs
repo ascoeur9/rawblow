@@ -3847,27 +3847,55 @@ impl RawBlowApp {
                 .unwrap_or(theme::INK3)
         };
 
-        egui::Window::new("aicull_modal")
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            // 폭만 540으로 고정하고 높이는 내용에 맞춰 자동 — 아래 ScrollArea가 화면 높이로 상한을 둔다.
-            // fixed_size(.., 0.0)는 높이까지 0으로 고정해, 전체를 감싼 ScrollArea가 ~0 높이로 찌그러졌다(회귀).
-            .min_width(540.0)
-            .max_width(540.0)
-            .frame(modal_frame())
+        // 전송 다이얼로그와 동일한 구조로 통일(#53): Area+Frame 카드 → 고정 HEADER →
+        // 본문만 스크롤 → 고정 FOOTER(시작/취소). 취소·시작이 항상 보여 스크롤 불필요.
+        let card_w = 560.0;
+        let card_pos = egui::Pos2::new(screen.center().x - card_w / 2.0, (screen.center().y - 320.0).max(8.0));
+        let inner_w = card_w - 44.0;
+        egui::Area::new(egui::Id::new("aicull_card"))
             .order(egui::Order::Foreground)
+            .fixed_pos(card_pos)
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical()
-                    .max_height(ctx.screen_rect().height() - 96.0)
-                    .auto_shrink([false, true])
+                egui::Frame::none()
+                    .fill(theme::BG2)
+                    .stroke(Stroke::new(1.0, theme::LINE2))
+                    .rounding(10.0)
                     .show(ui, |ui| {
-                modal_header(
-                    ui,
-                    tr(lang, "AI 컬링"),
-                    tr(lang, "사진을 분석해 흐림·노출·기울기로 자동 분류 · 전부 로컬 처리"),
-                );
+                        ui.set_min_width(card_w);
+                        ui.set_max_width(card_w);
+                        // ── HEADER (고정) ──
+                        egui::Frame::none()
+                            .inner_margin(egui::Margin { left: 22.0, right: 22.0, top: 18.0, bottom: 14.0 })
+                            .show(ui, |ui| {
+                                ui.set_width(inner_w);
+                                ui.horizontal(|ui| {
+                                    ui.vertical(|ui| {
+                                        ui.label(egui::RichText::new(tr(lang, "AI 컬링")).font(prop(15.0)).color(theme::INK));
+                                        ui.label(egui::RichText::new(tr(lang, "사진을 분석해 흐림·노출·기울기로 자동 분류 · 전부 로컬 처리")).font(mono(10.5)).color(theme::INK3));
+                                    });
+                                    ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                                        let (xr, xresp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
+                                        let cc = xr.center();
+                                        let col = if xresp.hovered() { theme::INK } else { theme::INK3 };
+                                        ui.painter().line_segment([cc + Vec2::new(-4.0, -4.0), cc + Vec2::new(4.0, 4.0)], Stroke::new(1.5, col));
+                                        ui.painter().line_segment([cc + Vec2::new(4.0, -4.0), cc + Vec2::new(-4.0, 4.0)], Stroke::new(1.5, col));
+                                        if xresp.clicked() { do_cancel = true; }
+                                        if xresp.hovered() { ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); }
+                                    });
+                                });
+                            });
+                        hline_full(ui);
+                        // ── BODY (본문만 스크롤) ──
+                        let body_max = (screen.height() - card_pos.y - 8.0 - 132.0).max(160.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt("aicull_body_scroll")
+                            .max_height(body_max)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                egui::Frame::none()
+                                    .inner_margin(egui::Margin::symmetric(22.0, 16.0))
+                                    .show(ui, |ui| {
+                                        ui.set_width(inner_w);
 
                 section_label(ui, "CHECKS");
                 ui.horizontal_wrapped(|ui| {
@@ -4262,53 +4290,52 @@ impl RawBlowApp {
                     c.scope_all = i == 0;
                 }
 
-                ui.add_space(14.0);
-                let r = ui.max_rect();
-                let y = ui.cursor().top();
-                ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0, theme::LINE));
-                ui.add_space(12.0);
-                let count = if c.scope_all { total_items } else { filtered_count };
-                // 모드별 대략 처리량(실파이프라인=디코드 포함, M1 Max·JPEG 기준. RAW는 더 느림).
-                // 실제 컬링은 디코드가 병목이라 미적 GPU/CPU 차이는 작다.
-                let rate = if c.use_aesthetic {
-                    if c.use_gpu { "~100장/초 내외 (GPU)" } else { "~90장/초 내외 (CPU)" }
-                } else {
-                    "~200장/초+ (모델 불필요·가장 빠름)"
-                };
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("WILL ANALYZE").font(prop(10.0)).color(theme::INK3));
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new(count.to_string()).font(mono(13.0)).color(theme::ACCENT));
-                    ui.label(egui::RichText::new(tr(lang, "장")).font(mono(10.0)).color(theme::INK3));
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new(tr(lang, rate)).font(mono(9.5)).color(theme::INK4));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let aesthetic_blocks = c.use_aesthetic && !Self::model_present(c.model_spec());
-                        // 얼굴/장르 옵션이 켜졌는데 YuNet 모델이 없으면 시작 차단(다운로드 유도).
-                        let face_blocks = (c.use_face || c.use_genre) && !Self::model_present(config::FACE_MODEL);
-                        let sharp_blocks = c.use_sharp_ai && !Self::model_present(config::CLIP_AXES_MODEL);
-                        // 객체: 모델 없거나 클래스명을 해석 못 하면 차단.
-                        let object_blocks = c.use_object
-                            && (!Self::model_present(config::OBJECT_MODEL)
-                                || rawblow_core::object_detect::coco_index(&c.object_class).is_none());
-                    let can_start = c.any_enabled() && count > 0 && !aesthetic_blocks && !face_blocks && !sharp_blocks && !object_blocks;
-                        if ui
-                            .add_enabled(
-                                can_start,
-                                egui::Button::new(egui::RichText::new(format!("  {}  ", tr(lang, "컬링 시작"))).color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT),
-                            )
-                            .clicked()
-                        {
-                            do_start = true;
-                        }
-                        ui.add_space(8.0);
-                        if toggle_btn(ui, tr(lang, "취소"), false).clicked() {
-                            do_cancel = true;
-                        }
-                    });
-                });
-                }); // egui::ScrollArea::vertical
-            });
+                                    }); // body inner Frame
+                            }); // body ScrollArea
+                        hline_full(ui);
+                        // ── FOOTER (고정) ── 전송 다이얼로그와 동일: 통계 + 시작/취소가 항상 보임.
+                        let count = if c.scope_all { total_items } else { filtered_count };
+                        // 모드별 대략 처리량(디코드 병목이라 미적 GPU/CPU 차이는 작다).
+                        let rate = if c.use_aesthetic {
+                            if c.use_gpu { "~100장/초 내외 (GPU)" } else { "~90장/초 내외 (CPU)" }
+                        } else {
+                            "~200장/초+ (모델 불필요·가장 빠름)"
+                        };
+                        egui::Frame::none()
+                            .fill(theme::BG1)
+                            .rounding(egui::Rounding { nw: 0.0, ne: 0.0, sw: 10.0, se: 10.0 })
+                            .inner_margin(egui::Margin::symmetric(22.0, 14.0))
+                            .show(ui, |ui| {
+                                ui.set_width(inner_w);
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new("WILL ANALYZE").font(prop(10.0)).color(theme::INK3));
+                                    ui.add_space(8.0);
+                                    ui.label(egui::RichText::new(count.to_string()).font(mono(13.0)).color(theme::ACCENT));
+                                    ui.label(egui::RichText::new(tr(lang, "장")).font(mono(10.0)).color(theme::INK3));
+                                    ui.add_space(8.0);
+                                    ui.label(egui::RichText::new(tr(lang, rate)).font(mono(9.5)).color(theme::INK4));
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        let aesthetic_blocks = c.use_aesthetic && !Self::model_present(c.model_spec());
+                                        let face_blocks = (c.use_face || c.use_genre) && !Self::model_present(config::FACE_MODEL);
+                                        let sharp_blocks = c.use_sharp_ai && !Self::model_present(config::CLIP_AXES_MODEL);
+                                        let object_blocks = c.use_object
+                                            && (!Self::model_present(config::OBJECT_MODEL)
+                                                || rawblow_core::object_detect::coco_index(&c.object_class).is_none());
+                                        let can_start = c.any_enabled() && count > 0 && !aesthetic_blocks && !face_blocks && !sharp_blocks && !object_blocks;
+                                        if ui.add_enabled(can_start, egui::Button::new(egui::RichText::new(format!("  {}  ", tr(lang, "컬링 시작"))).color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT)).clicked() {
+                                            do_start = true;
+                                        }
+                                        ui.add_space(8.0);
+                                        if toggle_btn(ui, tr(lang, "취소"), false).clicked() {
+                                            do_cancel = true;
+                                        }
+                                        ui.add_space(5.0);
+                                        kbd(ui, "Esc");
+                                    });
+                                });
+                            });
+                    }); // card Frame
+            }); // card Area
 
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             do_cancel = true;
