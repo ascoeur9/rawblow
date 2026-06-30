@@ -419,7 +419,8 @@ pub struct RawBlowApp {
 
     jump_open: bool,
     jump_text: String,
-    jump_exact: bool,
+    /// 점프 모드(#52): true=순번(현재/전체의 순번, 기본), false=파일명 일부 매칭.
+    jump_by_number: bool,
 
     // 일괄 분류 변경 모달 (#3) — 그리드에서 파일명으로 다수 항목을 한 번에 라벨링.
     bulk_open: bool,
@@ -576,7 +577,7 @@ impl RawBlowApp {
             last_trim: Instant::now(),
             jump_open: false,
             jump_text: String::new(),
-            jump_exact: false,
+            jump_by_number: true,
             bulk_open: false,
             bulk_text: String::new(),
             bulk_exact: false,
@@ -3819,6 +3820,10 @@ impl RawBlowApp {
 
         let lang = self.lang;
         let mut c = self.cfg.ai_cull.clone();
+        // 메뉴에서 제외된 미동작 옵션(#53)은 강제 해제 — 옛 설정의 잔류 true가 any_enabled를
+        // 무의미하게 켜거나 보이지 않는 필터로 작동하지 않게 한다(저장 시 함께 꺼짐).
+        c.use_eyes_open = false;
+        c.use_custom_prompt = false;
         let mut do_start = false;
         let mut do_cancel = false;
         let mut do_download: Option<config::ModelSpec> = None;
@@ -4080,32 +4085,31 @@ impl RawBlowApp {
                 }
                 ui.add_space(16.0);
 
-                // ── AI AXES ── 장르 픽=얼굴 검출(YuNet), AI 선명도=CLIP 다축 sharp 축으로 실동작. 커스텀만 후속.
+                // ── AI AXES ── 장르 픽=얼굴 검출(YuNet), AI 선명도=CLIP 다축 sharp 축으로 실동작.
+                // (커스텀 프롬프트는 런타임 텍스트 인코더가 필요해 메뉴에서 제외 — #53. config 필드는 유지.)
                 section_label(ui, "AI AXES");
                 ui.horizontal_wrapped(|ui| {
                     if check_chip(ui, tr(lang, "장르 픽"), None, theme::ACCENT, c.use_genre) {
                         c.use_genre = !c.use_genre;
                     }
-                    if c.use_genre {
-                        if check_chip(ui, tr(lang, "인물"), None, theme::ACCENT, c.genre_portrait) {
-                            c.genre_portrait = true;
-                        }
-                        if check_chip(ui, tr(lang, "풍경"), None, theme::ACCENT, !c.genre_portrait) {
-                            c.genre_portrait = false;
-                        }
-                    }
                     if check_chip(ui, tr(lang, "AI 선명도"), None, theme::ACCENT, c.use_sharp_ai) {
                         c.use_sharp_ai = !c.use_sharp_ai;
                     }
                 });
-                if check_chip(ui, tr(lang, "커스텀 프롬프트"), None, theme::ACCENT, c.use_custom_prompt) {
-                    c.use_custom_prompt = !c.use_custom_prompt;
-                }
-                if c.use_custom_prompt {
-                    ui.text_edit_singleline(&mut c.custom_prompt);
-                }
                 if c.use_genre {
-                    ui.label(egui::RichText::new(tr(lang, "장르 픽: 얼굴 검출(YuNet) 기반 — 인물=얼굴 있음 / 풍경=얼굴 없음")).font(mono(9.0)).color(theme::INK4));
+                    // 인물/풍경은 택1 — 라디오형 칩(해제 혼동, #53) 대신 세그먼트 토글.
+                    let gsel = if c.genre_portrait { 0 } else { 1 };
+                    if let Some(i) = segmented(
+                        ui,
+                        &[
+                            (tr(lang, "인물"), tr(lang, "얼굴 있는 컷")),
+                            (tr(lang, "풍경"), tr(lang, "얼굴 없는 컷")),
+                        ],
+                        gsel,
+                    ) {
+                        c.genre_portrait = i == 0;
+                    }
+                    ui.label(egui::RichText::new(tr(lang, "장르 픽: 얼굴 검출(YuNet) 기반")).font(mono(9.0)).color(theme::INK4));
                 }
                 // AI 선명도(CLIP sharp 축): P(sharp) 하한 슬라이더 + 모델 상태/다운로드.
                 if c.use_sharp_ai {
@@ -4126,19 +4130,14 @@ impl RawBlowApp {
                         ui.label(egui::RichText::new(tr(lang, "✓ CLIP 다축 모델 준비됨")).font(mono(10.0)).color(theme::ACCENT));
                     }
                 }
-                if c.use_custom_prompt {
-                    ui.label(egui::RichText::new(tr(lang, "커스텀 프롬프트: 런타임 텍스트 인코더 통합 후 동작(현재는 옵션 저장만)")).font(mono(9.0)).color(theme::WARN));
-                }
                 ui.add_space(16.0);
 
-                // ── DETECT ── 얼굴(YuNet)·객체(YOLOv10n) 실동작. 눈뜸만 후속(눈감음 분류기 필요).
+                // ── DETECT ── 얼굴(YuNet)·객체(YOLOv10n) 실동작.
+                // (눈 뜬 컷은 눈감음 분류기가 필요해 메뉴에서 제외 — #53. config 필드는 유지.)
                 section_label(ui, "DETECT");
                 ui.horizontal_wrapped(|ui| {
                     if check_chip(ui, tr(lang, "얼굴 있는 컷만"), None, theme::ACCENT, c.use_face) {
                         c.use_face = !c.use_face;
-                    }
-                    if check_chip(ui, tr(lang, "눈 뜬 컷만"), None, theme::ACCENT, c.use_eyes_open) {
-                        c.use_eyes_open = !c.use_eyes_open;
                     }
                     if check_chip(ui, tr(lang, "객체 포함"), None, theme::ACCENT, c.use_object) {
                         c.use_object = !c.use_object;
@@ -4183,9 +4182,6 @@ impl RawBlowApp {
                     }
                 } else if c.use_face || c.use_genre {
                     ui.label(egui::RichText::new(tr(lang, "✓ 얼굴 모델 준비됨 (YuNet)")).font(mono(10.0)).color(theme::ACCENT));
-                }
-                if c.use_eyes_open {
-                    ui.label(egui::RichText::new(tr(lang, "눈 뜬 컷: 눈감음 분류기 통합 후 동작(현재는 옵션 저장만)")).font(mono(9.0)).color(theme::WARN));
                 }
                 ui.add_space(16.0);
 
@@ -5052,6 +5048,7 @@ impl RawBlowApp {
         let lang = self.lang;
         let mut close = false;
         let mut go = false;
+        let total = self.filtered().len();
         egui::Window::new("jump_dialog")
             .title_bar(false)
             .collapsible(false)
@@ -5060,11 +5057,41 @@ impl RawBlowApp {
             .fixed_size(Vec2::new(420.0, 0.0))
             .frame(modal_frame())
             .show(ctx, |ui| {
-                modal_header(ui, tr(lang, "파일번호 점프"), tr(lang, "줄바꿈·쉼표·탭으로 구분"));
-                ui.add(egui::TextEdit::multiline(&mut self.jump_text).font(mono(12.0)).desired_rows(2).desired_width(f32::INFINITY));
+                modal_header(ui, tr(lang, "점프"), tr(lang, "한 곳으로 이동 — 순번 또는 파일명 일부"));
+                // 모드 선택(#52): 순번(기본) / 파일명. 하나만 활성.
+                let sel = if self.jump_by_number { 0 } else { 1 };
+                if let Some(i) = segmented(
+                    ui,
+                    &[
+                        (tr(lang, "순번"), tr(lang, "현재/전체의 번호")),
+                        (tr(lang, "파일명"), tr(lang, "일부 일치")),
+                    ],
+                    sel,
+                ) {
+                    self.jump_by_number = i == 0;
+                }
+                ui.add_space(8.0);
+                let hint = if self.jump_by_number {
+                    trf(lang, "1 ~ {} 사이 번호", &[&total.max(1).to_string()])
+                } else {
+                    tr(lang, "파일명 일부(한 개)").to_string()
+                };
+                // 단일 값 입력(#52): singleline이라 줄바꿈 불가. 숫자 모드면 숫자만 통과.
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.jump_text)
+                        .font(mono(12.0))
+                        .desired_width(f32::INFINITY)
+                        .hint_text(hint),
+                );
+                if self.jump_by_number {
+                    // 숫자 모드: 쉼표·문자 등은 입력 즉시 제거(여러 값·구분자 차단).
+                    self.jump_text.retain(|c| c.is_ascii_digit());
+                } else {
+                    // 파일명 모드: 줄바꿈·쉼표·탭 제거(단일 값 강제).
+                    self.jump_text.retain(|c| c != ',' && c != '\t' && c != '\n' && c != '\r');
+                }
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.jump_exact, tr(lang, "정확히 일치"));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui.add(egui::Button::new(egui::RichText::new(format!("  {}  ⏎  ", tr(lang, "점프"))).color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT)).clicked() {
                             go = true;
@@ -5075,23 +5102,41 @@ impl RawBlowApp {
                         }
                     });
                 });
+                let _ = resp;
             });
         if go || ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
-            let terms = transfer::parse_terms(&self.jump_text);
-            let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
-            let mode = if self.jump_exact { MatchMode::Exact } else { MatchMode::Contains };
-            let hits = transfer::match_indices(&entries, &terms, mode);
-            if let Some(&first) = hits.first() {
-                // 필터 목록에서의 위치로 변환.
-                let f = self.filtered();
-                if let Some(pos) = f.iter().position(|&r| r == first) {
-                    self.index = pos;
+            let q = self.jump_text.trim().to_string();
+            if self.jump_by_number {
+                // 순번 점프: 1-based 필터 위치(우상단 "현재 / 전체"와 동일).
+                match q.parse::<usize>() {
+                    Ok(n) if n >= 1 && n <= total => {
+                        self.index = n - 1;
+                        close = true;
+                    }
+                    _ => {
+                        self.toast = Some((trf(lang, "1 ~ {} 사이 번호를 입력하세요", &[&total.max(1).to_string()]), Instant::now()));
+                    }
                 }
-                self.toast = Some((trf(lang, "{} 건 매칭", &[&hits.len().to_string()]), Instant::now()));
+            } else if q.is_empty() {
+                self.toast = Some((tr(lang, "파일명 일부를 입력하세요").into(), Instant::now()));
             } else {
-                self.toast = Some((tr(lang, "매칭 없음").into(), Instant::now()));
+                // 파일명 점프: 단일 항(부분일치, 대소문자 무시) → 첫 매칭.
+                let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
+                let hits = transfer::match_indices(&entries, &[q], MatchMode::Contains);
+                if let Some(&first) = hits.first() {
+                    let f = self.filtered();
+                    if let Some(pos) = f.iter().position(|&r| r == first) {
+                        self.index = pos;
+                    }
+                    self.toast = Some((trf(lang, "{} 건 매칭 — 첫 항목으로", &[&hits.len().to_string()]), Instant::now()));
+                    close = true;
+                } else {
+                    self.toast = Some((tr(lang, "매칭 없음").into(), Instant::now()));
+                }
             }
-            close = true;
+        }
+        if close {
+            self.jump_text.clear();
         }
         if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.jump_open = false;
