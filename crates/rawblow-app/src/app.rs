@@ -6221,7 +6221,10 @@ mod tests {
         };
         let mtime = UNIX_EPOCH + Duration::from_nanos(1_700_000_000_123_456_789);
         let mut map = HashMap::new();
-        map.insert(PathBuf::from("/photos/IMG_0001.CR2"), CullCacheEntry { mtime, sig: 0xABCD, report });
+        map.insert(
+            PathBuf::from("/photos/IMG_0001.CR2"),
+            CullCacheEntry { mtime, sig: 0xABCD, report, dhash: Some(0x0123_4567_89AB_CDEF) },
+        );
 
         save_cull_cache_to(&file, &map);
         let loaded = load_cull_cache_from(&file);
@@ -6230,6 +6233,7 @@ mod tests {
         assert_eq!(e.mtime, mtime, "mtime 나노초 왕복 보존");
         assert_eq!(e.report.aesthetic, Some(0.42));
         assert_eq!(e.report.focus.sharpness, 0.7);
+        assert_eq!(e.dhash, Some(0x0123_4567_89AB_CDEF), "dhash 왕복 보존");
 
         // 손상/부재 파일 → 빈 맵(안전 폴백).
         report.aesthetic = None; // (사용 안 함, 경고 회피)
