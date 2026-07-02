@@ -2,6 +2,9 @@
 
 [한국어](README.md) · **English** · [日本語](README.ja.md)
 
+[![Downloads](https://img.shields.io/github/downloads/ascoeur9/rawblow/total?label=downloads&color=brightgreen)](https://github.com/ascoeur9/rawblow/releases)
+[![Latest release](https://img.shields.io/github/v/release/ascoeur9/rawblow?sort=semver&label=latest)](https://github.com/ascoeur9/rawblow/releases/latest)
+
 **Fast RAW photo culling (selection) viewer** — Rust + egui/wgpu native · Windows / macOS / Linux
 
 A lightweight culling tool that lets you flip quickly through thousands of RAWs, sort them into **Pick / Hold / Reject**, and then copy or move only the ones you chose. It instantly displays the embedded preview inside the RAW for fast flipping, and loads the full resolution at native size with **ORIG (original)** only when you need to inspect focus and detail precisely. Sorting results are written only to a sidecar file without ever touching the originals (non-destructive).
