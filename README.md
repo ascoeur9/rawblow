@@ -2,6 +2,9 @@
 
 **한국어** · [English](README.en.md) · [日本語](README.ja.md)
 
+[![다운로드](https://img.shields.io/github/downloads/ascoeur9/rawblow/total?label=%EB%8B%A4%EC%9A%B4%EB%A1%9C%EB%93%9C&color=brightgreen)](https://github.com/ascoeur9/rawblow/releases)
+[![최신 릴리즈](https://img.shields.io/github/v/release/ascoeur9/rawblow?sort=semver&label=%EC%B5%9C%EC%8B%A0%20%EB%B2%84%EC%A0%84)](https://github.com/ascoeur9/rawblow/releases/latest)
+
 **빠른 RAW 사진 컬링(셀렉) 뷰어** — Rust + egui/wgpu 네이티브 · Windows / macOS / Linux
 
 수천 장의 RAW를 빠르게 넘기며 **채택 / 보류 / 제외**로 분류하고, 고른 사진만 복사·이동하는 가벼운 셀렉 도구입니다. RAW 안에 들어있는 임베디드 프리뷰를 바로 띄워 넘김이 빠르고, 초점·디테일을 정밀하게 볼 때만 **ORIG(원본)** 으로 원본 해상도를 불러옵니다. 분류 결과는 원본을 건드리지 않고 사이드카 파일에만 기록합니다(비파괴).

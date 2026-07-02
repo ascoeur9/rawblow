@@ -2,6 +2,9 @@
 
 [한국어](README.md) · [English](README.en.md) · **日本語**
 
+[![ダウンロード](https://img.shields.io/github/downloads/ascoeur9/rawblow/total?label=%E3%83%80%E3%82%A6%E3%83%B3%E3%83%AD%E3%83%BC%E3%83%89&color=brightgreen)](https://github.com/ascoeur9/rawblow/releases)
+[![最新リリース](https://img.shields.io/github/v/release/ascoeur9/rawblow?sort=semver&label=%E6%9C%80%E6%96%B0%E3%83%90%E3%83%BC%E3%82%B8%E3%83%A7%E3%83%B3)](https://github.com/ascoeur9/rawblow/releases/latest)
+
 **高速 RAW 写真カリング（セレクト）ビューア** — Rust + egui/wgpu ネイティブ · Windows / macOS / Linux
 
 数千枚の RAW を素早くめくりながら **採用 / 保留 / 除外** に分類し、選んだ写真だけをコピー・移動する軽量なセレクトツールです。RAW に含まれる埋め込みプレビューをそのまま表示するためめくりが速く、ピント・ディテールを精密に確認したいときだけ **ORIG（オリジナル）** でフル解像度を読み込みます。分類結果はオリジナルに手を加えず、サイドカーファイルにのみ記録します（非破壊）。
