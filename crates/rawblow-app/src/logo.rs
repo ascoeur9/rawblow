@@ -38,6 +38,8 @@ pub fn draw_mark(painter: &egui::Painter, rect: Rect) {
 /// macOS 앱 아이콘 표준 여백(각 변, 캔버스 대비 비율). Apple 그리드 기준
 /// 1024 캔버스에서 본체 824 → 가장자리 100px. 이 여백이 없으면 cmd+Tab·Dock에서
 /// 다른 앱보다 아이콘이 커 보인다.
+// macOS 창 아이콘(main.rs)과 gen_macos_icon 예제에서만 참조 — 다른 OS 빌드에선 미사용.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const MACOS_ICON_MARGIN: f32 = 100.0 / 1024.0;
 
 /// 창 아이콘용 RGBA8(straight alpha) 버퍼. 마크를 캔버스에 꽉 채운다(풀블리드).

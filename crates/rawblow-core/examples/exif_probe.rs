@@ -2,6 +2,7 @@
 //! - read_exif() 결과
 //! - 파일 안의 모든 임베디드 JPEG(FF D8 FF)에 대해 kamadak로 EXIF 읽기 시도
 //! - 컨테이너(TIFF IFD0) 직접 읽기 시도
+//!
 //! 사용: cargo run --release -p rawblow-core --example exif_probe -- "<folder>" [count]
 
 use rawblow_core::meta::read_exif;

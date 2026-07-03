@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use walkdir::WalkDir;
 
-fn one(p: &PathBuf, full_raw: bool, edge: Option<u32>) -> (f64, f64, String) {
+fn one(p: &std::path::Path, full_raw: bool, edge: Option<u32>) -> (f64, f64, String) {
     let _ = decode::take_bytes_read();
     let t = Instant::now();
     let r = decode_file(p, DecodeOptions { full_raw, max_edge: edge });

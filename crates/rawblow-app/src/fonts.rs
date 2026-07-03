@@ -79,7 +79,9 @@ pub fn install(ctx: &egui::Context, lang: Lang) {
     let loaded = load_cjk_fonts(lang);
     let names: Vec<String> = loaded.iter().map(|(n, _)| n.clone()).collect();
     for (name, bytes) in loaded {
-        // `Arc<T>: From<T>` 이므로 `.into()`가 egui 버전과 무관하게 동작.
+        // `Arc<T>: From<T>` 이므로 `.into()`가 egui 버전과 무관하게 동작(0.29는 FontData,
+        // 0.30+는 Arc<FontData>를 받음 — 업그레이드 대비 의도적 유지).
+        #[allow(clippy::useless_conversion)]
         fonts.font_data.insert(name, FontData::from_owned(bytes).into());
     }
     if !names.is_empty() {

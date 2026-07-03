@@ -272,8 +272,8 @@ pub fn draw_histogram(ui: &Ui, rect: Rect, bins: &[[u32; 64]; 3], max: u32) {
     // 라벨 헤더.
     hud_text(ui, rect.left_top() + Vec2::new(0.0, -2.0), Align2::LEFT_BOTTOM, "RGB", mono(9.5), theme::INK3);
     for c in 0..3 {
-        for x in 0..n {
-            let v = bins[c][x] as f32 / maxf;
+        for (x, &bin) in bins[c].iter().enumerate().take(n) {
+            let v = bin as f32 / maxf;
             let bh = (v.sqrt()) * rect.height(); // sqrt로 낮은 빈도도 보이게
             let bar = Rect::from_min_max(
                 Pos2::new(rect.left() + x as f32 * bw, rect.bottom() - bh),

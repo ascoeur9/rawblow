@@ -46,7 +46,7 @@ fn main() {
             let (tag,typ,c,val) = match (r16(e),r16(e+2),r32(e+4),r32(e+8)) { (Some(a),Some(b),Some(cc),Some(d))=>(a,b,cc as usize,d as u64), _=>break };
             let blen = c*tsz(typ);
             // JPEG 포인터 의심 태그
-            let jpeg = (tag==0x0111||tag==0x0201) && blen<=4; // offset-holding
+            let _jpeg = (tag==0x0111||tag==0x0201) && blen<=4; // offset-holding(주석용 표식)
             let mark = match tag {
                 0x0111=>"StripOffsets", 0x0117=>"StripByteCounts", 0x0201=>"JpgIFOffset",
                 0x0202=>"JpgIFLength", 0x014a=>"SubIFDs", 0x0103=>"Compression",

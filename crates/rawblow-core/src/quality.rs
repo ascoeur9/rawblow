@@ -337,9 +337,9 @@ fn tilt_report(img: &DecodedImage) -> TiltReport {
     let hi = (best + 3).min(TILT_BINS - 1);
     let mut wsum = 0f32;
     let mut isum = 0f32;
-    for i in lo..=hi {
-        wsum += hist[i];
-        isum += hist[i] * i as f32;
+    for (i, &h) in hist.iter().enumerate().take(hi + 1).skip(lo) {
+        wsum += h;
+        isum += h * i as f32;
     }
     let peak = if wsum > 0.0 { isum / wsum } else { best as f32 };
     let degrees = peak / (TILT_BINS as f32 - 1.0) * (2.0 * TILT_WINDOW_DEG) - TILT_WINDOW_DEG;

@@ -1,8 +1,8 @@
 //! 품질 채점 확인용 예제(#50). 한 파일을 디코딩해 노출·초점·기울기 점수를 출력한다.
-//! `ai` 기능 빌드 시 둘째 인자로 NIMA `.onnx` 경로를 주면 미적 점수도 낸다.
+//! `ai` 기능 빌드 시 둘째 인자로 CLIP-IQA `.onnx` 경로를 주면 미적 점수도 낸다.
 //!
 //!   cargo run -p rawblow-core --example quality_probe -- photo.cr2
-//!   cargo run -p rawblow-core --example quality_probe --features ai -- photo.cr2 nima.onnx
+//!   cargo run -p rawblow-core --example quality_probe --features ai -- photo.cr2 clip-iqa.onnx
 
 use rawblow_core::decode::{decode_file, DecodeOptions};
 use rawblow_core::quality;
