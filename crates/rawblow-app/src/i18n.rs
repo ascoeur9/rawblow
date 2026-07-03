@@ -61,6 +61,27 @@ fn fmt_lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "썸네일 캐시 사용량 · {}" => ("Thumbnail cache usage · {}", "サムネイルキャッシュ使用量 · {}"),
         "{} / {} 파일" => ("{} / {} files", "{} / {} ファイル"),
         "{} 구성요소" => ("{} components", "{} コンポーネント"),
+        // #50~#53 AI 컬링 / #52 점프
+        "{} 항목" => ("{} items", "{} 項目"),
+        "{} / {} 장" => ("{} / {} photos", "{} / {} 枚"),
+        "AI 컬링 완료 · 좋음 {} · 탈락 {}" => ("AI culling done · Good {} · Culled {}", "AIカリング完了 · 良い {} · 落選 {}"),
+        " · 캐시 {}장" => (" · {} cached", " · キャッシュ {}枚"),
+        " · 제외 {}장" => (" · {} skipped", " · 除外 {}枚"),
+        "1 ~ {} 사이 번호" => ("Number from 1 to {}", "1～{} の番号"),
+        "1 ~ {} 사이 번호를 입력하세요" => ("Enter a number from 1 to {}", "1～{} の番号を入力してください"),
+        "{} 건 매칭 — 첫 항목으로" => ("{} matched — jumped to first", "{} 件一致 — 最初の項目へ"),
+        // #50 모델 다운로드 오류(토스트에 그대로 노출되는 문자열)
+        "다운로드 실패: {}" => ("Download failed: {}", "ダウンロード失敗: {}"),
+        "파일 생성: {}" => ("create file: {}", "ファイル作成: {}"),
+        "쓰기 오류: {}" => ("write error: {}", "書き込みエラー: {}"),
+        "읽기 오류: {}" => ("read error: {}", "読み取りエラー: {}"),
+        "검증 열기: {}" => ("open for verify: {}", "検証用オープン: {}"),
+        "해시 읽기: {}" => ("hash read: {}", "ハッシュ読み取り: {}"),
+        "파일 이동: {}" => ("move file: {}", "ファイル移動: {}"),
+        "sha256 불일치 — 다시 시도해주세요\n예상: {}\n실제: {}" => (
+            "sha256 mismatch — please retry\nexpected: {}\nactual: {}",
+            "sha256不一致 — もう一度お試しください\n期待値: {}\n実際: {}",
+        ),
         _ => return None,
     })
 }
@@ -281,6 +302,133 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
             "This application includes the open source software listed below. Source code for the LGPL components (rawloader · imagepipe · multicache) is available at each component's repository link.",
             "本アプリは以下のオープンソースソフトウェアを含みます。LGPLコンポーネント（rawloader · imagepipe · multicache）のソースコードは各項目のリポジトリリンクから入手できます。",
         ),
+        // #50~#53 AI 컬링 — 좌측 레일·다이얼로그·확인 모달·토스트
+        "AI 컬링" => ("AI Culling", "AIカリング"),
+        "분석" => ("Analyzing", "分析"),
+        "AI 컬링 중 — 선택(라벨)이 잠겨 있습니다" => ("AI culling in progress — labels are locked", "AIカリング中 — 選択（ラベル）はロック中です"),
+        "AI 컬링 중 — 별점이 잠겨 있습니다" => ("AI culling in progress — ratings are locked", "AIカリング中 — 評価はロック中です"),
+        "AI 컬링 중 — 색 태그가 잠겨 있습니다" => ("AI culling in progress — color tags are locked", "AIカリング中 — カラータグはロック中です"),
+        "AI 컬링이 끝난 뒤 전송할 수 있습니다" => ("Transfer is available after AI culling finishes", "AIカリングが終わってから転送できます"),
+        "AI 컬링이 끝난 뒤 정리할 수 있습니다" => ("Organize is available after AI culling finishes", "AIカリングが終わってから整理できます"),
+        "사진을 분석해 흐림·노출·기울기로 자동 분류 · 전부 로컬 처리" => (
+            "Analyzes photos and auto-classifies by blur, exposure, and tilt · all processed locally",
+            "写真を分析してブレ・露出・傾きで自動分類 · すべてローカル処理",
+        ),
+        "초점(선명도)" => ("Focus (Sharpness)", "フォーカス（シャープネス）"),
+        "노출" => ("Exposure", "露出"),
+        "수평 기울기" => ("Horizon Tilt", "水平の傾き"),
+        "미적(구도) AI" => ("Aesthetic (Composition) AI", "美的（構図）AI"),
+        "흐림 임계" => ("Blur Threshold", "ブレしきい値"),
+        "AF 측거점만" => ("AF Point Area Only", "AF測距点のみ"),
+        "노출 하한" => ("Exposure Min", "露出下限"),
+        "허용 기울기" => ("Max Tilt", "許容傾き"),
+        "⚡ GPU 고속 모드" => ("⚡ GPU Fast Mode", "⚡ GPU高速モード"),
+        "백본" => ("Backbone", "バックボーン"),
+        "선택 기준" => ("Selection Criterion", "選択基準"),
+        "상위 N장" => ("Top N", "上位N枚"),
+        "최고 점수" => ("highest scores", "スコア上位"),
+        "임계값" => ("Threshold", "しきい値"),
+        "P(good) 하한" => ("min P(good)", "P(good)下限"),
+        "최고 N장" => ("Top N", "上位N枚"),
+        "장" => (" photos", "枚"),
+        "✓ 미적 모델 준비됨" => ("✓ Aesthetic model ready", "✓ 美的モデル準備完了"),
+        "미적 모델 없음 — 아래 버튼으로 받으세요" => ("Aesthetic model missing — download with the button below", "美的モデルなし — 下のボタンでダウンロード"),
+        "미적 모델 다운로드" => ("Download Aesthetic Model", "美的モデルをダウンロード"),
+        "(전체)" => ("(All)", "（すべて）"),
+        "방향" => ("Orientation", "向き"),
+        "세로" => ("Portrait", "縦"),
+        "가로" => ("Landscape", "横"),
+        "ISO 상한" => ("ISO Max", "ISO上限"),
+        "초점거리" => ("Focal Length", "焦点距離"),
+        "조리개 ≤" => ("Aperture ≤", "絞り ≤"),
+        "셔터 하한" => ("Shutter Min", "シャッター下限"),
+        "초 (손떨림)" => ("s (shake risk)", "秒（手ブレ）"),
+        "메타 수집 중… (잠시 후 목록이 채워집니다)" => (
+            "Collecting metadata… (lists fill in shortly)",
+            "メタデータ収集中…（まもなくリストに反映されます）",
+        ),
+        "연사 베스트-N" => ("Burst Best-N", "連写ベストN"),
+        "간격 ≤" => ("Gap ≤", "間隔 ≤"),
+        "초" => ("s", "秒"),
+        "그룹당" => ("Per group", "グループごと"),
+        "시각적 중복 묶기" => ("Group Visual Duplicates", "見た目の重複をまとめる"),
+        "해밍 ≤" => ("Hamming ≤", "ハミング ≤"),
+        "클러스터당" => ("Per cluster", "クラスタごと"),
+        "그룹 내 베스트는 점수(미적>선명도) 기준 선택" => (
+            "Best in each group is picked by score (aesthetic > sharpness)",
+            "グループ内のベストはスコア（美的＞シャープネス）で選択",
+        ),
+        "장르 픽" => ("Genre Pick", "ジャンルピック"),
+        "인물" => ("Portrait", "人物"),
+        "얼굴 있음" => ("has faces", "顔あり"),
+        "풍경" => ("Landscape", "風景"),
+        "얼굴 없음" => ("no faces", "顔なし"),
+        "AI 선명도" => ("AI Sharpness", "AIシャープネス"),
+        // "P(good) ≥"·"P(sharp) ≥"·"Pick / Reject"·"person"·"→ {}"는 전 언어 동일(ASCII)이라
+        // 폴백으로 충분 — 표에 넣지 않는다.
+        "장르 픽: 얼굴 검출(YuNet) 기반" => ("Genre pick: based on face detection (YuNet)", "ジャンルピック：顔検出（YuNet）ベース"),
+        "CLIP 다축 모델(89MB) 없음 — 아래 버튼으로 받으세요" => (
+            "CLIP multi-axis model (89MB) missing — download with the button below",
+            "CLIPマルチ軸モデル（89MB）なし — 下のボタンでダウンロード",
+        ),
+        "AI 선명도 모델 다운로드" => ("Download AI Sharpness Model", "AIシャープネスモデルをダウンロード"),
+        "✓ CLIP 다축 모델 준비됨" => ("✓ CLIP multi-axis model ready", "✓ CLIPマルチ軸モデル準備完了"),
+        "얼굴 있는 컷만" => ("Only Shots with Faces", "顔がある写真のみ"),
+        "객체 포함" => ("Contains Object", "オブジェクト含む"),
+        "COCO 클래스명" => ("COCO class name", "COCOクラス名"),
+        "객체 모델(YOLOv10n, 9MB) 없음 — 아래 버튼으로 받으세요" => (
+            "Object model (YOLOv10n, 9MB) missing — download with the button below",
+            "オブジェクトモデル（YOLOv10n、9MB）なし — 下のボタンでダウンロード",
+        ),
+        "객체 모델 다운로드" => ("Download Object Model", "オブジェクトモデルをダウンロード"),
+        "✓ 객체 모델 준비됨 (YOLOv10n)" => ("✓ Object model ready (YOLOv10n)", "✓ オブジェクトモデル準備完了（YOLOv10n）"),
+        "얼굴 모델(YuNet, 0.2MB) 없음 — 아래 버튼으로 받으세요" => (
+            "Face model (YuNet, 0.2MB) missing — download with the button below",
+            "顔モデル（YuNet、0.2MB）なし — 下のボタンでダウンロード",
+        ),
+        "얼굴 모델 다운로드" => ("Download Face Model", "顔モデルをダウンロード"),
+        "✓ 얼굴 모델 준비됨 (YuNet)" => ("✓ Face model ready (YuNet)", "✓ 顔モデル準備完了（YuNet）"),
+        "검사 항목을 하나 이상 켜세요." => ("Turn on at least one check.", "検査項目を1つ以上オンにしてください。"),
+        "별점" => ("Rating", "評価"),
+        "높음 / 낮음" => ("high / low", "高い / 低い"),
+        "색 태그" => ("Color Tag", "カラータグ"),
+        "두 색" => ("two colors", "2色"),
+        "좋음 → 선택(Pick) · 탈락 → 제외(Reject)" => ("Good → Pick · Culled → Reject", "良い → Pick · 落選 → Reject"),
+        "좋음" => ("Good", "良い"),
+        "탈락" => ("Culled", "落選"),
+        "현재 필터" => ("Current Filter", "現在のフィルタ"),
+        "컬링 시작" => ("Start Culling", "カリング開始"),
+        "~100장/초 내외 (GPU)" => ("~100 photos/s (GPU)", "~100枚/秒前後（GPU）"),
+        "~90장/초 내외 (CPU)" => ("~90 photos/s (CPU)", "~90枚/秒前後（CPU）"),
+        "~200장/초+ (모델 불필요·가장 빠름)" => ("~200+ photos/s (no model needed · fastest)", "~200枚/秒+（モデル不要・最速）"),
+        "YuNet (얼굴)" => ("YuNet (face)", "YuNet（顔）"),
+        "CLIP 다축 (AI 선명도)" => ("CLIP multi-axis (AI sharpness)", "CLIPマルチ軸（AIシャープネス）"),
+        "YOLOv10n (객체)" => ("YOLOv10n (object)", "YOLOv10n（オブジェクト）"),
+        "RN50 (GPU 고속)" => ("RN50 (GPU fast)", "RN50（GPU高速）"),
+        "모델 다운로드" => ("Model Download", "モデルダウンロード"),
+        "모델 다운로드 완료" => ("Model download complete", "モデルのダウンロード完了"),
+        "연결 끊김" => ("connection lost", "接続が切断されました"),
+        "폴더가 바뀌어 AI 컬링 결과를 버렸습니다" => ("Folder changed — AI culling results were discarded", "フォルダが変わったためAIカリング結果を破棄しました"),
+        "AI 컬링 진행 중" => ("AI Culling in Progress", "AIカリング進行中"),
+        "분석을 멈추시겠어요?" => ("Stop the analysis?", "分析を中止しますか？"),
+        "컬링 취소" => ("Cancel Culling", "カリングをキャンセル"),
+        "계속 진행" => ("Keep Running", "続行"),
+        "AI 컬링을 취소했습니다" => ("AI culling canceled", "AIカリングをキャンセルしました"),
+        "컬링이 진행 중입니다" => ("Culling is in progress", "カリングが進行中です"),
+        "폴더를 바꾸면 진행 중인 AI 컬링이 취소됩니다." => (
+            "Changing folders will cancel the AI culling in progress.",
+            "フォルダを変更すると進行中のAIカリングはキャンセルされます。",
+        ),
+        "폴더 바꾸기" => ("Change Folder", "フォルダを変更"),
+        "계속 컬링" => ("Keep Culling", "カリングを続行"),
+        // #52 점프 다이얼로그
+        "한 곳으로 이동 — 순번 또는 파일명 일부" => ("Go to one spot — by position or filename part", "1か所へ移動 — 番号またはファイル名の一部"),
+        "순번" => ("Number", "番号"),
+        "현재/전체의 번호" => ("position in current/total", "現在/全体の番号"),
+        "파일명" => ("Filename", "ファイル名"),
+        "일부 일치" => ("partial match", "部分一致"),
+        "파일명 일부(한 개)" => ("part of a filename (single)", "ファイル名の一部（1件）"),
+        "파일명 일부를 입력하세요" => ("Enter part of a filename", "ファイル名の一部を入力してください"),
         _ => return None,
     })
 }
@@ -318,5 +466,22 @@ mod tests {
         assert_eq!(Lang::from_locale("ja_JP"), Some(Lang::Ja));
         assert_eq!(Lang::from_locale("en-US"), Some(Lang::En));
         assert_eq!(Lang::from_locale("fr-FR"), None);
+    }
+
+    #[test]
+    fn ai_cull_strings_are_translated() {
+        // #50~#53 AI 컬링 UI가 En/Ja에서 한국어로 폴백되던 회귀 방지(대표 키 스팟체크).
+        for ko in ["AI 컬링", "컬링 시작", "초점(선명도)", "연사 베스트-N", "장르 픽", "파일명 일부를 입력하세요"] {
+            assert_ne!(tr(Lang::En, ko), ko, "En 번역 누락: {ko}");
+            assert_ne!(tr(Lang::Ja, ko), ko, "Ja 번역 누락: {ko}");
+        }
+        assert_eq!(tr(Lang::En, "AI 컬링"), "AI Culling");
+        assert_eq!(tr(Lang::Ja, "AI 컬링"), "AIカリング");
+        // 서식 문자열도 표에 있어야 한다(슬롯 수 유지).
+        assert_eq!(
+            trf(Lang::En, "AI 컬링 완료 · 좋음 {} · 탈락 {}", &["3", "1"]),
+            "AI culling done · Good 3 · Culled 1"
+        );
+        assert_eq!(trf(Lang::Ja, "1 ~ {} 사이 번호", &["42"]), "1～42 の番号");
     }
 }

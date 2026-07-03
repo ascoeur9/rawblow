@@ -294,7 +294,8 @@ fn save_cull_cache_to(path: &std::path::Path, map: &std::collections::HashMap<Pa
         .collect();
     list.truncate(50_000);
     if let Ok(s) = serde_json::to_string(&list) {
-        let _ = std::fs::write(path, s);
+        // 원자적 교체: 저장 도중 크래시에도 기존 캐시가 잘린 채 남지 않는다(재컬링 방지).
+        let _ = rawblow_core::fsio::write_atomic(path, s.as_bytes());
     }
 }
 
@@ -697,8 +698,7 @@ impl RawBlowApp {
         let cur = self.index.min(f.len() - 1);
         let lo = cur.saturating_sub(BEHIND);
         let hi = (cur + AHEAD).min(f.len() - 1);
-        for fi in lo..=hi {
-            let real = f[fi];
+        for &real in &f[lo..=hi] {
             // 이미 GPU 캐시에 있거나, 곧 prio로 처리되거나, 이미 프리페치 대기면 건너뛴다.
             if self.thumbs.contains(real)
                 || self.pending_thumb.contains(&real)
@@ -784,7 +784,7 @@ impl RawBlowApp {
                 (exif, af)
             }));
             let (exif, af) =
-                parsed.unwrap_or((need_exif.then_some(None), need_af.then(|| (None, 1))));
+                parsed.unwrap_or((need_exif.then_some(None), need_af.then_some((None, 1))));
             let _ = tx.send(MetaResult { generation, real, exif, af });
         });
         // 워커 스레드는 egui를 못 깨우므로 결과 수신을 짧은 리페인트로 폴링.
@@ -921,9 +921,9 @@ impl RawBlowApp {
             let behind = if ahead == 0 { 0 } else { (ahead / 3).max(1) };
             let lo = cur.saturating_sub(behind);
             let hi = (cur + ahead).min(f.len() - 1);
-            for fi in lo..=hi {
+            for (fi, &real) in f.iter().enumerate().take(hi + 1).skip(lo) {
                 if fi != cur {
-                    self.request_preview(f[fi], Some(PREVIEW_EDGE), false, false);
+                    self.request_preview(real, Some(PREVIEW_EDGE), false, false);
                 }
             }
         }
@@ -1427,14 +1427,13 @@ impl eframe::App for RawBlowApp {
         }
 
         // 모달. 진행 중 작업(전송/정리)이 있으면 그 프로그레스바가 최우선 — 다른 모달을 가린다.
+        #[cfg(feature = "model-download")]
+        let model_dl_active = self.model_dl.is_some();
+        #[cfg(not(feature = "model-download"))]
+        let model_dl_active = false;
         if self.progress.is_some() {
             self.ui_progress(ctx);
-        } else if {
-            #[cfg(feature = "model-download")]
-            { self.model_dl.is_some() }
-            #[cfg(not(feature = "model-download"))]
-            { false }
-        } {
+        } else if model_dl_active {
             #[cfg(feature = "model-download")]
             self.ui_model_dl_progress(ctx);
         } else if self.transfer.is_some() {
@@ -1945,7 +1944,7 @@ impl RawBlowApp {
                     }
                     p.circle_filled(Pos2::new(rect.left() + 12.0, rect.center().y), 4.0, theme::label_color(label));
                     p.text(Pos2::new(rect.left() + 26.0, rect.center().y), Align2::LEFT_CENTER, name, prop(11.5), theme::INK2);
-                    p.text(Pos2::new(rect.right() - 36.0, rect.center().y), Align2::RIGHT_CENTER, &n.to_string(), mono(11.0), theme::INK);
+                    p.text(Pos2::new(rect.right() - 36.0, rect.center().y), Align2::RIGHT_CENTER, n.to_string(), mono(11.0), theme::INK);
                     p.text(Pos2::new(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, key, mono(10.0), theme::INK3);
                     if resp.clicked() {
                         self.set_label(label);
@@ -2116,7 +2115,7 @@ impl RawBlowApp {
                         } else {
                             theme::INK2
                         };
-                        ui.painter().text(r.center(), Align2::CENTER_CENTER, &format!("★{n}"), prop(10.5), col);
+                        ui.painter().text(r.center(), Align2::CENTER_CENTER, format!("★{n}"), prop(10.5), col);
                         if resp.clicked() {
                             new_star = Some(StarFilter::Exact(n));
                         }
@@ -2375,8 +2374,7 @@ impl RawBlowApp {
                 let start = cur.saturating_sub(half);
                 let end = (start + visible).min(f.len());
                 ui.horizontal_centered(|ui| {
-                    for fi in start..end {
-                        let real = f[fi];
+                    for (fi, &real) in f.iter().enumerate().take(end).skip(start) {
                         let (rect, resp) = ui.allocate_exact_size(Vec2::new(thumb_w, 72.0), Sense::click());
                         let (tex, tsize) = match self.thumbs.get(real) {
                             Some((t, _, s)) => (Some(t), s),
@@ -2430,6 +2428,7 @@ impl RawBlowApp {
     /// - 클릭(드래그 아님): 창맞춤(fit) ↔ 1:1 토글
     /// - Ctrl+휠 / 터치패드 핀치: 연속 확대·축소(커서 기준)
     /// - 드래그: 확대 상태에서 이동(pan)
+    ///
     /// 프리뷰가 있으면 그것을, 없으면 썸네일을 열화 표시, 둘 다 없으면 "디코딩 중".
     fn photo_view(&mut self, ui: &mut egui::Ui, area: Rect, real: usize) {
         let lang = self.lang;
@@ -2655,7 +2654,7 @@ impl RawBlowApp {
         let cell_w = ((avail - gap * (cols as f32 - 1.0)) / cols as f32).max(40.0);
         let cell_h = (cell_w * 0.7).clamp(80.0, 160.0);
         let row_h = cell_h + gap;
-        let rows = (f.len() + cols - 1) / cols;
+        let rows = f.len().div_ceil(cols);
         let avail_h = ui.available_height();
         // 키보드 내비로 예약된 스크롤: 대상 행이 화면 밖일 때만 가장자리 정렬로 따라간다
         // (화면 안 작은 이동에서는 튀지 않게).
@@ -3632,9 +3631,8 @@ impl RawBlowApp {
         }
     }
 
-    /// AI 컬링 설정 다이얼로그(#50). 어떤 신호로 거를지 + 임계값 + 결과 배정축을 고른다.
-    /// 라이선스 문제로 미적(NIMA) 모델은 번들하지 않으므로 노출·초점·기울기 3종만 노출한다.
-    /// CLIP-IQA 모델 파일의 로컬 경로(config_dir()/models/…).
+    /// AI 컬링(#50) 모델 파일의 로컬 경로(config_dir()/models/…). 모델은 번들하지 않고
+    /// 처음 쓸 때 자동 다운로드한다(sha256 검증).
     fn model_path(spec: config::ModelSpec) -> std::path::PathBuf {
         config::config_dir().join("models").join(spec.file)
     }
@@ -3652,6 +3650,7 @@ impl RawBlowApp {
         let sha = spec.sha256.to_string();
         let expected = spec.bytes;
         let (tx, rx) = crossbeam_channel::unbounded::<ModelDlMsg>();
+        let lang = self.lang; // 오류 메시지가 토스트로 사용자에게 노출되므로 번역해 보낸다.
         std::thread::spawn(move || {
             use std::io::{Read, Write};
             if let Some(parent) = dest.parent() {
@@ -3671,7 +3670,7 @@ impl RawBlowApp {
             let mut file = match std::fs::File::create(&tmp) {
                 Ok(f) => f,
                 Err(e) => {
-                    let _ = tx.send(ModelDlMsg::Done(Err(format!("파일 생성: {e}"))));
+                    let _ = tx.send(ModelDlMsg::Done(Err(trf(lang, "파일 생성: {}", &[&e.to_string()]))));
                     return;
                 }
             };
@@ -3683,14 +3682,14 @@ impl RawBlowApp {
                     Ok(0) => break,
                     Ok(n) => {
                         if let Err(e) = file.write_all(&buf[..n]) {
-                            let _ = tx.send(ModelDlMsg::Done(Err(format!("쓰기 오류: {e}"))));
+                            let _ = tx.send(ModelDlMsg::Done(Err(trf(lang, "쓰기 오류: {}", &[&e.to_string()]))));
                             return;
                         }
                         downloaded += n as u64;
                         let _ = tx.send(ModelDlMsg::Progress(downloaded, expected));
                     }
                     Err(e) => {
-                        let _ = tx.send(ModelDlMsg::Done(Err(format!("읽기 오류: {e}"))));
+                        let _ = tx.send(ModelDlMsg::Done(Err(trf(lang, "읽기 오류: {}", &[&e.to_string()]))));
                         return;
                     }
                 }
@@ -3703,7 +3702,7 @@ impl RawBlowApp {
                 let f = match std::fs::File::open(&tmp) {
                     Ok(f) => f,
                     Err(e) => {
-                        let _ = tx.send(ModelDlMsg::Done(Err(format!("검증 열기: {e}"))));
+                        let _ = tx.send(ModelDlMsg::Done(Err(trf(lang, "검증 열기: {}", &[&e.to_string()]))));
                         return;
                     }
                 };
@@ -3715,7 +3714,7 @@ impl RawBlowApp {
                         Ok(0) => break,
                         Ok(n) => hasher.update(&b[..n]),
                         Err(e) => {
-                            let _ = tx.send(ModelDlMsg::Done(Err(format!("해시 읽기: {e}"))));
+                            let _ = tx.send(ModelDlMsg::Done(Err(trf(lang, "해시 읽기: {}", &[&e.to_string()]))));
                             return;
                         }
                     }
@@ -3724,13 +3723,15 @@ impl RawBlowApp {
             };
             if actual != sha {
                 let _ = std::fs::remove_file(&tmp);
-                let _ = tx.send(ModelDlMsg::Done(Err(format!(
-                    "sha256 불일치 — 다시 시도해주세요\n예상: {sha}\n실제: {actual}"
+                let _ = tx.send(ModelDlMsg::Done(Err(trf(
+                    lang,
+                    "sha256 불일치 — 다시 시도해주세요\n예상: {}\n실제: {}",
+                    &[&sha, &actual],
                 ))));
                 return;
             }
             if let Err(e) = std::fs::rename(&tmp, &dest) {
-                let _ = tx.send(ModelDlMsg::Done(Err(format!("파일 이동: {e}"))));
+                let _ = tx.send(ModelDlMsg::Done(Err(trf(lang, "파일 이동: {}", &[&e.to_string()]))));
                 return;
             }
             let _ = tx.send(ModelDlMsg::Done(Ok(())));
@@ -3750,7 +3751,7 @@ impl RawBlowApp {
                 Ok(ModelDlMsg::Done(r)) => { done_result = Some(r); break; }
                 Err(crossbeam_channel::TryRecvError::Empty) => break,
                 Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    done_result = Some(Err("연결 끊김".into())); break;
+                    done_result = Some(Err(tr(lang, "연결 끊김").into())); break;
                 }
             }
         }
@@ -3766,7 +3767,7 @@ impl RawBlowApp {
                 }
                 Err(e) => {
                     self.toast = Some((
-                        format!("다운로드 실패: {e}"),
+                        trf(lang, "다운로드 실패: {}", &[&e]),
                         std::time::Instant::now(),
                     ));
                     self.ai_cull_open = true;
@@ -3826,6 +3827,8 @@ impl RawBlowApp {
         c.use_custom_prompt = false;
         let mut do_start = false;
         let mut do_cancel = false;
+        // model-download 기능이 켜진 빌드에서만 다운로드 버튼이 값을 채운다.
+        #[cfg_attr(not(feature = "model-download"), allow(unused_mut))]
         let mut do_download: Option<config::ModelSpec> = None;
 
         // 채점 대상 수(scope에 따라). 미리 계산(클로저 안에서 self 차용 회피).
@@ -4449,6 +4452,8 @@ impl RawBlowApp {
         let cfg = self.cfg.ai_cull.clone();
         let mut criteria = cfg.criteria();
         let use_af = cfg.use_af_focus && cfg.use_focus;
+        // top_n은 미적 채점(ai 게이트) 분기에서만 쓰인다 — ai off 빌드에선 바인딩 자체를 제거.
+        #[cfg(feature = "ai")]
         let top_n = cfg.top_n;
         // 디코드 해상도를 가장 디테일이 필요한 켜진 신호에 맞춘다(디코드가 실파이프라인 병목):
         //   초점 ON → 1024(블러 판별 디테일) / 기울기 ON → 512(엣지 방향) / 둘 다 OFF → 256
@@ -4707,7 +4712,10 @@ impl RawBlowApp {
                         }))
                         .ok()
                         .flatten();
-                        if let Some((img, mut q, cv)) = r {
+                        if let Some((img, q, cv)) = r {
+                            // ai 빌드에서만 얼굴/객체 검사 결과를 q에 써 넣는다(off 빌드에선 불변).
+                            #[cfg(feature = "ai")]
+                            let mut q = q;
                             // 얼굴 검사(YuNet): 디코드된 이미지에서 존재만 판정해 보고서에 기록(캐시됨).
                             #[cfg(feature = "ai")]
                             if let Some(fm) = face_model.as_ref() {
@@ -4825,7 +4833,9 @@ impl RawBlowApp {
     fn pump_ai_cull(&mut self, ctx: &egui::Context) {
         let Some(job) = self.ai_cull.take() else { return };
 
-        let mut done_results: Option<(Vec<(usize, Verdict, Option<f32>)>, std::collections::HashMap<usize, CullExtra>)> = None;
+        // (판정 목록, real→부가정보) — AiCullMsg::Done 페이로드와 동일 형태.
+        type CullDone = (Vec<(usize, Verdict, Option<f32>)>, std::collections::HashMap<usize, CullExtra>);
+        let mut done_results: Option<CullDone> = None;
         let mut disconnected = false;
         match job.rx.try_recv() {
             Ok(AiCullMsg::Done(v, ex)) => done_results = Some((v, ex)),
@@ -5115,8 +5125,8 @@ impl RawBlowApp {
             }
         }
         self.sidecar_dirty = true;
-        let cache_info = if cache_hits > 0 { format!(" · 캐시 {}장", cache_hits) } else { String::new() };
-        let skip_info = if skipped > 0 { format!(" · 제외 {}장", skipped) } else { String::new() };
+        let cache_info = if cache_hits > 0 { trf(lang, " · 캐시 {}장", &[&cache_hits.to_string()]) } else { String::new() };
+        let skip_info = if skipped > 0 { trf(lang, " · 제외 {}장", &[&skipped.to_string()]) } else { String::new() };
         self.toast = Some((
             format!(
                 "{}{}{}{}",
