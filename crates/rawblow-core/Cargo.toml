@@ -36,8 +36,18 @@ default = ["color", "fullraw"]
 color = ["dep:qcms"]
 # 풀 RAW 디코딩(imagepipe: rawloader 기반 sRGB 현상). 임베디드 프리뷰만으로 충분하면 끌 수 있음.
 fullraw = ["dep:imagepipe"]
-# AI 미적/구도 점수(NIMA ONNX). 노출·초점·기울기는 이 기능 없이도 동작(순수 CV).
+# AI 미적/구도 점수(CLIP-IQA ONNX). 노출·초점·기울기는 이 기능 없이도 동작(순수 CV).
 ai = ["dep:ort"]
+
+# ai 전용 예제(무조건 ort 타입을 임포트): 기본 기능 빌드(cargo test/--examples 포함)에서
+# 컴파일 대상에서 빠지도록 요구 기능을 명시한다. quality_probe는 내부 cfg 게이트라 무관.
+[[example]]
+name = "cull_bench"
+required-features = ["ai"]
+
+[[example]]
+name = "cull_pipe_bench"
+required-features = ["ai"]
 
 [dev-dependencies]
 tempfile = "3"
