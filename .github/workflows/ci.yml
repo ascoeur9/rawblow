@@ -1,0 +1,50 @@
+# 최소 CI: push/PR마다 코어 테스트 + 앱 타입체크·테스트 + clippy(-D warnings).
+#
+# 의도적으로 하지 않는 것:
+# - `ai` 기능 빌드: ort가 빌드 시 prebuilt 바이너리 다운로드(+ Linux에선 openssl 헤더)를
+#   요구해 CI가 느리고 취약해진다. 실배포 빌드는 scripts/build-release-windows.ps1(로컬).
+# - `cargo fmt --check`: 저장소가 rustfmt 미적용 상태라 게이트로 걸면 전부 실패한다.
+#   포맷 일괄 적용을 별도 커밋으로 결정한 뒤에 추가할 것(docs/audit-2026-06-23.md 참조).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux · test + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # 코어: 기본 기능(color+fullraw)으로 lib 유닛 + 통합 테스트 + 예제 컴파일까지.
+      # 샘플 사진 의존 테스트는 sample/ 부재 시 스스로 skip한다.
+      - name: Test rawblow-core
+        run: cargo test -p rawblow-core
+      # 앱: ai만 뺀 기능 조합(update-check/model-download 포함)으로 GUI·네트워크 코드까지
+      # 컴파일 + 순수 함수 유닛 테스트(i18n·파서 등).
+      - name: Test rawblow-app (no ai)
+        run: cargo test -p rawblow-app --no-default-features --features update-check,model-download
+      - name: Clippy (deny warnings)
+        run: cargo clippy -p rawblow-core -p rawblow-app --no-default-features --features rawblow-app/update-check,rawblow-app/model-download --all-targets -- -D warnings
+
+  windows:
+    name: Windows · test + check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Windows 경로 처리(transfer/organize)와 build.rs(아이콘 임베드·winresource) 회귀 확인.
+      - name: Test rawblow-core
+        run: cargo test -p rawblow-core
+      - name: Check rawblow-app (no ai)
+        run: cargo check -p rawblow-app --no-default-features --features update-check,model-download
