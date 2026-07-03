@@ -419,16 +419,45 @@ pub fn rename_preview(req: &TransferRequest, limit: usize) -> Vec<(String, Strin
     out
 }
 
-/// rename 우선, 교차 디바이스면 copy+remove로 이동.
+/// rename 우선, 교차 디바이스면 copy+remove로 이동. 부분 실패 시 상태를 정리한다:
+/// - copy 실패(디스크풀 등) → 대상의 불완전 사본을 제거하고 오류 반환(잘린 파일 잔존 방지).
+/// - copy 성공 후 원본 삭제 실패 → **성공으로 처리**. 파일은 이미 대상에 온전히 있으므로,
+///   실패로 보고하면 재시도가 `_001` 중복본을 만든다(원본 잔존이 중복 생성보다 안전).
+///   Windows에서 흔한 원인인 읽기전용 속성(메모리카드에서 온 파일)은 해제 후 1회 재시도한다.
 pub(crate) fn move_file(src: &Path, dst: &Path) -> std::io::Result<()> {
-    match std::fs::rename(src, dst) {
-        Ok(()) => Ok(()),
-        Err(_) => {
-            std::fs::copy(src, dst)?;
-            std::fs::remove_file(src)
+    if std::fs::rename(src, dst).is_ok() {
+        return Ok(());
+    }
+    copy_then_remove(src, dst)
+}
+
+/// 교차 디바이스 이동 폴백 본체(위 계약 참조). move_file에서 분리해 직접 테스트한다.
+fn copy_then_remove(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if let Err(e) = std::fs::copy(src, dst) {
+        let _ = std::fs::remove_file(dst); // 불완전 사본 정리(없으면 무시)
+        return Err(e);
+    }
+    if std::fs::remove_file(src).is_err() {
+        retry_remove_readonly(src);
+    }
+    Ok(())
+}
+
+/// Windows: 읽기전용 속성 때문에 삭제가 거부된 파일을 속성 해제 후 1회 재시도(best-effort).
+/// Unix에선 파일 삭제가 파일 자체 권한과 무관(디렉토리 권한 문제)해 재시도가 무의미하다.
+#[cfg(windows)]
+fn retry_remove_readonly(src: &Path) {
+    if let Ok(meta) = std::fs::metadata(src) {
+        let mut perm = meta.permissions();
+        perm.set_readonly(false);
+        if std::fs::set_permissions(src, perm).is_ok() {
+            let _ = std::fs::remove_file(src);
         }
     }
 }
+
+#[cfg(not(windows))]
+fn retry_remove_readonly(_src: &Path) {}
 
 fn label_folder(label: Label) -> &'static str {
     match label {
@@ -481,4 +510,54 @@ pub fn match_indices(entries: &[Entry], terms: &[String], mode: MatchMode) -> Ve
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copy_then_remove_moves_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("a.jpg");
+        let dst = tmp.path().join("b.jpg");
+        std::fs::write(&src, b"payload").unwrap();
+        copy_then_remove(&src, &dst).unwrap();
+        assert!(!src.exists());
+        assert_eq!(std::fs::read(&dst).unwrap(), b"payload");
+    }
+
+    #[test]
+    fn copy_then_remove_copy_failure_leaves_no_partial() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("a.jpg");
+        std::fs::write(&src, b"payload").unwrap();
+        let dst = tmp.path().join("no-such-dir").join("b.jpg");
+        assert!(copy_then_remove(&src, &dst).is_err());
+        assert!(src.exists(), "실패 시 원본은 보존");
+        assert!(!dst.exists(), "대상에 불완전 사본이 남지 않음");
+    }
+
+    /// copy 성공 후 원본 삭제가 거부돼도 성공으로 처리(재시도발 `_001` 중복 방지 계약).
+    /// Unix에서 부모 디렉토리 쓰기 권한을 빼앗아 remove_file 실패를 재현한다.
+    #[cfg(unix)]
+    #[test]
+    fn copy_then_remove_remove_denied_counts_as_success() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("locked");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let src = src_dir.join("a.jpg");
+        let dst = tmp.path().join("b.jpg");
+        std::fs::write(&src, b"payload").unwrap();
+        std::fs::set_permissions(&src_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = copy_then_remove(&src, &dst);
+
+        // tempdir 정리를 위해 권한 원복(검증 전에 해도 무방 — 결과는 이미 확정).
+        std::fs::set_permissions(&src_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(result.is_ok(), "대상에 온전히 복사됐으면 성공으로 보고");
+        assert_eq!(std::fs::read(&dst).unwrap(), b"payload");
+        assert!(src.exists(), "삭제 거부된 원본은 잔존(중복 생성보다 안전)");
+    }
 }

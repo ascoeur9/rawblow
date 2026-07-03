@@ -9,6 +9,10 @@ use std::path::{Path, PathBuf};
 pub const SIDECAR_DIR: &str = ".rawblow";
 pub const SIDECAR_FILE: &str = "session.json";
 pub const SIDECAR_TXT: &str = "session.txt";
+/// 직전 정상 저장본(한 세대). 외부 요인으로 session.json이 손상돼도 여기서 복구한다.
+pub const SIDECAR_BAK: &str = "session.json.bak";
+/// 파싱에 실패한 손상본 보존 이름(수동 복구·진단용). 다음 저장이 덮어쓰지 않게 치워 둔다.
+pub const SIDECAR_CORRUPT: &str = "session.json.corrupt";
 pub const VERSION: u32 = 1;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -41,10 +45,18 @@ pub fn sidecar_txt_path(folder: &Path) -> PathBuf {
     sidecar_dir(folder).join(SIDECAR_TXT)
 }
 
-/// 사이드카를 읽는다(없거나 파손 시 None).
+/// 사이드카를 읽는다(없으면 None). 파손 시엔 손상본을 `.corrupt`로 치워 두고
+/// (다음 저장이 덮어써 증거가 사라지는 것 방지) 직전 백업(`.bak`)으로 복구를 시도한다 —
+/// 복구까지 실패하면 None. 파일이 아예 없을 때는 백업을 뒤지지 않는다(의도적 초기화 존중).
 pub fn load(folder: &Path) -> Option<Session> {
     let data = std::fs::read_to_string(sidecar_path(folder)).ok()?;
-    serde_json::from_str(&data).ok()
+    if let Ok(s) = serde_json::from_str(&data) {
+        return Some(s);
+    }
+    let dir = sidecar_dir(folder);
+    let _ = std::fs::rename(sidecar_path(folder), dir.join(SIDECAR_CORRUPT));
+    let bak = std::fs::read_to_string(dir.join(SIDECAR_BAK)).ok()?;
+    serde_json::from_str(&bak).ok()
 }
 
 /// 멤버 경로를 폴더 기준 상대 문자열로(불가하면 파일명).
@@ -85,8 +97,18 @@ pub fn save(folder: &Path, entries: &[Entry]) -> std::io::Result<()> {
     std::fs::create_dir_all(sidecar_dir(folder))?;
     let json = serde_json::to_string_pretty(&session)
         .map_err(std::io::Error::other)?;
-    std::fs::write(sidecar_path(folder), json)?;
-    std::fs::write(sidecar_txt_path(folder), render_txt(&session))?;
+    let main = sidecar_path(folder);
+    // 직전 정상본을 .bak으로 보존(best-effort). 저장 자체는 원자적이라 우리 쓰기로는
+    // 손상되지 않지만, 외부 요인(동기화 충돌·디스크 오류) 손상 시 한 세대 복구용.
+    if main.exists() {
+        let _ = std::fs::copy(&main, sidecar_dir(folder).join(SIDECAR_BAK));
+    }
+    // 원자적 교체(rename)로 잘린 파일을 방지. fsync는 생략 — 이 함수는 UI 스레드에서
+    // 300ms 디바운스로 불리므로 느린 NAS에서 프레임 히치를 만들지 않기 위함. 전원차단
+    // 최악의 경우에도 rename 원자성 + 위 .bak 폴백(load 참조)으로 직전 세대까지 복구된다
+    // (손실 상한 = 디바운스 한 번 분량의 라벨링).
+    crate::fsio::write_atomic_nosync(&main, json.as_bytes())?;
+    crate::fsio::write_atomic_nosync(&sidecar_txt_path(folder), render_txt(&session).as_bytes())?;
     Ok(())
 }
 

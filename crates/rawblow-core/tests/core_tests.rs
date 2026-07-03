@@ -350,7 +350,7 @@ fn orig_ifd_strip_embedded_synthetic_cr2() {
     f.extend_from_slice(&0x002au16.to_le_bytes());
     f.extend_from_slice(&8u32.to_le_bytes());
     f.extend_from_slice(&n_entries.to_le_bytes());
-    let mut entry = |tag: u16, typ: u16, cnt: u32, val: u32, f: &mut Vec<u8>| {
+    let entry = |tag: u16, typ: u16, cnt: u32, val: u32, f: &mut Vec<u8>| {
         f.extend_from_slice(&tag.to_le_bytes());
         f.extend_from_slice(&typ.to_le_bytes());
         f.extend_from_slice(&cnt.to_le_bytes());
@@ -419,7 +419,7 @@ fn orig_ifd_picks_by_resolution_not_byte_length() {
     let lores_off = subifd_off + 2 + (sub_entries as usize) * 12 + 4;
     let hires_off = lores_off + lores.len();
 
-    let mut entry = |tag: u16, typ: u16, cnt: u32, val: u32, f: &mut Vec<u8>| {
+    let entry = |tag: u16, typ: u16, cnt: u32, val: u32, f: &mut Vec<u8>| {
         f.extend_from_slice(&tag.to_le_bytes());
         f.extend_from_slice(&typ.to_le_bytes());
         f.extend_from_slice(&cnt.to_le_bytes());
@@ -1242,6 +1242,78 @@ fn gps_extraction_from_real_tagged_jpg() {
     }
     // GPS 없는 파일은 None.
     if let Some(p3) = sample_file("gps_test/GPS_NONE.JPG") {
-        assert!(rawblow_core::meta::read_exif(&p3).map_or(true, |i| i.gps.is_none()));
+        assert!(rawblow_core::meta::read_exif(&p3).and_then(|i| i.gps).is_none());
     }
+}
+
+// ── 사이드카 손상 복구(원자 저장 + .bak 폴백) ──────────────────────────
+
+#[test]
+fn sidecar_corrupt_recovers_from_bak() {
+    let tmp = tempfile::tempdir().unwrap();
+    let folder = tmp.path();
+    std::fs::write(folder.join("IMG_1.JPG"), b"x").unwrap();
+
+    // 1차 저장(Pick) → 2차 저장(Reject): .bak에는 직전본(Pick)이 남는다.
+    let mut entries = scan::scan_folder(folder, false, rawblow_core::SortOrder::Name);
+    entries[0].label = Label::Pick;
+    sidecar::save(folder, &entries).unwrap();
+    entries[0].label = Label::Reject;
+    sidecar::save(folder, &entries).unwrap();
+    let bak = sidecar::sidecar_dir(folder).join(sidecar::SIDECAR_BAK);
+    assert!(bak.exists(), "재저장 후 .bak 존재");
+
+    // main 손상 → load가 직전본(.bak)으로 복구하고, 손상본은 .corrupt로 보존한다.
+    std::fs::write(sidecar::sidecar_path(folder), "{ torn json").unwrap();
+    let session = sidecar::load(folder).expect("bak 복구");
+    assert_eq!(session.items.get("IMG_1").map(|r| r.label), Some(Label::Pick));
+    assert!(!sidecar::sidecar_path(folder).exists(), "손상 main은 치워짐");
+    let corrupt = sidecar::sidecar_dir(folder).join(sidecar::SIDECAR_CORRUPT);
+    assert_eq!(std::fs::read_to_string(corrupt).unwrap(), "{ torn json");
+}
+
+#[test]
+fn sidecar_corrupt_without_bak_preserves_evidence() {
+    let tmp = tempfile::tempdir().unwrap();
+    let folder = tmp.path();
+    std::fs::create_dir_all(sidecar::sidecar_dir(folder)).unwrap();
+    std::fs::write(sidecar::sidecar_path(folder), "not json at all").unwrap();
+
+    assert!(sidecar::load(folder).is_none());
+    // 손상본은 삭제되지 않고 .corrupt로 보존된다(수동 복구·진단 여지).
+    let corrupt = sidecar::sidecar_dir(folder).join(sidecar::SIDECAR_CORRUPT);
+    assert_eq!(std::fs::read_to_string(corrupt).unwrap(), "not json at all");
+    assert!(!sidecar::sidecar_path(folder).exists());
+}
+
+#[test]
+fn sidecar_absent_ignores_bak() {
+    // 파일이 아예 없으면(의도적 초기화 포함) .bak이 있어도 되살리지 않는다.
+    let tmp = tempfile::tempdir().unwrap();
+    let folder = tmp.path();
+    std::fs::create_dir_all(sidecar::sidecar_dir(folder)).unwrap();
+    std::fs::write(
+        sidecar::sidecar_dir(folder).join(sidecar::SIDECAR_BAK),
+        r#"{"version":1,"folder":"x","updated_at":"t","items":{}}"#,
+    )
+    .unwrap();
+    assert!(sidecar::load(folder).is_none());
+}
+
+#[test]
+fn sidecar_save_leaves_no_tmp_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let folder = tmp.path();
+    std::fs::write(folder.join("IMG_1.JPG"), b"x").unwrap();
+    let mut entries = scan::scan_folder(folder, false, rawblow_core::SortOrder::Name);
+    entries[0].label = Label::Pick;
+    sidecar::save(folder, &entries).unwrap();
+
+    let leftovers: Vec<_> = std::fs::read_dir(sidecar::sidecar_dir(folder))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".tmp-"))
+        .collect();
+    assert!(leftovers.is_empty(), "임시 파일 잔존: {leftovers:?}");
 }

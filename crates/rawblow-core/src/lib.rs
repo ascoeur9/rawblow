@@ -12,6 +12,7 @@ pub mod config;
 pub mod cull_ext;
 pub mod decode;
 pub mod face_detect;
+pub mod fsio;
 pub mod meta;
 pub mod model;
 pub mod object_detect;

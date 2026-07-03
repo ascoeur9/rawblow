@@ -1,7 +1,7 @@
 //! 설정·단축키 영속화 (M5). OS 표준 설정 경로에 JSON으로 저장.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// UI 표시 언어(#30). `Config.lang`이 `None`이면 OS 언어를 따른다(앱에서 감지).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -581,20 +581,37 @@ pub fn cache_dir() -> PathBuf {
     std::env::temp_dir().join("rawblow").join("thumb-cache")
 }
 
-/// 설정을 로드(없으면 기본값).
+/// 설정을 로드(없으면 기본값). 파손 시 손상본을 `config.json.corrupt`로 치워 두고
+/// (다음 저장이 덮어써 증거가 사라지는 것 방지, 수동 복구 여지 유지) 기본값을 반환한다.
 pub fn load() -> Config {
-    std::fs::read_to_string(config_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    load_from(&config_path())
 }
 
-/// 설정을 저장.
+fn load_from(path: &Path) -> Config {
+    let Ok(data) = std::fs::read_to_string(path) else {
+        return Config::default();
+    };
+    match serde_json::from_str(&data) {
+        Ok(c) => c,
+        Err(_) => {
+            let _ = std::fs::rename(path, path.with_extension("json.corrupt"));
+            Config::default()
+        }
+    }
+}
+
+/// 설정을 저장. 원자적 교체(임시 파일 → rename)라 저장 도중 크래시에도 기존 설정이
+/// 잘린 채 남지 않는다. 슬라이더 조작 등 UI 스레드에서 빈번히 불리므로 fsync는 생략
+/// (유실 시 재생성 가능한 데이터 — [`crate::fsio::write_atomic_nosync`] 참조).
 pub fn save(config: &Config) -> std::io::Result<()> {
     std::fs::create_dir_all(config_dir())?;
+    save_to(&config_path(), config)
+}
+
+fn save_to(path: &Path, config: &Config) -> std::io::Result<()> {
     let json = serde_json::to_string_pretty(config)
         .map_err(std::io::Error::other)?;
-    std::fs::write(config_path(), json)
+    crate::fsio::write_atomic_nosync(path, json.as_bytes())
 }
 
 #[cfg(test)]
@@ -640,7 +657,8 @@ mod tests {
         assert!(!GPU_MODEL.file.contains("int8"));
         assert!(GPU_MODEL.url.ends_with(GPU_MODEL.file));
         assert_eq!(GPU_MODEL.sha256.len(), 64);
-        assert!(GPU_MODEL.bytes > 100_000_000); // fp32 RN50 ≈ 153MB
+        // fp32 RN50 ≈ 153MB — 상수 비교라 컴파일타임 검증으로 둔다(clippy: 상수 assert 지양).
+        const _: () = assert!(GPU_MODEL.bytes > 100_000_000);
     }
 
     #[test]
@@ -648,5 +666,31 @@ mod tests {
         assert_eq!(ClipIqaBackbone::default(), ClipIqaBackbone::ViTB32);
         assert_eq!(ClipIqaBackbone::ALL[0], ClipIqaBackbone::ViTB32); // 표시 순서 권장 먼저
         assert!(!AiCullConfig::default().use_gpu); // 기본 CPU
+    }
+
+    #[test]
+    fn config_save_load_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let c = Config {
+            recent_folders: vec!["/tmp/a".into(), "/tmp/b".into()],
+            ..Default::default()
+        };
+        save_to(&path, &c).unwrap();
+        let loaded = load_from(&path);
+        assert_eq!(loaded.recent_folders, c.recent_folders);
+    }
+
+    #[test]
+    fn config_corrupt_is_preserved_and_defaults_returned() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "{ not json !!").unwrap();
+        let loaded = load_from(&path);
+        assert_eq!(loaded.recent_folders, Config::default().recent_folders);
+        // 손상본은 .corrupt로 보존되고 원 위치에서는 치워진다(다음 저장이 덮어쓰지 않게).
+        assert!(!path.exists());
+        let corrupt = dir.path().join("config.json.corrupt");
+        assert_eq!(std::fs::read_to_string(corrupt).unwrap(), "{ not json !!");
     }
 }
