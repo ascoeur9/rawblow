@@ -3,14 +3,8 @@
 
 use super::*;
 
-/// 전송 다이얼로그 리네임 모드(#26). 프리셋 3종 + 자유 템플릿.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum RenameMode {
-    Off,    // 원본 이름 유지
-    Seq,    // 순번 {seq:03}
-    Grade,  // 별점등급 {gradeseq} (A1,B1…)
-    Custom, // 자유 템플릿
-}
+// 리네임 모드(#26)는 마지막 사용 옵션 저장(#57)을 위해 core config로 이동.
+use rawblow_core::config::{OrganizeDefaults, RenameMode, TransferDefaults};
 
 #[derive(Clone)]
 pub(super) struct TransferDialogState {
@@ -33,6 +27,41 @@ pub(super) struct TransferDialogState {
 }
 
 impl TransferDialogState {
+    /// 저장된 마지막 사용 옵션으로 초기화(#57). dest는 호출부가 현재 폴더 기준으로 채운다.
+    fn from_defaults(d: &TransferDefaults) -> Self {
+        TransferDialogState {
+            labels: d.labels.clone(),
+            stars: d.stars.clone(),
+            tags: d.tags.clone(),
+            action: d.action,
+            companions: d.companions,
+            split_by_label: d.split_by_label,
+            split_by_tag: d.split_by_tag,
+            conflict: d.conflict,
+            dest: String::new(),
+            rename_mode: d.rename_mode,
+            rename_template: d.rename_template.clone(),
+            rename_numbering: d.rename_numbering,
+        }
+    }
+
+    /// 저장용 마지막 사용 옵션(#57). dest(폴더 종속)는 제외한다.
+    fn to_defaults(&self) -> TransferDefaults {
+        TransferDefaults {
+            labels: self.labels.clone(),
+            stars: self.stars.clone(),
+            tags: self.tags.clone(),
+            action: self.action,
+            companions: self.companions,
+            split_by_label: self.split_by_label,
+            split_by_tag: self.split_by_tag,
+            conflict: self.conflict,
+            rename_mode: self.rename_mode,
+            rename_template: self.rename_template.clone(),
+            rename_numbering: self.rename_numbering,
+        }
+    }
+
     /// 다이얼로그 상태 → 전송 리네임 규칙(#26). Off면 None.
     fn rename_rule(&self) -> Option<RenameRule> {
         match self.rename_mode {
@@ -55,20 +84,8 @@ impl TransferDialogState {
 
 impl Default for TransferDialogState {
     fn default() -> Self {
-        TransferDialogState {
-            labels: vec![Label::Pick],
-            stars: Vec::new(),
-            tags: Vec::new(),
-            action: Action::Copy,
-            companions: Companions::Both,
-            split_by_label: false,
-            split_by_tag: false,
-            conflict: ConflictPolicy::AutoIncrement,
-            dest: String::new(),
-            rename_mode: RenameMode::Off,
-            rename_template: "{gradeseq}_{orig}".into(),
-            rename_numbering: Numbering::GradeGrouped,
-        }
+        // 기본값의 단일 출처는 config::TransferDefaults(#57) — 두 곳이 어긋나지 않게 위임.
+        Self::from_defaults(&TransferDefaults::default())
     }
 }
 
@@ -83,14 +100,22 @@ pub(super) struct OrganizeDialogState {
     conflict: ConflictPolicy,
 }
 
+impl OrganizeDialogState {
+    /// 저장된 마지막 사용 옵션으로 초기화(#57). dest는 호출부가 현재 폴더로 채운다.
+    fn from_defaults(d: &OrganizeDefaults) -> Self {
+        OrganizeDialogState { key: d.key, action: d.action, dest: String::new(), conflict: d.conflict }
+    }
+
+    /// 저장용 마지막 사용 옵션(#57). dest(폴더 종속)는 제외한다.
+    fn to_defaults(&self) -> OrganizeDefaults {
+        OrganizeDefaults { key: self.key, action: self.action, conflict: self.conflict }
+    }
+}
+
 impl Default for OrganizeDialogState {
     fn default() -> Self {
-        OrganizeDialogState {
-            key: OrganizeKey::Date,
-            action: Action::Move, // 이슈 #34는 "폴더분류/이동"이 기본 의도.
-            dest: String::new(),
-            conflict: ConflictPolicy::AutoIncrement,
-        }
+        // 기본값의 단일 출처는 config::OrganizeDefaults(#57) — Move 기본(#34)도 그쪽에 정의.
+        Self::from_defaults(&OrganizeDefaults::default())
     }
 }
 
@@ -130,7 +155,8 @@ impl RawBlowApp {
             self.toast = Some((tr(self.lang, "AI 컬링이 끝난 뒤 전송할 수 있습니다").into(), Instant::now()));
             return;
         }
-        let mut st = TransferDialogState::default();
+        // 마지막 사용 옵션을 기본값으로 로드(#57). dest만 현재 폴더 기준으로 새로 제안.
+        let mut st = TransferDialogState::from_defaults(&self.cfg.transfer_defaults);
         if let Some(folder) = &self.folder {
             st.dest = format!("{}_selected", folder.to_string_lossy());
         }
@@ -143,7 +169,8 @@ impl RawBlowApp {
             self.toast = Some((tr(self.lang, "AI 컬링이 끝난 뒤 정리할 수 있습니다").into(), Instant::now()));
             return;
         }
-        let mut st = OrganizeDialogState::default();
+        // 마지막 사용 옵션을 기본값으로 로드(#57). dest만 현재 폴더로 새로 제안.
+        let mut st = OrganizeDialogState::from_defaults(&self.cfg.organize_defaults);
         if let Some(folder) = &self.folder {
             st.dest = folder.to_string_lossy().to_string();
         }
@@ -443,6 +470,9 @@ impl RawBlowApp {
     /// 메인 스레드가 막히지 않게 별도 스레드에서 `execute_with_progress`를 돌리고,
     /// 진행 상황을 채널로 받는다(Move면 완료 후 폴더를 재스캔해 사라진 항목 정리, #24).
     pub(super) fn start_transfer(&mut self, st: &TransferDialogState) {
+        // 마지막 사용 옵션 저장(#57) — 다음 열기 때 기본값으로 복원된다.
+        self.cfg.transfer_defaults = st.to_defaults();
+        let _ = config::save(&self.cfg);
         let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
         let labels = st.labels.clone();
         let stars = st.stars.clone();
@@ -497,6 +527,9 @@ impl RawBlowApp {
     /// 폴더 자동 분류를 백그라운드 스레드에서 시작하고 진행 모달로 전환한다(#34/#35).
     /// 완료 후 분류 결과(하위폴더)를 보도록 하위 폴더 포함으로 폴더를 다시 연다.
     pub(super) fn start_organize(&mut self, st: &OrganizeDialogState) {
+        // 마지막 사용 옵션 저장(#57) — 다음 열기 때 기본값으로 복원된다.
+        self.cfg.organize_defaults = st.to_defaults();
+        let _ = config::save(&self.cfg);
         let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
         let key = st.key;
         let action = st.action;
@@ -944,6 +977,43 @@ mod tests {
         assert!(!st.split_by_tag);
         assert_eq!(st.conflict, ConflictPolicy::AutoIncrement);
         assert!(matches!(st.rename_mode, RenameMode::Off)); // RenameMode는 Debug 미구현이라 matches! 사용
+    }
+
+    #[test]
+    fn transfer_defaults_round_trip_excludes_dest() {
+        // #57: 옵션은 저장·복원되지만 dest(폴더 종속)는 매번 새로 제안하므로 저장하지 않는다.
+        let st = TransferDialogState {
+            action: Action::Move,
+            split_by_tag: true,
+            rename_mode: RenameMode::Custom,
+            rename_template: "{orig}_pick".into(),
+            rename_numbering: Numbering::Order,
+            dest: r"X:\old\folder_selected".into(),
+            ..Default::default()
+        };
+        let st2 = TransferDialogState::from_defaults(&st.to_defaults());
+        assert_eq!(st2.action, Action::Move);
+        assert!(st2.split_by_tag);
+        assert_eq!(st2.rename_mode, RenameMode::Custom);
+        assert_eq!(st2.rename_template, "{orig}_pick");
+        assert_eq!(st2.rename_numbering, Numbering::Order);
+        assert!(st2.dest.is_empty()); // dest는 복원 대상 아님
+    }
+
+    #[test]
+    fn organize_defaults_round_trip_excludes_dest() {
+        // #57 정리 다이얼로그도 동일: key/action/conflict만 저장·복원.
+        let st = OrganizeDialogState {
+            key: OrganizeKey::Lens,
+            action: Action::Copy,
+            conflict: ConflictPolicy::Skip,
+            dest: r"X:\old\folder".into(),
+        };
+        let st2 = OrganizeDialogState::from_defaults(&st.to_defaults());
+        assert_eq!(st2.key, OrganizeKey::Lens);
+        assert_eq!(st2.action, Action::Copy);
+        assert_eq!(st2.conflict, ConflictPolicy::Skip);
+        assert!(st2.dest.is_empty());
     }
 
     #[test]

@@ -9,10 +9,11 @@
 use crate::meta::read_exif;
 use crate::model::{ext_lower, Entry};
 use crate::transfer::{move_file, unique_path, Action, ConflictPolicy, Progress, TransferReport};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// 자동 분류 기준(#34).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// 자동 분류 기준(#34). 마지막 사용 옵션 저장(#57)을 위해 serde 파생.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum OrganizeKey {
     /// 촬영일(EXIF DateTimeOriginal → `yyyy-mm-dd`). 없으면 파일 수정일, 그것도 없으면 미상.
     Date,

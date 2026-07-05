@@ -5,9 +5,11 @@
 //! 파일번호(stem) 매칭(점프/필터)도 RawPull 방식으로 제공한다.
 
 use crate::model::{kind_of, ColorTag, Entry, Kind, Label, MatchMode};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+// 옵션 enum들의 serde 파생: 전송/정리 다이얼로그의 마지막 사용 옵션을 설정에 저장(#57).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Action {
     Copy,
     Move,
@@ -23,7 +25,7 @@ pub struct RenameRule {
 }
 
 /// 순번 부여 방식(#26).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Numbering {
     /// 선택/정렬 순서대로 1,2,3…
     Order,
@@ -31,7 +33,7 @@ pub enum Numbering {
     GradeGrouped,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Companions {
     /// RAW + 이미지 모두(기본).
     Both,
@@ -39,7 +41,7 @@ pub enum Companions {
     ImageOnly,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum ConflictPolicy {
     /// `_001`, `_002` … 자동 증가(기본). 덮어쓰기는 PRD §F6에 의해 금지.
     AutoIncrement,

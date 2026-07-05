@@ -435,6 +435,71 @@ impl Default for KeyMap {
     }
 }
 
+/// 전송(내보내기) 리네임 프리셋(#26 UI, #57 저장). Off=원본 이름 유지.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum RenameMode {
+    #[default]
+    Off,
+    Seq,
+    Grade,
+    Custom,
+}
+
+/// 전송(내보내기) 다이얼로그의 마지막 사용 옵션(#57). 시작할 때 저장하고 다음 열기 때
+/// 기본값으로 로드한다. dest(대상 폴더)는 저장하지 않는다 — 열 때마다 현재 폴더 기준 제안.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct TransferDefaults {
+    pub labels: Vec<crate::model::Label>,
+    pub stars: Vec<u8>,
+    pub tags: Vec<crate::model::ColorTag>,
+    pub action: crate::transfer::Action,
+    pub companions: crate::transfer::Companions,
+    pub split_by_label: bool,
+    pub split_by_tag: bool,
+    pub conflict: crate::transfer::ConflictPolicy,
+    pub rename_mode: RenameMode,
+    pub rename_template: String,
+    pub rename_numbering: crate::transfer::Numbering,
+}
+
+impl Default for TransferDefaults {
+    fn default() -> Self {
+        TransferDefaults {
+            labels: vec![crate::model::Label::Pick],
+            stars: Vec::new(),
+            tags: Vec::new(),
+            action: crate::transfer::Action::Copy,
+            companions: crate::transfer::Companions::Both,
+            split_by_label: false,
+            split_by_tag: false,
+            conflict: crate::transfer::ConflictPolicy::AutoIncrement,
+            rename_mode: RenameMode::Off,
+            rename_template: "{gradeseq}_{orig}".into(),
+            rename_numbering: crate::transfer::Numbering::GradeGrouped,
+        }
+    }
+}
+
+/// 폴더 자동 분류 다이얼로그의 마지막 사용 옵션(#57). dest는 저장하지 않는다(현재 폴더 기준).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct OrganizeDefaults {
+    pub key: crate::organize::OrganizeKey,
+    pub action: crate::transfer::Action,
+    pub conflict: crate::transfer::ConflictPolicy,
+}
+
+impl Default for OrganizeDefaults {
+    fn default() -> Self {
+        OrganizeDefaults {
+            key: crate::organize::OrganizeKey::Date,
+            action: crate::transfer::Action::Move, // 이슈 #34: 폴더분류는 "이동"이 기본 의도.
+            conflict: crate::transfer::ConflictPolicy::AutoIncrement,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct Config {
@@ -476,6 +541,12 @@ pub struct Config {
     /// 정렬 기준(#56): 파일명순(기본)/촬영시간순. 설정에서 변경, 저장.
     #[serde(default)]
     pub sort: crate::model::SortOrder,
+    /// 전송(내보내기) 다이얼로그 마지막 사용 옵션(#57).
+    #[serde(default)]
+    pub transfer_defaults: TransferDefaults,
+    /// 폴더 자동 분류 다이얼로그 마지막 사용 옵션(#57).
+    #[serde(default)]
+    pub organize_defaults: OrganizeDefaults,
 }
 
 impl Default for Config {
@@ -499,6 +570,8 @@ impl Default for Config {
             large_badges: true,   // 스트립·그리드 표기 크게가 기본(#44).
             ai_cull: AiCullConfig::default(), // AI 컬링 기본 설정(#50).
             sort: crate::model::SortOrder::Name, // 파일명 자연정렬이 기본(#56).
+            transfer_defaults: TransferDefaults::default(), // 전송 마지막 사용 옵션(#57).
+            organize_defaults: OrganizeDefaults::default(), // 정리 마지막 사용 옵션(#57).
         }
     }
 }
@@ -683,6 +756,49 @@ mod tests {
         save_to(&path, &c).unwrap();
         let loaded = load_from(&path);
         assert_eq!(loaded.recent_folders, c.recent_folders);
+    }
+
+    #[test]
+    fn dialog_defaults_round_trip_and_legacy_config_gets_defaults() {
+        // #57: 전송/정리 마지막 사용 옵션이 저장·복원되고, 필드가 없는 옛 설정 파일은 기본값으로 채워진다.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let c = Config {
+            transfer_defaults: TransferDefaults {
+                labels: vec![crate::model::Label::Pick, crate::model::Label::Hold],
+                stars: vec![4, 5],
+                action: crate::transfer::Action::Move,
+                split_by_label: true,
+                rename_mode: RenameMode::Custom,
+                rename_template: "{orig}_final".into(),
+                rename_numbering: crate::transfer::Numbering::Order,
+                ..Default::default()
+            },
+            organize_defaults: OrganizeDefaults {
+                key: crate::organize::OrganizeKey::Camera,
+                action: crate::transfer::Action::Copy,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        save_to(&path, &c).unwrap();
+        let l = load_from(&path);
+        assert_eq!(l.transfer_defaults.labels, c.transfer_defaults.labels);
+        assert_eq!(l.transfer_defaults.stars, vec![4, 5]);
+        assert_eq!(l.transfer_defaults.action, crate::transfer::Action::Move);
+        assert!(l.transfer_defaults.split_by_label);
+        assert_eq!(l.transfer_defaults.rename_mode, RenameMode::Custom);
+        assert_eq!(l.transfer_defaults.rename_template, "{orig}_final");
+        assert_eq!(l.transfer_defaults.rename_numbering, crate::transfer::Numbering::Order);
+        assert_eq!(l.organize_defaults.key, crate::organize::OrganizeKey::Camera);
+        assert_eq!(l.organize_defaults.action, crate::transfer::Action::Copy);
+
+        // 옛 설정 파일(새 필드 없음) → 컨테이너 serde(default)로 기본값 채움.
+        std::fs::write(&path, "{}").unwrap();
+        let legacy = load_from(&path);
+        assert_eq!(legacy.transfer_defaults.labels, vec![crate::model::Label::Pick]);
+        assert_eq!(legacy.transfer_defaults.action, crate::transfer::Action::Copy);
+        assert_eq!(legacy.organize_defaults.action, crate::transfer::Action::Move); // 정리는 이동 기본(#34)
     }
 
     #[test]
