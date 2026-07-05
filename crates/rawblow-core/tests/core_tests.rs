@@ -22,6 +22,25 @@ fn natural_sort_orders_numbers_correctly() {
 }
 
 #[test]
+fn capture_order_sorts_by_time_name_tiebreak_missing_last() {
+    // #56: 시각 오름차순 → 동시각은 파일명 자연정렬 → 시각 없음(EXIF 미탑재)은 맨 뒤
+    // (그들끼리는 파일명 자연정렬 유지).
+    let keys = vec![
+        (Some(300), "IMG_10.jpg".to_string()), // 가장 늦은 시각
+        (None, "B_2.jpg".to_string()),         // 시각 없음
+        (Some(100), "IMG_2.jpg".to_string()),  // 가장 이른 시각
+        (Some(200), "IMG_9.jpg".to_string()),  // 동시각 — 파일명 뒤
+        (Some(200), "IMG_1.jpg".to_string()),  // 동시각 — 파일명 앞
+        (None, "A_10.jpg".to_string()),        // 시각 없음 — B_2보다 파일명 앞
+    ];
+    assert_eq!(scan::capture_order(&keys), vec![2, 4, 3, 0, 5, 1]);
+    // 빈 목록·이미 정렬된 목록.
+    assert!(scan::capture_order(&[]).is_empty());
+    let sorted = vec![(Some(1), "a.jpg".to_string()), (Some(2), "b.jpg".to_string())];
+    assert_eq!(scan::capture_order(&sorted), vec![0, 1]);
+}
+
+#[test]
 fn scan_groups_and_sorts_sample() {
     let dir = sample_dir();
     let entries = scan::scan_folder(&dir, false, rawblow_core::SortOrder::Name);

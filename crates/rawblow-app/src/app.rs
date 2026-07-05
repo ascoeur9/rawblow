@@ -66,6 +66,13 @@ const THUMB_CAP: usize = 1500;
 /// 업로드를 분산해 GPU 버스트로 메인 스레드가 멈추는(행) 것을 막는다.
 const THUMB_UPLOADS_PER_FRAME: usize = 32;
 
+/// 촬영시간순 정렬(#56)용 백그라운드 EXIF 시각 수집 결과. 항목 순서는 수집 시작 시점의
+/// items 순서와 같으며, generation이 다르면(폴더 전환 등) 버린다.
+struct SortScanResult {
+    generation: u64,
+    times: Vec<Option<i64>>,
+}
+
 /// 한 항목의 GUI 상태(코어 Entry + 지연 로드된 EXIF).
 struct Item {
     entry: Entry,
@@ -108,6 +115,9 @@ pub struct RawBlowApp {
     af_zoom_pending: bool,   // #49: 다음 1:1 확대를 AF 측거점 중심에 맞추라는 요청.
     grid_cols: usize,
     sort: SortOrder,
+    // 촬영시간순 정렬(#56): 백그라운드 EXIF 시각 수집 상태. gen이 현재와 같으면 수집 완료/진행 중.
+    sort_scan_gen: Option<u64>,
+    sort_rx: Option<crossbeam_channel::Receiver<SortScanResult>>,
 
     // 그리드 다중 선택(Ctrl/Shift+클릭) — 항목(real) 인덱스 집합 + 범위 선택 앵커(필터 인덱스).
     selected: std::collections::HashSet<usize>,
@@ -275,7 +285,9 @@ impl RawBlowApp {
             last_view_size: None,
             af_zoom_pending: false,
             grid_cols: cfg.grid_cols.clamp(4, 12),
-            sort: SortOrder::Name,
+            sort: cfg.sort,
+            sort_scan_gen: None,
+            sort_rx: None,
             selected: std::collections::HashSet::new(),
             sel_anchor: None,
             grid_scroll_to: None,
@@ -419,6 +431,149 @@ impl RawBlowApp {
         // 프리페치는 폴더 전체가 아니라 현재 위치 주변 윈도우만(update에서 매 프레임 슬라이드).
     }
 
+
+    /// 촬영시간순(#56): 현재 폴더의 EXIF 촬영시각을 백그라운드로 수집한다. 정렬 기준이
+    /// 촬영시간순이고 이번 generation에 대해 아직 시작하지 않았을 때만 동작 — 폴더가 바뀌면
+    /// generation이 올라가 자동 재수집. 이미 로드된 EXIF는 재독 없이 쓰고 나머지만 워커
+    /// 스레드에서 prefix read(ensure_cull_meta_scan과 동일 패턴 — UI·NAS 비차단).
+    fn ensure_capture_sort(&mut self, ctx: &egui::Context) {
+        if self.sort != SortOrder::CaptureTime || self.items.is_empty() {
+            return;
+        }
+        if self.sort_scan_gen == Some(self.generation) {
+            return; // 이번 폴더는 이미 수집(또는 진행 중).
+        }
+        self.sort_scan_gen = Some(self.generation);
+        let mut times: Vec<Option<i64>> = Vec::with_capacity(self.items.len());
+        let mut todo: Vec<(usize, PathBuf)> = Vec::new();
+        for (i, it) in self.items.iter().enumerate() {
+            if it.exif_loaded {
+                times.push(item_capture_secs(it));
+            } else {
+                times.push(None);
+                todo.push((i, it.entry.display.clone()));
+            }
+        }
+        if todo.is_empty() {
+            self.apply_capture_sort(times); // 전부 로드돼 있었음 — 즉시 재정렬.
+            return;
+        }
+        let (tx, rx) = crossbeam_channel::unbounded();
+        self.sort_rx = Some(rx);
+        let gen = self.generation;
+        std::thread::spawn(move || {
+            let mut times = times;
+            for (i, p) in todo {
+                times[i] = read_exif(&p)
+                    .and_then(|e| e.datetime)
+                    .as_deref()
+                    .and_then(rawblow_core::cull_ext::parse_exif_datetime);
+            }
+            let _ = tx.send(SortScanResult { generation: gen, times });
+        });
+        ctx.request_repaint_after(Duration::from_millis(120));
+    }
+
+    /// 촬영시각 수집 결과 반영(#56). 폴더가 바뀐(generation 불일치) 결과는 버린다.
+    fn drain_capture_sort(&mut self, ctx: &egui::Context) {
+        let res = match &self.sort_rx {
+            Some(rx) => rx.try_recv(),
+            None => return,
+        };
+        match res {
+            Ok(r) => {
+                self.sort_rx = None;
+                if r.generation == self.generation && self.sort == SortOrder::CaptureTime {
+                    self.apply_capture_sort(r.times);
+                }
+            }
+            Err(crossbeam_channel::TryRecvError::Empty) => {
+                ctx.request_repaint_after(Duration::from_millis(120));
+            }
+            Err(crossbeam_channel::TryRecvError::Disconnected) => self.sort_rx = None,
+        }
+    }
+
+    /// 촬영시각으로 items를 재정렬(#56). `times`는 현재 items 순서 기준.
+    fn apply_capture_sort(&mut self, times: Vec<Option<i64>>) {
+        if times.len() != self.items.len() {
+            return; // 수집 중 항목 수가 변함(방어) — 다음 generation에서 재수집.
+        }
+        let keys: Vec<(Option<i64>, String)> = self
+            .items
+            .iter()
+            .zip(&times)
+            .map(|(it, t)| (*t, item_file_name(it)))
+            .collect();
+        let order = scan::capture_order(&keys);
+        if order.iter().enumerate().all(|(i, &o)| i == o) {
+            return; // 이미 촬영시간순 — 상태 리셋 불필요.
+        }
+        self.reorder_items(&order);
+    }
+
+    /// 정렬 기준 변경(#56, 설정 UI). 파일명순은 EXIF가 필요 없어 즉시 재정렬하고,
+    /// 촬영시간순은 다음 프레임 ensure_capture_sort에서 백그라운드 수집을 시작한다.
+    fn set_sort_order(&mut self, sort: SortOrder) {
+        if self.sort == sort && self.cfg.sort == sort {
+            return;
+        }
+        self.cfg.sort = sort;
+        let _ = config::save(&self.cfg);
+        self.sort = sort;
+        match sort {
+            SortOrder::Name | SortOrder::Modified => {
+                self.sort_rx = None; // 진행 중 수집 결과는 무시(sort 검사로도 걸러짐).
+                let keys: Vec<(Option<i64>, String)> =
+                    self.items.iter().map(|it| (None, item_file_name(it))).collect();
+                let order = scan::capture_order(&keys); // 시각 전부 None = 파일명 자연정렬.
+                if !order.iter().enumerate().all(|(i, &o)| i == o) {
+                    self.reorder_items(&order);
+                }
+            }
+            SortOrder::CaptureTime => {
+                self.sort_scan_gen = None; // 강제 재수집.
+            }
+        }
+    }
+
+    /// items를 주어진 순열로 재배열하고 인덱스 기반 상태를 리셋한다(#56).
+    /// real 인덱스가 전부 바뀌므로 open_folder와 동일하게 세대를 올려 in-flight 디코딩
+    /// 결과를 무효화하고 캐시·pending·히스토그램·선택을 비운다. 라벨·별점은 Item과 함께
+    /// 이동하고 사이드카는 파일명 키라 안전. 현재 보던 사진은 새 위치로 따라간다.
+    fn reorder_items(&mut self, order: &[usize]) {
+        let cur_path = self
+            .current_real()
+            .and_then(|r| self.items.get(r))
+            .map(|it| it.entry.display.clone());
+        let mut old: Vec<Option<Item>> =
+            std::mem::take(&mut self.items).into_iter().map(Some).collect();
+        self.items = order.iter().map(|&i| old[i].take().expect("순열 인덱스 중복")).collect();
+        self.generation += 1;
+        self.worker.set_generation(self.generation);
+        self.sort_scan_gen = Some(self.generation); // 방금 정렬한 결과 — 재수집 루프 방지.
+        self.cache.retire_all();
+        self.thumbs.retire_all();
+        self.pending_preview.clear();
+        self.pending_thumb.clear();
+        self.pending_thumb_prio.clear();
+        self.pending_prefetch.clear();
+        self.failed_preview.clear();
+        self.failed_thumb.clear();
+        self.histo.clear();
+        self.selected.clear();
+        self.sel_anchor = None;
+        self.grid_scroll_to = None;
+        self.grid_visible_rows = 0..0;
+        self.zoom_for = None;
+        // 보던 사진의 새 위치로 index 복원(필터 목록 기준).
+        self.index = cur_path
+            .and_then(|p| {
+                let f = self.filtered();
+                f.iter().position(|&r| self.items[r].entry.display == p)
+            })
+            .unwrap_or(0);
+    }
 
     /// 현재 필터를 통과하는 항목 인덱스(원본 items 기준).
     fn filtered(&self) -> Vec<usize> {
@@ -759,6 +914,9 @@ impl eframe::App for RawBlowApp {
         // 현재 항목 메타(EXIF·AF)는 백그라운드 로드 — 사진 넘김을 막지 않는다.
         self.drain_meta(ctx);
         self.drain_cull_meta(ctx);
+        // 촬영시간순 정렬(#56): 필요 시 EXIF 시각 수집을 시작하고 결과를 반영한다.
+        self.ensure_capture_sort(ctx);
+        self.drain_capture_sort(ctx);
         self.request_meta(ctx);
         self.request_preload();
         self.request_prefetch_window(); // 현재 위치 주변만 디스크 캐시 워밍(폴더 전체 플러드 금지).
@@ -1091,6 +1249,20 @@ impl RawBlowApp {
 
 
 
+}
+
+/// 로드된 EXIF에서 촬영시각(에포크 초)(#56).
+fn item_capture_secs(it: &Item) -> Option<i64> {
+    it.exif
+        .as_ref()?
+        .datetime
+        .as_deref()
+        .and_then(rawblow_core::cull_ext::parse_exif_datetime)
+}
+
+/// 항목의 표시 파일명(#56 정렬 키·동률 안정화용).
+fn item_file_name(it: &Item) -> String {
+    it.entry.display.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string()
 }
 
 /// 평가 직후의 새 필터 index(#55). `still_visible`=방금 평가한 항목이 여전히 필터를 통과하는지,

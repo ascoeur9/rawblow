@@ -97,6 +97,21 @@ pub fn sort_entries(entries: &mut [Entry], sort: SortOrder) {
     }
 }
 
+/// 촬영시각순 정렬 순서(#56): `keys[i]` = (촬영시각 에포크 초, 파일명)인 목록의 정렬 순열을
+/// 돌려준다. 시각 오름차순, 동시각은 파일명 자연정렬로 안정화. 촬영시각이 없는 항목
+/// (EXIF 미탑재 JPG 등)은 맨 뒤로 가되 그들끼리는 파일명 자연정렬을 유지한다.
+/// EXIF는 스캔 시점에 없으므로 GUI가 백그라운드 로드 후 이 함수로 재정렬한다.
+pub fn capture_order(keys: &[(Option<i64>, String)]) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..keys.len()).collect();
+    idx.sort_by(|&a, &b| match (keys[a].0, keys[b].0) {
+        (Some(x), Some(y)) => x.cmp(&y).then_with(|| natural_cmp(&keys[a].1, &keys[b].1)),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => natural_cmp(&keys[a].1, &keys[b].1),
+    });
+    idx
+}
+
 fn display_name(e: &Entry) -> String {
     e.display
         .file_name()

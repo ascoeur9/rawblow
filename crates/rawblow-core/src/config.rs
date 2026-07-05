@@ -473,6 +473,9 @@ pub struct Config {
     /// AI 컬링(#50) 설정. 누락 시 기본값.
     #[serde(default)]
     pub ai_cull: AiCullConfig,
+    /// 정렬 기준(#56): 파일명순(기본)/촬영시간순. 설정에서 변경, 저장.
+    #[serde(default)]
+    pub sort: crate::model::SortOrder,
 }
 
 impl Default for Config {
@@ -495,6 +498,7 @@ impl Default for Config {
             show_af: false,       // AF 포인트 오버레이(#37). 기본 off.
             large_badges: true,   // 스트립·그리드 표기 크게가 기본(#44).
             ai_cull: AiCullConfig::default(), // AI 컬링 기본 설정(#50).
+            sort: crate::model::SortOrder::Name, // 파일명 자연정렬이 기본(#56).
         }
     }
 }

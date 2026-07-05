@@ -48,6 +48,20 @@ impl RawBlowApp {
                             let _ = config::save(&self.cfg);
                         }
                     });
+                    // 정렬 기준(#56): 파일명순(기본)/촬영시간순. 변경 즉시 재정렬·저장.
+                    // 촬영시간은 EXIF를 백그라운드로 읽은 뒤 반영된다(큰 폴더·NAS에서 수 초 지연 가능).
+                    ui.horizontal(|ui| {
+                        ui.label(tr(lang, "정렬 기준"));
+                        if ui.selectable_label(self.cfg.sort == SortOrder::Name, tr(lang, "파일명순")).clicked() {
+                            self.set_sort_order(SortOrder::Name);
+                        }
+                        if ui
+                            .selectable_label(self.cfg.sort == SortOrder::CaptureTime, tr(lang, "촬영시간순"))
+                            .clicked()
+                        {
+                            self.set_sort_order(SortOrder::CaptureTime);
+                        }
+                    });
                     // 언어 선택(#30): 시스템(자동)/한국어/English/日本語. 변경 즉시 적용·저장.
                     ui.horizontal(|ui| {
                         ui.label(tr(lang, "언어"));

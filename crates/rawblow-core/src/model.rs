@@ -383,9 +383,10 @@ impl TagFilter {
     }
 }
 
-/// 정렬 기준(F1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 정렬 기준(F1). 설정에 저장되므로 serde 파생(#56).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SortOrder {
+    #[default]
     Name,
     CaptureTime,
     Modified,

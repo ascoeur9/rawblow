@@ -196,6 +196,10 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "스트립·그리드 표기 크기" => ("Strip/grid badge size", "ストリップ・グリッド表示サイズ"),
         "크게" => ("Large", "大きく"),
         "작게" => ("Small", "小さく"),
+        // 정렬 기준(#56)
+        "정렬 기준" => ("Sort by", "並び順"),
+        "파일명순" => ("File name", "ファイル名順"),
+        "촬영시간순" => ("Capture time", "撮影日時順"),
         "단축키 재바인딩 UI는 v1.1 예정 — 현재 기본값 QWER 고정 표시" => (
             "Shortcut rebinding UI is planned for v1.1 — currently fixed to default QWER",
             "ショートカット再割り当てUIはv1.1予定 — 現在はデフォルトのQWER固定",
