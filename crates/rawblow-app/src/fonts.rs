@@ -17,12 +17,12 @@ fn cjk_candidates(lang: Lang) -> Vec<&'static str> {
             r"C:\Windows\Fonts\meiryo.ttc",
             r"C:\Windows\Fonts\msgothic.ttc",
         ];
-        return match lang {
+        match lang {
             // 일본어 UI: 일본어 폰트를 primary로 → 가나·한자·라틴이 한 폰트에서 일관 렌더.
             Lang::Ja => vec![ja[0], ja[1], ja[2], malgun],
             // 한국어/영어 UI: 한국어 폰트를 primary로(한글·한자·라틴 일관), 일본어는 폴백.
             _ => vec![malgun, ja[0], ja[1], ja[2]],
-        };
+        }
     }
     #[cfg(target_os = "macos")]
     {

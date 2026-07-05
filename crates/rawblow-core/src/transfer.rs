@@ -446,6 +446,8 @@ fn copy_then_remove(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// Windows: 읽기전용 속성 때문에 삭제가 거부된 파일을 속성 해제 후 1회 재시도(best-effort).
 /// Unix에선 파일 삭제가 파일 자체 권한과 무관(디렉토리 권한 문제)해 재시도가 무의미하다.
 #[cfg(windows)]
+// Windows에서 읽기전용 속성 해제는 의도된 동작(Unix의 world-writable 경고는 여기 무관).
+#[allow(clippy::permissions_set_readonly_false)]
 fn retry_remove_readonly(src: &Path) {
     if let Ok(meta) = std::fs::metadata(src) {
         let mut perm = meta.permissions();
