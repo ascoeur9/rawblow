@@ -481,8 +481,9 @@ impl RawBlowApp {
                     label
                 };
                 self.sidecar_dirty = true;
-                if self.cfg.auto_advance && it.entry.label != Label::Unrated {
-                    self.advance(1);
+                let rated = it.entry.label != Label::Unrated;
+                if self.cfg.auto_advance && rated {
+                    self.advance_after_rate(real);
                 }
             }
         }
@@ -511,8 +512,9 @@ impl RawBlowApp {
             if let Some(it) = self.items.get_mut(real) {
                 it.entry.stars = if stars != 0 && it.entry.stars == stars { 0 } else { stars };
                 self.sidecar_dirty = true;
-                if allow_advance && self.cfg.auto_advance && it.entry.stars != 0 {
-                    self.advance(1);
+                let rated = it.entry.stars != 0;
+                if allow_advance && self.cfg.auto_advance && rated {
+                    self.advance_after_rate(real);
                 }
             }
         }
@@ -560,6 +562,21 @@ impl RawBlowApp {
             }
         }
         c
+    }
+
+    /// 평가(라벨·별점) 직후의 자동 진행(#55). 방금 평가한 항목이 현재 필터에서 빠지면
+    /// 필터 목록이 한 칸 당겨져 index가 이미 다음 사진을 가리키므로 전진하지 않고 범위만
+    /// 보정한다. 항목이 필터에 남아 있을 때만 실제로 한 칸 전진한다.
+    fn advance_after_rate(&mut self, real: usize) {
+        let still_visible = self.items.get(real).is_some_and(|it| {
+            self.filter.accepts(it.entry.label)
+                && self.star_filter.accepts(it.entry.stars)
+                && self.tag_filter.accepts(it.entry.tag)
+        });
+        if let Some(next) = index_after_rate(self.index, still_visible, self.filtered().len()) {
+            self.index = next;
+            self.full_raw = false; // 이동 시 프리뷰로 복귀(advance와 동일)
+        }
     }
 
     fn advance(&mut self, delta: i64) {
@@ -1074,4 +1091,47 @@ impl RawBlowApp {
 
 
 
+}
+
+/// 평가 직후의 새 필터 index(#55). `still_visible`=방금 평가한 항목이 여전히 필터를 통과하는지,
+/// `new_len`=평가 반영 후 필터 목록 길이. 항목이 남아 있으면 한 칸 전진, 빠졌으면 목록이
+/// 당겨져 같은 index가 이미 다음 사진이므로 제자리(끝 넘침만 보정). 목록이 비면 None.
+fn index_after_rate(index: usize, still_visible: bool, new_len: usize) -> Option<usize> {
+    if new_len == 0 {
+        return None;
+    }
+    let next = if still_visible { index + 1 } else { index };
+    Some(next.min(new_len - 1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::index_after_rate;
+
+    #[test]
+    fn index_after_rate_filtered_out_stays_in_place() {
+        // 미선택 필터에서 1번(index 0)에 평가 → 목록이 당겨져 index 0이 곧 다음 사진(#55).
+        assert_eq!(index_after_rate(0, false, 4), Some(0));
+        assert_eq!(index_after_rate(2, false, 4), Some(2));
+    }
+
+    #[test]
+    fn index_after_rate_still_visible_advances_one() {
+        // 전체 필터처럼 항목이 남아 있으면 기존대로 한 칸 전진.
+        assert_eq!(index_after_rate(0, true, 5), Some(1));
+        assert_eq!(index_after_rate(3, true, 5), Some(4));
+    }
+
+    #[test]
+    fn index_after_rate_clamps_at_end() {
+        // 마지막 항목 평가: 남아 있으면 끝에 고정, 빠졌으면 새 끝(len-1)으로 보정.
+        assert_eq!(index_after_rate(4, true, 5), Some(4));
+        assert_eq!(index_after_rate(4, false, 4), Some(3));
+    }
+
+    #[test]
+    fn index_after_rate_empty_list_is_none() {
+        // 마지막 남은 항목이 필터에서 빠져 목록이 비면 이동 없음.
+        assert_eq!(index_after_rate(0, false, 0), None);
+    }
 }
