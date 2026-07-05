@@ -1861,4 +1861,73 @@ mod tests {
         assert!(missing.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// 테스트용 최소 QualityReport(전부 0, 옵션 None). QualityReport는 Default 미구현이라
+    /// 필드를 명시 구성한다(round-trip 테스트와 동일 방식).
+    fn sample_report() -> rawblow_core::quality::QualityReport {
+        rawblow_core::quality::QualityReport {
+            exposure: rawblow_core::quality::ExposureReport { mean: 0.5, highlight_clip: 0.0, shadow_clip: 0.0, dynamic_range: 0.8, score: 0.9 },
+            focus: rawblow_core::quality::FocusReport { sharpness: 0.73, acutance: 12.0, in_focus: true },
+            tilt: rawblow_core::quality::TiltReport { degrees: 1.5, confidence: 0.6 },
+            aesthetic: Some(0.42),
+            face: Some(true),
+            sharp_ai: Some(0.61),
+            object_match: Some(false),
+        }
+    }
+
+    #[test]
+    fn cull_worker_count_bounds_and_formula() {
+        use super::RawBlowApp;
+        // None → 코어 수만 제한(cores.clamp(1,12)). 코어 수는 머신마다 다르므로 코드와 동일하게
+        // 계산해 비교하고, 결과 범위(1..=12)도 검사한다.
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let expected_none = cores.clamp(1, 12);
+        let got_none = RawBlowApp::cull_worker_count(None);
+        assert_eq!(got_none, expected_none, "None은 코어 수만으로 제한");
+        assert!((1..=12).contains(&got_none), "결과는 1..=12 범위");
+
+        // Some(0) → sz>0 가드 실패 → None 경로와 동일.
+        assert_eq!(RawBlowApp::cull_worker_count(Some(0)), expected_none, "sz=0은 None과 동일");
+
+        // Some(1)(초소형 모델) → cap이 거대(20억) → clamp(1,12)이 상한을 눌러 ≤12.
+        let got_tiny = RawBlowApp::cull_worker_count(Some(1));
+        assert_eq!(got_tiny, expected_none, "초소형 모델도 cap이 커서 코어 제한과 동일");
+        assert!(got_tiny <= 12);
+
+        // Some(4e9)(초거대 모델) → 20억/40억 = 0 → .max(1)로 바닥 1 → 결과 정확히 1.
+        assert_eq!(RawBlowApp::cull_worker_count(Some(4_000_000_000)), 1, "예산보다 큰 모델은 워커 1");
+    }
+
+    #[test]
+    fn cull_extra_no_meta_passes_through() {
+        use super::cull_extra;
+        let report = sample_report();
+        // need_meta=false면 파일 I/O가 없어야 하므로 존재하지 않는 더미 경로를 준다.
+        let dummy = std::path::Path::new("Z:/definitely/does/not/exist/IMG_9999.RW2");
+        let extra = cull_extra(&report, Some(0xDEAD_BEEF), dummy, false);
+
+        // 메타는 읽지 않음 → 기본값·None.
+        assert_eq!(extra.shot_time, None, "need_meta=false면 촬영시각 None");
+        assert_eq!(extra.meta, rawblow_core::cull_ext::PhotoMeta::default(), "메타는 기본값");
+        // 나머지 필드는 report/인자에서 그대로 통과.
+        assert_eq!(extra.sharp, report.focus.sharpness);
+        assert_eq!(extra.dhash, Some(0xDEAD_BEEF));
+        assert_eq!(extra.face, report.face);
+        assert_eq!(extra.sharp_ai, report.sharp_ai);
+        assert_eq!(extra.object_match, report.object_match);
+    }
+
+    #[test]
+    fn model_path_ends_with_models_and_file() {
+        use super::{config, RawBlowApp};
+        let spec = config::ModelSpec { file: "unit-test-model.onnx", url: "", sha256: "", bytes: 0 };
+        let p = RawBlowApp::model_path(spec);
+        // config_dir()/models/<file> — 마지막 두 컴포넌트만 검사(config_dir은 환경 의존).
+        assert!(
+            p.ends_with(std::path::Path::new("models").join("unit-test-model.onnx")),
+            "경로가 models/<file>로 끝나야 함: {}",
+            p.display()
+        );
+    }
 }

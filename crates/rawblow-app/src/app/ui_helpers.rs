@@ -372,7 +372,26 @@ pub(super) fn reveal_in_file_manager(path: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_capture_datetime, hex_str, parse_hex_rgb};
+    use super::{
+        af_display_coords, af_focus_center, compute_histo, exif_lines, fmt_bytes,
+        format_capture_datetime, hex_str, parse_hex_rgb, ExifInfo,
+    };
+    use rawblow_core::af::{AfInfo, AfPoint};
+
+    /// 4-튜플 근사 비교(부동소수 오차 허용). 1-0.1 같은 뺄셈은 이진분수로 정확하지 않아
+    /// epsilon 비교가 필요하다(0.25/0.75는 정확하지만 일괄로 근사 비교).
+    fn approx4(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) {
+        let e = 1e-9;
+        assert!(
+            (a.0 - b.0).abs() < e && (a.1 - b.1).abs() < e && (a.2 - b.2).abs() < e && (a.3 - b.3).abs() < e,
+            "got {a:?}, want {b:?}"
+        );
+    }
+
+    /// in_focus/selected만 다른 AfPoint 생성 헬퍼(좌표는 인자, 크기는 0).
+    fn afp(cx: f64, cy: f64, in_focus: bool, selected: bool) -> AfPoint {
+        AfPoint { cx, cy, w: 0.0, h: 0.0, in_focus, selected }
+    }
 
     #[test]
     fn capture_datetime_uses_dots_for_date_keeps_colons_for_time() {
@@ -397,5 +416,145 @@ mod tests {
         // 왕복.
         assert_eq!(hex_str([0x1e, 0x1e, 0x1e]), "#1E1E1E");
         assert_eq!(parse_hex_rgb(&hex_str([0x06, 0x07, 0x0a])), Some([0x06, 0x07, 0x0a]));
+    }
+
+    #[test]
+    fn af_display_coords_all_orientations() {
+        // 알려진 측거점(센서 기준). w/h는 90/270도(5~8)에서 맞바뀐다.
+        let pt = AfPoint { cx: 0.25, cy: 0.1, w: 0.2, h: 0.4, in_focus: false, selected: false };
+        // 1(정상)과 미정의(0·9)는 그대로.
+        approx4(af_display_coords(&pt, 1), (0.25, 0.1, 0.2, 0.4));
+        approx4(af_display_coords(&pt, 0), (0.25, 0.1, 0.2, 0.4));
+        approx4(af_display_coords(&pt, 9), (0.25, 0.1, 0.2, 0.4));
+        // 2: 좌우 미러(x→1-x).
+        approx4(af_display_coords(&pt, 2), (0.75, 0.1, 0.2, 0.4));
+        // 3: 180°(x,y 모두 반전).
+        approx4(af_display_coords(&pt, 3), (0.75, 0.9, 0.2, 0.4));
+        // 4: 상하 미러(y→1-y).
+        approx4(af_display_coords(&pt, 4), (0.25, 0.9, 0.2, 0.4));
+        // 5~8: 전치 계열 → w/h 스왑(0.2↔0.4).
+        approx4(af_display_coords(&pt, 5), (0.1, 0.25, 0.4, 0.2)); // 전치(y,x)
+        approx4(af_display_coords(&pt, 6), (0.9, 0.25, 0.4, 0.2)); // 90° CW(1-y,x)
+        approx4(af_display_coords(&pt, 7), (0.9, 0.75, 0.4, 0.2)); // 전치+180°(1-y,1-x)
+        approx4(af_display_coords(&pt, 8), (0.1, 0.75, 0.4, 0.2)); // 90° CCW(y,1-x)
+    }
+
+    #[test]
+    fn af_focus_center_priority_fallback() {
+        // (a) 합초점이 있으면 합초점만 평균. A(0.2,0.4)·B(0.6,0.8) 합초, C·D는 무시.
+        let a = AfInfo {
+            points: vec![
+                afp(0.2, 0.4, true, false),
+                afp(0.6, 0.8, true, true),
+                afp(0.4, 0.2, false, true),  // selected지만 in_focus 우선이라 제외
+                afp(0.9, 0.9, false, false),
+            ],
+            source: "t",
+        };
+        let (x, y) = af_focus_center(&a, 1).unwrap();
+        assert!((x - 0.4).abs() < 1e-9 && (y - 0.6).abs() < 1e-9);
+
+        // (b) 합초점 없음 + 선택점 있음 → 선택점만 평균. sel: (0.4,0.2)·(0.6,0.4).
+        let b = AfInfo {
+            points: vec![
+                afp(0.4, 0.2, false, true),
+                afp(0.6, 0.4, false, true),
+                afp(0.9, 0.9, false, false),
+            ],
+            source: "t",
+        };
+        let (x, y) = af_focus_center(&b, 1).unwrap();
+        assert!((x - 0.5).abs() < 1e-9 && (y - 0.3).abs() < 1e-9);
+
+        // (c) 합초·선택 모두 없음 → 전체 평균. (0.2,0.4)·(0.4,0.6) → (0.3,0.5).
+        let c = AfInfo {
+            points: vec![afp(0.2, 0.4, false, false), afp(0.4, 0.6, false, false)],
+            source: "t",
+        };
+        let (x, y) = af_focus_center(&c, 1).unwrap();
+        assert!((x - 0.3).abs() < 1e-9 && (y - 0.5).abs() < 1e-9);
+
+        // (d) 점이 없으면 None(호출부는 중앙 폴백).
+        let empty = AfInfo { points: vec![], source: "t" };
+        assert_eq!(af_focus_center(&empty, 1), None);
+    }
+
+    #[test]
+    fn compute_histo_empty_and_known() {
+        // 빈 슬라이스 → 모든 bin 0, max는 1로 클램프.
+        let h = compute_histo(&[]);
+        assert_eq!(h.max, 1);
+        assert!(h.bins.iter().flatten().all(|&v| v == 0));
+
+        // 3픽셀 RGBA(px<200k → step=1). 값은 >>2로 버킷.
+        // px0 R0 G4 B8 / px1 R1 G5 B9 / px2 R255 G255 B255 (A는 무시).
+        let rgba = [0, 4, 8, 255, 1, 5, 9, 0, 255, 255, 255, 100];
+        let h = compute_histo(&rgba);
+        // R: 0>>2=0, 1>>2=0 → bin0=2; 255>>2=63 → bin63=1.
+        assert_eq!(h.bins[0][0], 2);
+        assert_eq!(h.bins[0][63], 1);
+        // G: 4>>2=1, 5>>2=1 → bin1=2; 255→bin63=1.
+        assert_eq!(h.bins[1][1], 2);
+        assert_eq!(h.bins[1][63], 1);
+        // B: 8>>2=2, 9>>2=2 → bin2=2; 255→bin63=1.
+        assert_eq!(h.bins[2][2], 2);
+        assert_eq!(h.bins[2][63], 1);
+        // 각 채널 총합은 픽셀 수(3)와 일치(엉뚱한 bin 없음).
+        for ch in 0..3 {
+            assert_eq!(h.bins[ch].iter().sum::<u32>(), 3);
+        }
+        // max는 가장 큰 bin(2).
+        assert_eq!(h.max, 2);
+    }
+
+    #[test]
+    fn exif_lines_none_and_partial() {
+        // 전부 None → 빈 vec.
+        let empty = ExifInfo::default();
+        assert!(exif_lines(&empty).is_empty());
+
+        // 부분 채움: 카메라·렌즈·노출(조리개/셔터/ISO/초점)·일시 순서와 조합 검증.
+        let ex = ExifInfo {
+            camera: Some("Canon EOS R5".into()),
+            lens: Some("RF 50mm".into()),
+            aperture: Some("f/1.8".into()),
+            shutter: Some("1/200".into()),
+            iso: Some("400".into()),
+            focal_length: Some("50mm".into()),
+            datetime: Some("2024:06:03 14:30:45".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            exif_lines(&ex),
+            vec![
+                "Canon EOS R5".to_string(),
+                "RF 50mm".to_string(),
+                // 노출 요소는 두 칸 공백으로 join, 셔터엔 s 접미, ISO엔 접두.
+                "f/1.8  1/200s  ISO 400  50mm".to_string(),
+                "2024.06.03 14:30:45".to_string(),
+            ]
+        );
+
+        // ISO만 있으면 노출 한 줄만(카메라·렌즈·일시 없음).
+        let iso_only = ExifInfo { iso: Some("100".into()), ..Default::default() };
+        assert_eq!(exif_lines(&iso_only), vec!["ISO 100".to_string()]);
+    }
+
+    #[test]
+    fn fmt_bytes_boundaries_and_rounding() {
+        // B 구간(<1024).
+        assert_eq!(fmt_bytes(0), "0 B");
+        assert_eq!(fmt_bytes(512), "512 B");
+        assert_eq!(fmt_bytes(1023), "1023 B");
+        // KB 경계(1024)와 반올림(1048575/1024≈1023.999 → 1024).
+        assert_eq!(fmt_bytes(1024), "1 KB");
+        assert_eq!(fmt_bytes(1_048_575), "1024 KB");
+        // MB 경계(1MiB)와 소수 1자리.
+        assert_eq!(fmt_bytes(1_048_576), "1.0 MB");
+        assert_eq!(fmt_bytes(1_572_864), "1.5 MB"); // 1.5 * 1MiB
+        assert_eq!(fmt_bytes(1_073_741_823), "1024.0 MB"); // GB 직전 반올림.
+        // GB 경계(1GiB)와 소수 2자리.
+        assert_eq!(fmt_bytes(1_073_741_824), "1.00 GB");
+        assert_eq!(fmt_bytes(1_610_612_736), "1.50 GB"); // 1.5 * 1GiB
     }
 }

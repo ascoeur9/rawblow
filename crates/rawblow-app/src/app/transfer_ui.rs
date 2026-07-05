@@ -888,3 +888,71 @@ impl RawBlowApp {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rename_rule_off_is_none() {
+        // 원본 유지 모드는 리네임 규칙 없음.
+        let st = TransferDialogState { rename_mode: RenameMode::Off, ..Default::default() };
+        assert!(st.rename_rule().is_none());
+    }
+
+    #[test]
+    fn rename_rule_seq_uses_order_numbering() {
+        // 순번 프리셋: {seq:03} + 선택 순서대로.
+        let st = TransferDialogState { rename_mode: RenameMode::Seq, ..Default::default() };
+        let rule = st.rename_rule().expect("Seq는 Some");
+        assert_eq!(rule.template, "{seq:03}");
+        assert_eq!(rule.numbering, Numbering::Order);
+    }
+
+    #[test]
+    fn rename_rule_grade_uses_grade_grouped_numbering() {
+        // 별점등급 프리셋: {gradeseq} + 등급별 묶음 순번.
+        let st = TransferDialogState { rename_mode: RenameMode::Grade, ..Default::default() };
+        let rule = st.rename_rule().expect("Grade는 Some");
+        assert_eq!(rule.template, "{gradeseq}");
+        assert_eq!(rule.numbering, Numbering::GradeGrouped);
+    }
+
+    #[test]
+    fn rename_rule_custom_passes_through_state_verbatim() {
+        // 직접 입력 모드는 다이얼로그의 템플릿·번호방식을 그대로 통과시킨다.
+        let st = TransferDialogState {
+            rename_mode: RenameMode::Custom,
+            rename_template: "{label}_{orig}_shot".into(),
+            rename_numbering: Numbering::Order, // 기본값(GradeGrouped)과 다른 값으로 통과 확인
+            ..Default::default()
+        };
+        let rule = st.rename_rule().expect("Custom은 Some");
+        assert_eq!(rule.template, "{label}_{orig}_shot");
+        assert_eq!(rule.numbering, Numbering::Order);
+    }
+
+    #[test]
+    fn transfer_dialog_state_defaults() {
+        let st = TransferDialogState::default();
+        assert_eq!(st.labels, vec![Label::Pick]);
+        assert!(st.stars.is_empty());
+        assert!(st.tags.is_empty());
+        assert_eq!(st.action, Action::Copy);
+        assert_eq!(st.companions, Companions::Both);
+        assert!(!st.split_by_label);
+        assert!(!st.split_by_tag);
+        assert_eq!(st.conflict, ConflictPolicy::AutoIncrement);
+        assert!(matches!(st.rename_mode, RenameMode::Off)); // RenameMode는 Debug 미구현이라 matches! 사용
+    }
+
+    #[test]
+    fn organize_dialog_state_defaults_to_move_unlike_transfer_copy() {
+        // 이슈 #34 의도: 전송(Copy 기본)과 달리 폴더 정리는 Move가 기본.
+        let st = OrganizeDialogState::default();
+        assert_eq!(st.key, OrganizeKey::Date);
+        assert_eq!(st.action, Action::Move);
+        assert_eq!(st.conflict, ConflictPolicy::AutoIncrement);
+        assert_ne!(st.action, TransferDialogState::default().action);
+    }
+}
