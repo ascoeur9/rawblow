@@ -97,6 +97,15 @@ gh release create vX.Y.Z "RawBlow-vX.Y.Z-<os>.exe" \
 
 ## 변경 이력 (Changelog)
 
+### v0.5.5
+- **데이터 안전성** — 사이드카·설정 파일 원자 저장(tmp→rename) + 손상 시 .bak 복구,
+  이동 폴백(copy+remove) 부분 실패 정리. 강제 종료·정전에도 별점/라벨 데이터가 깨지지 않음.
+- **i18n 완성(#50~#53)** — AI 컬링·점프 UI의 영어/일본어 번역 누락분 완성.
+- **CI 도입** — GitHub Actions에서 push/PR마다 Linux/Windows 테스트 + clippy(-D warnings) 게이트.
+- **내부 구조 개편** — app.rs(5,240줄)를 8개 모듈(ui_helpers/update_check/dialogs/settings_ui/
+  transfer_ui/decode_pipe/culling/views)로 분해(순수 이동, 동작 변화 없음). 분해 모듈의
+  순수 로직 유닛 테스트 14건 추가(AF 좌표 변환, 컬링 워커 수 산정, 리네임 규칙 매핑 등).
+
 ### v0.5.4
 - **점프 기능 재작업(#52)** — 순번(기본)/파일명 두 모드를 세그먼트로 택1, 단일 값만 입력받도록
   정리(쉼표·엔터 다중 입력 차단). 순번은 필터된 목록 기준 이동, 파일명은 부분 일치.
