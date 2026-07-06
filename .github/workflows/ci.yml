@@ -1,4 +1,8 @@
-# 최소 CI: push/PR마다 코어 테스트 + 앱 타입체크·테스트 + clippy(-D warnings).
+# 최소 CI: 코어 테스트 + 앱 타입체크·테스트 + clippy(-D warnings).
+#
+# 자동 실행 안 함(수동 전용): CI는 로컬에서 돌린다는 방침. 필요할 때만
+# Actions 탭에서 workflow_dispatch로 수동 실행. (로컬 게이트:
+# `cargo test --workspace` + `cargo clippy --workspace --all-targets -- -D warnings`)
 #
 # 의도적으로 하지 않는 것:
 # - `ai` 기능 빌드: ort가 빌드 시 prebuilt 바이너리 다운로드(+ Linux에선 openssl 헤더)를
@@ -8,9 +12,7 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
