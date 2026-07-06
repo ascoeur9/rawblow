@@ -39,23 +39,19 @@ fn run_decoupled(files: &Arc<Vec<PathBuf>>, model_path: &str, accel: Accel, intr
             let model = if mp == "none" { None } else { AestheticModel::load_tuned(std::path::Path::new(&mp), accel, intra).ok() };
             infer_ready.wait();
             let mut buf: Vec<rawblow_core::decode::DecodedImage> = Vec::with_capacity(batch);
-            loop {
-                match rx.recv() {
-                    Ok(img) => {
-                        buf.push(img);
-                        // 배치가 차거나 채널이 잠시 빌 때까지 모아 score_batch.
-                        while buf.len() < batch {
-                            match rx.try_recv() { Ok(i) => buf.push(i), Err(_) => break }
-                        }
-                        if let Some(m) = model.as_ref() {
-                            let refs: Vec<&_> = buf.iter().collect();
-                            let _ = m.score_batch(&refs);
-                        }
-                        done.fetch_add(buf.len(), Ordering::Relaxed);
-                        buf.clear();
-                    }
-                    Err(_) => break, // 채널 닫힘
+            // 채널이 닫힐 때까지 수신.
+            while let Ok(img) = rx.recv() {
+                buf.push(img);
+                // 배치가 차거나 채널이 잠시 빌 때까지 모아 score_batch.
+                while buf.len() < batch {
+                    match rx.try_recv() { Ok(i) => buf.push(i), Err(_) => break }
                 }
+                if let Some(m) = model.as_ref() {
+                    let refs: Vec<&_> = buf.iter().collect();
+                    let _ = m.score_batch(&refs);
+                }
+                done.fetch_add(buf.len(), Ordering::Relaxed);
+                buf.clear();
             }
         }));
     }
