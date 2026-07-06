@@ -4,12 +4,23 @@ use rawblow_core::model::{ColorTag, Entry, Kind, Label, MatchMode};
 use rawblow_core::{decode, scan, sidecar, transfer};
 use std::path::{Path, PathBuf};
 
-fn sample_dir() -> PathBuf {
-    // 워크스페이스 루트의 sample/ (CARGO_MANIFEST_DIR = crates/rawblow-core)
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../sample")
-        .canonicalize()
-        .expect("sample dir must exist")
+fn sample_dir() -> Option<PathBuf> {
+    // 워크스페이스 루트의 sample/ (CARGO_MANIFEST_DIR = crates/rawblow-core).
+    // gitignore된 로컬 전용 데이터라 CI에는 없다 — 없으면 해당 테스트는 스킵.
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sample").canonicalize().ok()
+}
+
+/// sample/이 없으면(CI 등) eprintln 후 테스트를 조용히 통과시키는 스킵 매크로.
+macro_rules! require_sample {
+    () => {
+        match sample_dir() {
+            Some(d) => d,
+            None => {
+                eprintln!("skip: sample/ 없음(gitignore, 로컬 전용) — 테스트 스킵");
+                return;
+            }
+        }
+    };
 }
 
 #[test]
@@ -42,7 +53,7 @@ fn capture_order_sorts_by_time_name_tiebreak_missing_last() {
 
 #[test]
 fn scan_groups_and_sorts_sample() {
-    let dir = sample_dir();
+    let dir = require_sample!();
     let entries = scan::scan_folder(&dir, false, rawblow_core::SortOrder::Name);
     assert!(!entries.is_empty(), "sample 루트에 항목이 있어야 함");
     // 자연 정렬 단조성 확인.
@@ -55,7 +66,7 @@ fn scan_groups_and_sorts_sample() {
 
 #[test]
 fn recursive_scan_includes_subfolder() {
-    let dir = sample_dir();
+    let dir = require_sample!();
     let flat = scan::scan_folder(&dir, false, rawblow_core::SortOrder::Name).len();
     let deep = scan::scan_folder(&dir, true, rawblow_core::SortOrder::Name).len();
     assert!(deep > flat, "재귀 스캔이 하위 폴더(홍대 모임)를 포함해야 함");
@@ -108,7 +119,7 @@ fn pairing_merges_raw_and_jpg_split_across_folders() {
 
 #[test]
 fn extract_embedded_jpeg_from_real_rw2() {
-    let dir = sample_dir();
+    let dir = require_sample!();
     // 루트의 RW2 하나를 찾는다.
     let rw2 = std::fs::read_dir(&dir)
         .unwrap()
@@ -131,7 +142,7 @@ fn extract_embedded_jpeg_from_real_rw2() {
 
 #[test]
 fn decode_real_jpg() {
-    let dir = sample_dir();
+    let dir = require_sample!();
     let jpg = std::fs::read_dir(&dir)
         .unwrap()
         .filter_map(|e| e.ok())

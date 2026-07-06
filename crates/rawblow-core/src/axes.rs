@@ -23,7 +23,8 @@ mod detail {
     const SIDE: usize = 224;
     // CLIP 전처리 통계(open_clip 표준, export_clip_axes.py와 동일).
     const MEAN: [f32; 3] = [0.481_454_66, 0.457_827_5, 0.408_210_73];
-    const STD: [f32; 3] = [0.268_629_54, 0.261_302_58, 0.275_777_11];
+    // f32 유효 자릿수로 절단(clippy excessive_precision) — 값은 원 상수와 동일 비트.
+    const STD: [f32; 3] = [0.268_629_54, 0.261_302_6, 0.275_777_1];
 
     /// CLIP 다축 모델. 내부 Mutex로 스레드 안전(워커 공유 가능).
     pub struct AxesModel {
