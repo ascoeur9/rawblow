@@ -383,11 +383,12 @@ impl TagFilter {
     }
 }
 
-/// 정렬 기준(F1). 설정에 저장되므로 serde 파생(#56).
+/// 정렬 기준(F1). 설정에 저장되므로 serde 파생(#56). 기본은 촬영시간순(이슈 #56 코멘트) —
+/// 여러 카메라 혼용 시 파일명이 촬영 순서와 어긋나므로 컬링에는 시간순이 자연스럽다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SortOrder {
-    #[default]
     Name,
+    #[default]
     CaptureTime,
     Modified,
 }
