@@ -161,6 +161,8 @@ pub struct RawBlowApp {
     pending_prefetch: std::collections::HashSet<usize>,   // 백그라운드 디스크 캐시 프리페치 중
     failed_preview: std::collections::HashSet<usize>,
     failed_thumb: std::collections::HashSet<usize>,
+    // 항목(real)별 디코딩 누적 실패 횟수(#64). decode_dead()가 3 이상을 영구 손상으로 간주.
+    decode_fails: std::collections::HashMap<usize, u8>,
     histo: std::collections::HashMap<usize, Histo>,
     generation: u64,
 
@@ -337,6 +339,7 @@ impl RawBlowApp {
             pending_prefetch: std::collections::HashSet::new(),
             failed_preview: std::collections::HashSet::new(),
             failed_thumb: std::collections::HashSet::new(),
+            decode_fails: std::collections::HashMap::new(),
             histo: std::collections::HashMap::new(),
             generation: 0,
             sidecar_dirty: false,
@@ -476,6 +479,7 @@ impl RawBlowApp {
         self.pending_prefetch.clear();
         self.failed_preview.clear();
         self.failed_thumb.clear();
+        self.decode_fails.clear(); // real 인덱스가 재배정되므로 실패 카운터도 함께 리셋(#64).
         self.histo.clear();
         self.selected.clear();
         self.sel_anchor = None;
@@ -632,6 +636,7 @@ impl RawBlowApp {
         self.pending_prefetch.clear();
         self.failed_preview.clear();
         self.failed_thumb.clear();
+        self.decode_fails.clear(); // real 인덱스가 재배정되므로 실패 카운터도 함께 리셋(#64).
         self.histo.clear();
         self.selected.clear();
         self.sel_anchor = None;
@@ -678,6 +683,13 @@ impl RawBlowApp {
     fn current_real(&self) -> Option<usize> {
         let f = self.filtered();
         f.get(self.index.min(f.len().saturating_sub(1))).copied()
+    }
+
+    /// 항목(real)의 디코딩이 영구 실패로 판단되는지(#64). 3회 = 일시적 I/O 오류(NAS 끊김 등)와
+    /// 영구 손상을 구분하는 임계 — 미만이면 지금처럼 prio 재시도를 계속하고, 이상이면 멈추고
+    /// 에러 상태를 보여준다.
+    fn decode_dead(&self, real: usize) -> bool {
+        self.decode_fails.get(&real).is_some_and(|&n| n >= 3)
     }
 
 

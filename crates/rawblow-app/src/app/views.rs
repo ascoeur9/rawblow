@@ -625,6 +625,7 @@ impl RawBlowApp {
                             selected: false,
                             stars: it.entry.stars,
                             tag: it.entry.tag,
+                            failed: self.decode_dead(real),
                         };
                         draw_thumb(ui, rect, tex, tsize, &info, self.badge_scale());
                         if resp.clicked() {
@@ -679,9 +680,20 @@ impl RawBlowApp {
         let (tex, size) = match texsize {
             Some(v) => v,
             None => {
-                ui.painter()
-                    .text(area.center(), Align2::CENTER_CENTER, tr(lang, "디코딩 중…"), mono(12.0), theme::INK3);
-                ui.ctx().request_repaint();
+                if self.decode_dead(real) {
+                    // 누적 3회 실패(#64): "디코딩 중…" 무한 반복 대신 에러 상태로 고정 표시하고,
+                    // 더 시도할 게 없으므로 재페인트 루프도 걸지 않는다.
+                    let it = &self.items[real];
+                    let name = it.entry.display.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                    let p = ui.painter();
+                    p.text(area.center() + Vec2::new(0.0, -22.0), Align2::CENTER_CENTER, "⚠", mono(28.0), theme::WARN);
+                    p.text(area.center() + Vec2::new(0.0, 6.0), Align2::CENTER_CENTER, tr(lang, "이 파일을 열 수 없습니다"), mono(12.0), theme::INK3);
+                    p.text(area.center() + Vec2::new(0.0, 24.0), Align2::CENTER_CENTER, &name, mono(10.5), theme::INK4);
+                } else {
+                    ui.painter()
+                        .text(area.center(), Align2::CENTER_CENTER, tr(lang, "디코딩 중…"), mono(12.0), theme::INK3);
+                    ui.ctx().request_repaint();
+                }
                 return;
             }
         };
@@ -945,6 +957,7 @@ impl RawBlowApp {
                             selected: self.selected.contains(&real),
                             stars: it.entry.stars,
                             tag: it.entry.tag,
+                            failed: self.decode_dead(real),
                         };
                         draw_thumb(ui, rect, tex, tsize, &info, self.badge_scale());
                         if resp.clicked() {

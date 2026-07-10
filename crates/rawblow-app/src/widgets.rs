@@ -173,6 +173,7 @@ pub struct ThumbInfo {
     pub selected: bool,  // 다중 선택됨
     pub stars: u8,       // 별점(0~5, #23)
     pub tag: ColorTag,   // 컬러 태그(#27)
+    pub failed: bool,    // 디코딩 영구 실패(#64) — 텍스처 없으면 placeholder에 ⚠ 표시
 }
 
 /// 주어진 rect에 썸네일을 그린다. 텍스처가 있으면 이미지를, 없으면 플레이스홀더.
@@ -197,6 +198,9 @@ pub fn draw_thumb(ui: &Ui, rect: Rect, tex: Option<egui::TextureId>, size: Vec2,
             rect
         };
         p.with_clip_rect(rect).image(id, target, uv, tint);
+    } else if info.failed {
+        // 디코딩 영구 실패(#64): 빈 회색 placeholder 대신 경고 아이콘을 보여준다.
+        p.text(rect.center(), Align2::CENTER_CENTER, "⚠", mono(16.0 * scale), theme::WARN);
     }
     // 다중 선택 표시: 강조색 반투명 오버레이.
     if info.selected {

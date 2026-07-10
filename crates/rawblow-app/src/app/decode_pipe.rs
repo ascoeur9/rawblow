@@ -146,8 +146,9 @@ impl RawBlowApp {
 
     /// 프리뷰 디코딩 요청(캐시/진행/실패 가드 포함).
     pub(super) fn request_preview(&mut self, real: usize, max_edge: Option<u32>, full: bool, prio: bool) {
-        if prio {
+        if prio && !self.decode_dead(real) {
             // 현재 보고 있는 이미지: 일시적으로 실패 마킹됐어도 항상 재시도(디코딩은 사실상 100%).
+            // 단, 누적 3회 실패(decode_dead)면 영구 손상으로 보고 재시도를 멈춘다(#64).
             self.failed_preview.remove(&real);
         }
         if self.failed_preview.contains(&real)
@@ -181,6 +182,10 @@ impl RawBlowApp {
             return; // 이미 캐시됨
         }
         if prio {
+            // 누적 3회 실패(decode_dead)면 영구 손상으로 보고 재시도를 멈춘다(#64).
+            if self.decode_dead(real) {
+                return;
+            }
             // 보이는 셀: 실패했어도 재시도하고, 일반 레인에 묶여 있어도 우선 레인으로
             // "한 번" 승격 요청한다(pending_thumb_prio로 중복/플러드 차단) → 절대 고착 안 됨.
             self.failed_thumb.remove(&real);
@@ -289,8 +294,13 @@ impl RawBlowApp {
             } else if res.thumb {
                 // 디코딩 실패는 마킹해 무한 재시도(=keep-alive 무한 루프)를 막는다.
                 self.failed_thumb.insert(res.id);
+                // 누적 실패 횟수(#64): decode_dead()가 3 이상을 영구 손상으로 판단한다.
+                let n = self.decode_fails.entry(res.id).or_insert(0);
+                *n = n.saturating_add(1);
             } else {
                 self.failed_preview.insert(res.id);
+                let n = self.decode_fails.entry(res.id).or_insert(0);
+                *n = n.saturating_add(1);
             }
         }
         // 업로드 상한에 걸려 남은 결과가 있으면 곧바로 다음 프레임에서 이어 비운다.

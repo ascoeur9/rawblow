@@ -143,6 +143,7 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "전체" => ("All", "すべて"),
         "표시할 항목이 없습니다" => ("No items to show", "表示する項目がありません"),
         "디코딩 중…" => ("Decoding…", "デコード中…"),
+        "이 파일을 열 수 없습니다" => ("Can't open this file", "このファイルを開けません"), // #64
         "파일 전송" => ("Transfer Files", "ファイル転送"),
         "선택한 라벨·별점의 파일을 복사/이동 · RAW 페어 처리" => (
             "Copy/Move files by selected label and rating · handles RAW pairs",
@@ -490,8 +491,8 @@ mod tests {
 
     #[test]
     fn ai_cull_strings_are_translated() {
-        // #50~#53 AI 컬링 UI가 En/Ja에서 한국어로 폴백되던 회귀 방지(대표 키 스팟체크).
-        for ko in ["AI 컬링", "컬링 시작", "초점(선명도)", "연사 베스트-N", "장르 픽", "파일명 일부를 입력하세요"] {
+        // #50~#53 AI 컬링 UI + #64 에러 상태 문구가 En/Ja에서 한국어로 폴백되던 회귀 방지(대표 키 스팟체크).
+        for ko in ["AI 컬링", "컬링 시작", "초점(선명도)", "연사 베스트-N", "장르 픽", "파일명 일부를 입력하세요", "이 파일을 열 수 없습니다"] {
             assert_ne!(tr(Lang::En, ko), ko, "En 번역 누락: {ko}");
             assert_ne!(tr(Lang::Ja, ko), ko, "Ja 번역 누락: {ko}");
         }
