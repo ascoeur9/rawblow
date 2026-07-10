@@ -331,7 +331,9 @@ impl RawBlowApp {
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .fixed_size(Vec2::new(680.0, 0.0))
+            // 높이 고정(0=자동이면 내부 ScrollArea와 순환 의존으로 뷰포트가 붕괴, 표가 잘림 #66).
+            // 2열 표(~410px)+헤더/푸터가 들어가는 높이. 콘텐츠가 더 길면 ScrollArea가 스크롤한다.
+            .fixed_size(Vec2::new(680.0, 560.0))
             .frame(modal_frame())
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
@@ -340,75 +342,68 @@ impl RawBlowApp {
                     tr(lang, "단축키"),
                     tr(lang, "사진 위에서 바로 누르면 됩니다 — 입력창이 없어 즉시 반응"),
                 );
+                // 창 높이가 고정(아래 fixed_size)이라 ScrollArea가 실제 가용 높이를 받는다 — 창 높이를
+                // 0(자동)으로 두면 ScrollArea 뷰포트↔창 높이가 순환 의존이 되어 뷰포트가 콘텐츠 최소값으로
+                // 붕괴, 2열 표가 2행에서 잘렸다(#66). 내용<가용이면 스크롤 없이 전부 보이고, 넘치면 스크롤.
                 egui::ScrollArea::vertical()
-                    .max_height(460.0)
-                    .auto_shrink([false, true])
+                    .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        const COL_W: f32 = 300.0;
-                        ui.horizontal_top(|ui| {
+                        // 2열은 ui.columns로 나눈다(각 열 top_down, 내용에 맞춰 높이 증가).
+                        ui.columns(2, |c| {
                             // ── 좌열: 이동 · 분류 · 별점·태그 ──
-                            ui.allocate_ui_with_layout(
-                                Vec2::new(COL_W, 0.0),
-                                Layout::top_down(Align::Min),
-                                |ui| {
-                                    ui.set_width(COL_W);
-                                    head(ui, tr(lang, "이동"));
-                                    row(ui, &["←", "→"], tr(lang, "이전·다음"));
-                                    row(ui, &["↑", "↓"], tr(lang, "그리드 줄 이동"));
-                                    row(ui, &[tr(lang, "휠")], tr(lang, "사진 넘김(창맞춤일 때)"));
-                                    row(ui, &["G"], tr(lang, "점프"));
-                                    row(ui, &["B"], tr(lang, "일괄 분류(그리드)"));
+                            {
+                                let ui = &mut c[0];
+                                head(ui, tr(lang, "이동"));
+                                row(ui, &["←", "→"], tr(lang, "이전·다음"));
+                                row(ui, &["↑", "↓"], tr(lang, "그리드 줄 이동"));
+                                row(ui, &[tr(lang, "휠")], tr(lang, "사진 넘김(창맞춤일 때)"));
+                                row(ui, &["G"], tr(lang, "점프"));
+                                row(ui, &["B"], tr(lang, "일괄 분류(그리드)"));
 
-                                    head(ui, tr(lang, "분류"));
-                                    row(ui, &["Q"], tr(lang, "채택"));
-                                    row(ui, &["W"], tr(lang, "보류"));
-                                    row(ui, &["E"], tr(lang, "제외"));
-                                    row(ui, &["R"], tr(lang, "해제"));
-                                    ui.label(
-                                        egui::RichText::new(tr(lang, "같은 키 재입력 = 해제(토글)"))
-                                            .font(mono(9.5))
-                                            .color(theme::INK4),
-                                    );
+                                head(ui, tr(lang, "분류"));
+                                row(ui, &["Q"], tr(lang, "채택"));
+                                row(ui, &["W"], tr(lang, "보류"));
+                                row(ui, &["E"], tr(lang, "제외"));
+                                row(ui, &["R"], tr(lang, "해제"));
+                                ui.label(
+                                    egui::RichText::new(tr(lang, "같은 키 재입력 = 해제(토글)"))
+                                        .font(mono(9.5))
+                                        .color(theme::INK4),
+                                );
 
-                                    head(ui, tr(lang, "별점·태그"));
-                                    row(ui, &["1~5"], tr(lang, "별점"));
-                                    row(ui, &["`"], tr(lang, "별점 해제"));
-                                    row(ui, &["⇧1~5"], tr(lang, "컬러 태그"));
-                                    row(ui, &["⇧0"], tr(lang, "태그 해제"));
-                                },
-                            );
-                            ui.add_space(12.0);
+                                head(ui, tr(lang, "별점·태그"));
+                                row(ui, &["1~5"], tr(lang, "별점"));
+                                row(ui, &["`"], tr(lang, "별점 해제"));
+                                row(ui, &["⇧1~5"], tr(lang, "컬러 태그"));
+                                row(ui, &["⇧0"], tr(lang, "태그 해제"));
+                            }
                             // ── 우열: 보기 · 확대 · 파일 ──
-                            ui.allocate_ui_with_layout(
-                                Vec2::new(COL_W, 0.0),
-                                Layout::top_down(Align::Min),
-                                |ui| {
-                                    ui.set_width(COL_W);
-                                    head(ui, tr(lang, "보기"));
-                                    row(ui, &["T"], tr(lang, "단일↔그리드"));
-                                    row(ui, &["D"], tr(lang, "원본(ORIG)"));
-                                    row(ui, &["I"], "EXIF");
-                                    row(ui, &["H"], tr(lang, "히스토그램"));
-                                    row(ui, &["M"], tr(lang, "촬영 위치 지도"));
-                                    row(ui, &["A"], tr(lang, "AF 포인트"));
-                                    row(ui, &["F"], tr(lang, "라벨 필터 순환"));
-                                    row(ui, &["F11"], tr(lang, "전체화면"));
+                            {
+                                let ui = &mut c[1];
+                                head(ui, tr(lang, "보기"));
+                                row(ui, &["T"], tr(lang, "단일↔그리드"));
+                                row(ui, &["D"], tr(lang, "원본(ORIG)"));
+                                row(ui, &["I"], "EXIF");
+                                row(ui, &["H"], tr(lang, "히스토그램"));
+                                row(ui, &["M"], tr(lang, "촬영 위치 지도"));
+                                row(ui, &["A"], tr(lang, "AF 포인트"));
+                                row(ui, &["F"], tr(lang, "라벨 필터 순환"));
+                                row(ui, &["F11"], tr(lang, "전체화면"));
 
-                                    head(ui, tr(lang, "확대"));
-                                    row(ui, &[tr(lang, "클릭"), "Space", "Z"], tr(lang, "창맞춤↔1:1"));
-                                    row(
-                                        ui,
-                                        &[format!("Ctrl+{}", tr(lang, "휠")).as_str(), tr(lang, "핀치")],
-                                        tr(lang, "연속 확대"),
-                                    );
-                                    row(ui, &[tr(lang, "드래그")], tr(lang, "이동(확대 중)"));
+                                head(ui, tr(lang, "확대"));
+                                row(ui, &[tr(lang, "클릭"), "Space", "Z"], tr(lang, "창맞춤↔1:1"));
+                                row(
+                                    ui,
+                                    &[format!("Ctrl+{}", tr(lang, "휠")).as_str(), tr(lang, "핀치")],
+                                    tr(lang, "연속 확대"),
+                                );
+                                row(ui, &[tr(lang, "드래그")], tr(lang, "이동(확대 중)"));
 
-                                    head(ui, tr(lang, "파일"));
-                                    row(ui, &[format!("{}O", cmd).as_str()], tr(lang, "폴더 열기"));
-                                    row(ui, &[format!("{}E", cmd).as_str(), "Enter"], tr(lang, "전송"));
-                                    row(ui, &[tr(lang, "드래그")], tr(lang, "드래그앤드롭으로 폴더 열기"));
-                                },
-                            );
+                                head(ui, tr(lang, "파일"));
+                                row(ui, &[format!("{}O", cmd).as_str()], tr(lang, "폴더 열기"));
+                                row(ui, &[format!("{}E", cmd).as_str(), "Enter"], tr(lang, "전송"));
+                                row(ui, &[tr(lang, "드래그")], tr(lang, "드래그앤드롭으로 폴더 열기"));
+                            }
                         });
                     });
 
