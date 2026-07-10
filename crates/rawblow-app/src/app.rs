@@ -1329,21 +1329,36 @@ impl RawBlowApp {
                         }
                         Key::F11 => self.fullscreen = !self.fullscreen,
                         Key::Escape => self.fullscreen = false,
-                        Key::Enter => self.open_transfer(),
                         Key::O if cmd => self.pick_folder(),
-                        // 단축키 치트시트(#66): F1 또는 ?(⇧/)로 연다. 이 핸들러는 모달이 없을 때만
-                        // 돌므로 여기서 여는 것만 처리하고, 닫기는 오버레이(ui_help)가 직접 받는다.
-                        Key::F1 => self.show_help = true,
-                        // ⇧/가 논리 Questionmark로 오는 배치용. NOTE: egui 0.29에 Key::Questionmark가
-                        // 없으면 빌드 머신에서 이 arm을 삭제한다(아래 Slash+shift만으로도 동작).
-                        Key::Questionmark => self.show_help = true,
-                        // ⇧/가 Slash+shift로 오는 배치용(위와 둘 중 하나만 도착) — 둘 다 열기로.
-                        Key::Slash if modifiers.shift => self.show_help = true,
+                        // 전송 Enter(#63)와 단축키 치트시트 열기(#66, F1·?·⇧/)는 이 이벤트 루프에서
+                        // 처리하지 않고 아래에서 consume_key로 "소비"한다 — 소비하지 않으면 같은
+                        // 프레임에 새로 열린 다이얼로그/오버레이가 그 키를 다시 읽어 열림과 동시에
+                        // 시작/닫힘이 일어난다. (자세한 이유는 루프 종료 뒤 주석 참조.)
                         _ => {}
                     }
                 }
             }
         });
+
+        // 모달을 여는 키(전송 Enter, 단축키 오버레이 ?·F1·⇧/)는 여기서 소비한다(#63/#66 회귀 수정).
+        // 소비하지 않으면 handle_keys가 모달을 연 바로 그 프레임에, 새로 열린 전송 다이얼로그·
+        // 단축키 오버레이가 같은 키를 key_pressed로 다시 읽어 "열림과 동시에 동작"이 일어난다:
+        //   • Enter → 전송 다이얼로그가 즉시 시작(Copy)/이동 확인(Move)으로 직행(설정 화면 건너뜀)
+        //   • ?·F1 → 오버레이의 닫기 키와 겹쳐 열리자마자 닫힘(키보드로는 절대 안 열림)
+        // has_modal()이 모든 모달을 포함해 이 함수는 '여는 프레임'에만 도므로, 이후 프레임엔 소비가
+        // 없어 다이얼로그 안의 Enter 시작·오버레이의 ?/F1 토글 닫기는 그대로 동작한다.
+        let open_transfer = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        let open_help = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::NONE, egui::Key::F1)
+                | i.consume_key(egui::Modifiers::NONE, egui::Key::Questionmark)
+                | i.consume_key(egui::Modifiers::SHIFT, egui::Key::Slash)
+        });
+        if open_transfer {
+            self.open_transfer();
+        }
+        if open_help {
+            self.show_help = true;
+        }
 
         // 마우스 휠 이동(단일 뷰): 창맞춤 상태에서 Ctrl 없이 휠 → 사진 넘김.
         // (확대 상태이거나 Ctrl 휠은 photo_view에서 줌으로 처리.)
