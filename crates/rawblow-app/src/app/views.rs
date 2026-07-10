@@ -130,6 +130,10 @@ impl RawBlowApp {
                             self.cache_size = None; // 설정 열 때 캐시 용량 새로 계산.
                             self.bg_hex = hex_str(self.photo_bg_rgb()); // 배경 HEX 입력 버퍼 동기화(#36).
                         }
+                        // 단축키 치트시트(#66): ⚙ 옆 작은 ? 토글(⚙과 같은 스타일). ?/F1로도 여닫는다.
+                        if toggle_btn(ui, "?", self.show_help).clicked() {
+                            self.show_help = !self.show_help;
+                        }
                     });
                 });
             });

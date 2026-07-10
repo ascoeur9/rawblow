@@ -468,6 +468,43 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "파일명 일부를 입력하세요" => ("Enter part of a filename", "ファイル名の一部を入力してください"),
         // #62 사이드카 저장 실패(상태바 3번째 상태 — saving…/saved는 영문 고정이라 표 제외)
         "저장 실패" => ("Save failed", "保存失敗"),
+        // #66 단축키 치트시트 오버레이 — 제목·부제·섹션·행 설명·키캡 낱말.
+        // ("파일"·"점프"·"보류"·"제외"·"해제"·"별점"·"폴더 열기"·"전송"·"닫기"는 위에 이미 있어 재사용.)
+        "단축키" => ("Keyboard Shortcuts", "ショートカット"),
+        "사진 위에서 바로 누르면 됩니다 — 입력창이 없어 즉시 반응" => (
+            "Press keys right over the photo — no text field, instant response",
+            "写真の上でそのまま押すだけ — 入力欄がなく即反応",
+        ),
+        "이동" => ("Move", "移動"),
+        "분류" => ("Classify", "分類"),
+        "별점·태그" => ("Rating & Tag", "評価・タグ"),
+        "보기" => ("View", "表示"),
+        "확대" => ("Zoom", "ズーム"),
+        "이전·다음" => ("Prev / Next", "前 / 次"),
+        "그리드 줄 이동" => ("Grid row move", "グリッド行移動"),
+        "사진 넘김(창맞춤일 때)" => ("Advance (when Fit)", "写真送り（フィット時）"),
+        "일괄 분류(그리드)" => ("Bulk label (grid)", "一括ラベル（グリッド）"),
+        "채택" => ("Pick", "採用"),
+        "같은 키 재입력 = 해제(토글)" => ("Same key again = clear (toggle)", "同じキーで解除（トグル）"),
+        "별점 해제" => ("Clear rating", "評価解除"),
+        "컬러 태그" => ("Color tag", "カラータグ"),
+        "태그 해제" => ("Clear tag", "タグ解除"),
+        "단일↔그리드" => ("Single / Grid", "シングル / グリッド"),
+        "원본(ORIG)" => ("Original (ORIG)", "原寸（ORIG）"),
+        "히스토그램" => ("Histogram", "ヒストグラム"),
+        "촬영 위치 지도" => ("Location map", "撮影地マップ"),
+        "AF 포인트" => ("AF points", "AFポイント"),
+        "라벨 필터 순환" => ("Cycle label filter", "ラベルフィルタ切替"),
+        "전체화면" => ("Fullscreen", "全画面"),
+        "창맞춤↔1:1" => ("Fit / 1:1", "フィット / 1:1"),
+        "연속 확대" => ("Zoom in/out", "連続ズーム"),
+        "이동(확대 중)" => ("Pan (while zoomed)", "移動（ズーム中）"),
+        "드래그앤드롭으로 폴더 열기" => ("Drag & drop to open", "ドラッグ＆ドロップで開く"),
+        "휠" => ("Wheel", "ホイール"),
+        "클릭" => ("Click", "クリック"),
+        "핀치" => ("Pinch", "ピンチ"),
+        "드래그" => ("Drag", "ドラッグ"),
+        "열기" => ("Open", "開く"),
         _ => return None,
     })
 }
@@ -571,5 +608,18 @@ mod tests {
             trf(Lang::En, "원본 삭제 실패 {} — 원본 파일이 남아 있습니다", &["2"]),
             "Failed to delete 2 originals — the source files remain"
         );
+    }
+
+    #[test]
+    fn help_overlay_strings_are_translated() {
+        // #66 단축키 치트시트: 새 키들이 En/Ja에서 한국어로 폴백되지 않는지 스팟체크.
+        for ko in ["단축키", "이동", "채택", "히스토그램", "컬러 태그", "휠"] {
+            assert_ne!(tr(Lang::En, ko), ko, "En 번역 누락: {ko}");
+            assert_ne!(tr(Lang::Ja, ko), ko, "Ja 번역 누락: {ko}");
+        }
+        assert_eq!(tr(Lang::En, "단축키"), "Keyboard Shortcuts");
+        assert_eq!(tr(Lang::Ja, "단축키"), "ショートカット");
+        // 섹션 헤더 "파일"은 기존 키 재사용(중복 추가 없이 폴백 아님).
+        assert_eq!(tr(Lang::En, "파일"), "Files");
     }
 }

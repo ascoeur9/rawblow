@@ -284,4 +284,163 @@ impl RawBlowApp {
             self.bulk_open = false;
         }
     }
+
+    /// 단축키 치트시트 오버레이(#66). 키보드 중심 앱인데 단축키 안내가 앱 안에 없어
+    /// (M/A/Z/F/백틱/⇧0 등은 어디에도 미표시) 소스나 README를 봐야 했다 — ?/F1로 여닫는다.
+    /// 표시 내용은 handle_keys의 키맵과 1:1로 맞춘다. has_modal이 열린 동안 전역 키를 막으므로
+    /// (점프·일괄과 동일) Esc·?·F1·배경 클릭을 오버레이가 직접 받아 닫는다.
+    pub(super) fn ui_help(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
+        let mut close = false;
+
+        // 한 줄 = 키캡 배지(들) + 설명. 여러 키는 배지를 나란히 둔다.
+        fn row(ui: &mut egui::Ui, keys: &[&str], desc: &str) {
+            ui.horizontal(|ui| {
+                for k in keys {
+                    kbd(ui, k);
+                    ui.add_space(3.0);
+                }
+                ui.add_space(3.0);
+                ui.label(egui::RichText::new(desc).font(prop(12.0)).color(theme::INK2));
+            });
+            ui.add_space(6.0);
+        }
+        // 섹션 머리(대문자 작은 라벨 — section_head와 같은 톤).
+        fn head(ui: &mut egui::Ui, text: &str) {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(text.to_uppercase()).font(prop(10.0)).color(theme::INK3));
+            ui.add_space(6.0);
+        }
+
+        // 뒤 화면 어둡게(dim) + 클릭 차단 — 배경 클릭 시 닫는다(다른 모달과 동일 alpha-180 검정).
+        let screen = ctx.screen_rect();
+        let dim = egui::Area::new(egui::Id::new("help_dim"))
+            .order(egui::Order::Middle)
+            .fixed_pos(Pos2::ZERO)
+            .show(ctx, |ui| {
+                ui.painter().with_clip_rect(screen).rect_filled(screen, 0.0, Color32::from_black_alpha(180));
+                ui.allocate_rect(screen, Sense::click_and_drag())
+            });
+        if dim.inner.clicked() {
+            close = true;
+        }
+
+        let cmd = cmd_key();
+        egui::Window::new("help_modal")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .fixed_size(Vec2::new(680.0, 0.0))
+            .frame(modal_frame())
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                modal_header(
+                    ui,
+                    tr(lang, "단축키"),
+                    tr(lang, "사진 위에서 바로 누르면 됩니다 — 입력창이 없어 즉시 반응"),
+                );
+                egui::ScrollArea::vertical()
+                    .max_height(460.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        const COL_W: f32 = 300.0;
+                        ui.horizontal_top(|ui| {
+                            // ── 좌열: 이동 · 분류 · 별점·태그 ──
+                            ui.allocate_ui_with_layout(
+                                Vec2::new(COL_W, 0.0),
+                                Layout::top_down(Align::Min),
+                                |ui| {
+                                    ui.set_width(COL_W);
+                                    head(ui, tr(lang, "이동"));
+                                    row(ui, &["←", "→"], tr(lang, "이전·다음"));
+                                    row(ui, &["↑", "↓"], tr(lang, "그리드 줄 이동"));
+                                    row(ui, &[tr(lang, "휠")], tr(lang, "사진 넘김(창맞춤일 때)"));
+                                    row(ui, &["G"], tr(lang, "점프"));
+                                    row(ui, &["B"], tr(lang, "일괄 분류(그리드)"));
+
+                                    head(ui, tr(lang, "분류"));
+                                    row(ui, &["Q"], tr(lang, "채택"));
+                                    row(ui, &["W"], tr(lang, "보류"));
+                                    row(ui, &["E"], tr(lang, "제외"));
+                                    row(ui, &["R"], tr(lang, "해제"));
+                                    ui.label(
+                                        egui::RichText::new(tr(lang, "같은 키 재입력 = 해제(토글)"))
+                                            .font(mono(9.5))
+                                            .color(theme::INK4),
+                                    );
+
+                                    head(ui, tr(lang, "별점·태그"));
+                                    row(ui, &["1~5"], tr(lang, "별점"));
+                                    row(ui, &["`"], tr(lang, "별점 해제"));
+                                    row(ui, &["⇧1~5"], tr(lang, "컬러 태그"));
+                                    row(ui, &["⇧0"], tr(lang, "태그 해제"));
+                                },
+                            );
+                            ui.add_space(12.0);
+                            // ── 우열: 보기 · 확대 · 파일 ──
+                            ui.allocate_ui_with_layout(
+                                Vec2::new(COL_W, 0.0),
+                                Layout::top_down(Align::Min),
+                                |ui| {
+                                    ui.set_width(COL_W);
+                                    head(ui, tr(lang, "보기"));
+                                    row(ui, &["T"], tr(lang, "단일↔그리드"));
+                                    row(ui, &["D"], tr(lang, "원본(ORIG)"));
+                                    row(ui, &["I"], "EXIF");
+                                    row(ui, &["H"], tr(lang, "히스토그램"));
+                                    row(ui, &["M"], tr(lang, "촬영 위치 지도"));
+                                    row(ui, &["A"], tr(lang, "AF 포인트"));
+                                    row(ui, &["F"], tr(lang, "라벨 필터 순환"));
+                                    row(ui, &["F11"], tr(lang, "전체화면"));
+
+                                    head(ui, tr(lang, "확대"));
+                                    row(ui, &[tr(lang, "클릭"), "Space", "Z"], tr(lang, "창맞춤↔1:1"));
+                                    row(
+                                        ui,
+                                        &[format!("Ctrl+{}", tr(lang, "휠")).as_str(), tr(lang, "핀치")],
+                                        tr(lang, "연속 확대"),
+                                    );
+                                    row(ui, &[tr(lang, "드래그")], tr(lang, "이동(확대 중)"));
+
+                                    head(ui, tr(lang, "파일"));
+                                    row(ui, &[format!("{}O", cmd).as_str()], tr(lang, "폴더 열기"));
+                                    row(ui, &[format!("{}E", cmd).as_str(), "Enter"], tr(lang, "전송"));
+                                    row(ui, &[tr(lang, "드래그")], tr(lang, "드래그앤드롭으로 폴더 열기"));
+                                },
+                            );
+                        });
+                    });
+
+                // 푸터: ?·F1 열기 — Esc 닫기 (키캡 배지).
+                ui.add_space(12.0);
+                hline_full(ui);
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    kbd(ui, "?");
+                    ui.add_space(3.0);
+                    kbd(ui, "F1");
+                    ui.add_space(5.0);
+                    ui.label(egui::RichText::new(tr(lang, "열기")).font(mono(10.0)).color(theme::INK3));
+                    ui.add_space(10.0);
+                    ui.label(egui::RichText::new("—").font(mono(10.0)).color(theme::INK4));
+                    ui.add_space(10.0);
+                    kbd(ui, "Esc");
+                    ui.add_space(5.0);
+                    ui.label(egui::RichText::new(tr(lang, "닫기")).font(mono(10.0)).color(theme::INK3));
+                });
+            });
+
+        // 닫기: 배경 클릭(close) · Esc · ?(⇧/) · F1. 모달이 전역 키를 막으므로 여기서 직접 받는다.
+        // NOTE: Key::Questionmark가 egui 0.29에 없으면 그 항만 지운다(Slash+shift·Esc·F1로 닫힘).
+        let key_close = ctx.input(|i| {
+            i.key_pressed(egui::Key::Escape)
+                || i.key_pressed(egui::Key::F1)
+                || i.key_pressed(egui::Key::Questionmark)
+                || (i.key_pressed(egui::Key::Slash) && i.modifiers.shift)
+        });
+        if close || key_close {
+            self.show_help = false;
+        }
+    }
 }

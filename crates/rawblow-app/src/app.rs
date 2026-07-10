@@ -219,6 +219,10 @@ pub struct RawBlowApp {
     bulk_hits: Vec<usize>,
     bulk_searched: bool,
 
+    // 단축키 치트시트 오버레이(#66). ?/F1·툴바 ? 버튼으로 여닫는다. 열려 있는 동안은
+    // has_modal에 포함돼 사진 단축키(QWER·별점·M/A/Z/F 등)를 가로채지 않는다.
+    show_help: bool,
+
     // 우하단 토스트(#61). 심각도별 색·지속시간 — helper(toast_info/notice/error)로만 설정.
     toast: Option<Toast>,
     // 성능 표시
@@ -374,6 +378,7 @@ impl RawBlowApp {
             bulk_target: Label::Pick,
             bulk_hits: Vec::new(),
             bulk_searched: false,
+            show_help: false,
             toast: None,
             last_frame: Instant::now(),
             frame_ms: 0.0,
@@ -1117,6 +1122,10 @@ impl eframe::App for RawBlowApp {
         if self.bulk_open {
             self.ui_bulk(ctx);
         }
+        // 단축키 치트시트 오버레이(#66). 다른 소형 모달과 같은 사슬 위치 — 어느 화면에서도 뜬다.
+        if self.show_help {
+            self.ui_help(ctx);
+        }
 
         // 새 릴리즈 안내(#33): 유휴 시 1회 백그라운드 확인. 결과 배너는 좌측 레일 정리 버튼 위에 뜬다.
         self.maybe_check_update(ctx);
@@ -1167,6 +1176,8 @@ impl RawBlowApp {
             || self.result.is_some()
             || self.jump_open
             || self.bulk_open
+            // 단축키 치트시트(#66): 열려 있으면 뒤의 사진 단축키를 막고 오버레이가 직접 Esc/?를 받는다.
+            || self.show_help
             || self.show_settings
             || self.licenses.is_some()
             || self.ai_cull_open
@@ -1316,6 +1327,14 @@ impl RawBlowApp {
                         Key::Escape => self.fullscreen = false,
                         Key::Enter => self.open_transfer(),
                         Key::O if cmd => self.pick_folder(),
+                        // 단축키 치트시트(#66): F1 또는 ?(⇧/)로 연다. 이 핸들러는 모달이 없을 때만
+                        // 돌므로 여기서 여는 것만 처리하고, 닫기는 오버레이(ui_help)가 직접 받는다.
+                        Key::F1 => self.show_help = true,
+                        // ⇧/가 논리 Questionmark로 오는 배치용. NOTE: egui 0.29에 Key::Questionmark가
+                        // 없으면 빌드 머신에서 이 arm을 삭제한다(아래 Slash+shift만으로도 동작).
+                        Key::Questionmark => self.show_help = true,
+                        // ⇧/가 Slash+shift로 오는 배치용(위와 둘 중 하나만 도착) — 둘 다 열기로.
+                        Key::Slash if modifiers.shift => self.show_help = true,
                         _ => {}
                     }
                 }
@@ -1381,6 +1400,13 @@ impl RawBlowApp {
                     ui.add_space(8.0);
                     ui.label(
                         egui::RichText::new("JPG · HEIC · PNG · RW2 · CR3 · ARW · NEF · DNG · …")
+                            .font(mono(10.0))
+                            .color(theme::INK4),
+                    );
+                    // 단축키 치트시트 힌트(#66): 앱이 키보드 중심임을 시작 화면에서 안내(?로 열림).
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(format!("? = {}", tr(lang, "단축키")))
                             .font(mono(10.0))
                             .color(theme::INK4),
                     );
