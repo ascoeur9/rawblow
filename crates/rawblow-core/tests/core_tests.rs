@@ -714,6 +714,28 @@ fn sidecar_roundtrip_restores_stars() {
     assert_eq!(s2.label, Label::Pick);
 }
 
+/// 읽기 전용 폴더에서 save가 Err를 돌려주는지(#62). 앱은 이 Err로 dirty 유지·재시도·
+/// '저장 실패' 표시를 하므로, 실패가 Ok로 삼켜지면 무음 유실 방어가 전부 무너진다.
+/// Unix 전용: 폴더 쓰기 권한 박탈(0o555)로 읽기 전용 카드·NAS를 재현한다.
+#[cfg(unix)]
+#[test]
+fn sidecar_save_returns_err_on_readonly_folder() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let folder = tmp.path();
+    std::fs::write(folder.join("IMG_1.JPG"), b"x").unwrap();
+    let mut entries = scan::scan_folder(folder, false, rawblow_core::SortOrder::Name);
+    entries[0].label = Label::Pick;
+
+    // 폴더를 읽기 전용으로 — `.rawblow` 생성부터 거부된다.
+    std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let result = sidecar::save(folder, &entries);
+    // tempdir 정리를 위해 권한 원복(검증 전에 해도 무방 — 결과는 이미 확정).
+    std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(result.is_err(), "읽기 전용 폴더에서는 Err — 무음 성공이면 유실 방어 불가");
+}
+
 #[test]
 fn thumb_cache_roundtrip() {
     use rawblow_core::cache;

@@ -558,8 +558,21 @@ impl RawBlowApp {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         // 맨 오른쪽: 자동저장 상태(레일에서 이동). right_to_left이므로 먼저 추가 = 최우측.
                         // 글자(우) 왼쪽에 상태 점을 둬 "● saved"/"● saving…"로 보이게 한다.
-                        let (dot, txt) = if self.sidecar_dirty { (theme::HOLD, "saving…") } else { (theme::OK, "saved") };
-                        ui.label(egui::RichText::new(txt).font(mono(10.5)).color(theme::INK3));
+                        // 저장 실패(#62)가 최우선: 실패 중에도 dirty가 유지된 채 재시도하므로
+                        // "saving…"으로 보이면 거짓 안심이다. 원인은 hover로(상태바 폭 유지).
+                        let (dot, txt) = if self.save_error.is_some() {
+                            (theme::REJECT, tr(self.lang, "저장 실패"))
+                        } else if self.sidecar_dirty {
+                            (theme::HOLD, "saving…")
+                        } else {
+                            (theme::OK, "saved")
+                        };
+                        let resp = ui.label(egui::RichText::new(txt).font(mono(10.5)).color(theme::INK3));
+                        if let Some(err) = &self.save_error {
+                            // 원인(원본 오류 문자열)과 대상 폴더를 hover에 — 진단은 여기서.
+                            let dir = self.folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                            resp.on_hover_text(format!("{dir}\n{err}"));
+                        }
                         ui.label(egui::RichText::new("●").color(dot).size(8.0));
                         // 그 왼쪽: 배율(단일/전체화면에서만 의미).
                         if self.view == ViewMode::Single || self.fullscreen {

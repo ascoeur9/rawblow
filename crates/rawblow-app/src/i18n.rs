@@ -84,6 +84,15 @@ fn fmt_lookup(ko: &str) -> Option<(&'static str, &'static str)> {
             "sha256 mismatch — please retry\nexpected: {}\nactual: {}",
             "sha256不一致 — もう一度お試しください\n期待値: {}\n実際: {}",
         ),
+        // #62 사이드카 저장 실패 표면화(토스트)
+        "셀렉 저장 실패: {} — 폴더 쓰기 권한·용량을 확인하세요" => (
+            "Failed to save selections: {} — check folder write permission/space",
+            "セレクトの保存に失敗: {} — フォルダの書き込み権限・空き容量を確認してください",
+        ),
+        "이전 폴더({}) 셀렉 저장 실패 — 최근 변경이 유실될 수 있습니다" => (
+            "Failed to save selections for previous folder ({}) — recent changes may be lost",
+            "前のフォルダ（{}）のセレクト保存に失敗 — 直近の変更が失われた可能性があります",
+        ),
         _ => return None,
     })
 }
@@ -435,6 +444,8 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "일부 일치" => ("partial match", "部分一致"),
         "파일명 일부(한 개)" => ("part of a filename (single)", "ファイル名の一部（1件）"),
         "파일명 일부를 입력하세요" => ("Enter part of a filename", "ファイル名の一部を入力してください"),
+        // #62 사이드카 저장 실패(상태바 3번째 상태 — saving…/saved는 영문 고정이라 표 제외)
+        "저장 실패" => ("Save failed", "保存失敗"),
         _ => return None,
     })
 }
@@ -492,5 +503,21 @@ mod tests {
             "AI culling done · Good 3 · Culled 1"
         );
         assert_eq!(trf(Lang::Ja, "1 ~ {} 사이 번호", &["42"]), "1～42 の番号");
+    }
+
+    #[test]
+    fn save_failure_strings_are_translated() {
+        // #62 저장 실패 표면화 — 실패 안내가 En/Ja에서 한국어로 폴백되지 않는지 스팟체크.
+        assert_eq!(tr(Lang::En, "저장 실패"), "Save failed");
+        assert_eq!(tr(Lang::Ja, "저장 실패"), "保存失敗");
+        // OS 오류 문자열 슬롯({})이 언어별 템플릿에서도 유지돼야 한다.
+        assert_eq!(
+            trf(Lang::En, "셀렉 저장 실패: {} — 폴더 쓰기 권한·용량을 확인하세요", &["permission denied"]),
+            "Failed to save selections: permission denied — check folder write permission/space"
+        );
+        assert_eq!(
+            trf(Lang::Ja, "이전 폴더({}) 셀렉 저장 실패 — 최근 변경이 유실될 수 있습니다", &["DCIM"]),
+            "前のフォルダ（DCIM）のセレクト保存に失敗 — 直近の変更が失われた可能性があります"
+        );
     }
 }

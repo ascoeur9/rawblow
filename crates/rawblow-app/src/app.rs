@@ -166,6 +166,13 @@ pub struct RawBlowApp {
 
     sidecar_dirty: bool,
     last_save: Instant,
+    // 사이드카 저장 실패 표면화(#62). 예전엔 save 결과를 버리고 dirty를 내려, 읽기 전용
+    // 폴더·권한·용량 부족에서 상태바가 "saved"인 채 세션 전체가 무음 유실됐다.
+    // None=정상. Some(원인)=마지막 저장 실패(상태바 '저장 실패' + hover 원인 표시).
+    save_error: Option<String>,
+    // 연속 저장 실패 횟수(#62). 재시도 백오프(sidecar_retry_interval) 판단용 —
+    // 성공하거나 폴더를 바꾸면 0으로 리셋.
+    save_fail_count: u32,
 
     transfer: Option<TransferDialogState>,
     organize: Option<OrganizeDialogState>,
@@ -334,6 +341,8 @@ impl RawBlowApp {
             generation: 0,
             sidecar_dirty: false,
             last_save: Instant::now(),
+            save_error: None,
+            save_fail_count: 0,
             transfer: None,
             organize: None,
             ai_cull_open: false,
@@ -408,10 +417,20 @@ impl RawBlowApp {
     fn open_folder(&mut self, folder: PathBuf) {
         // 폴더를 바꾸기 전, 디바운스 대기 중인 분류/별점 변경을 현재 폴더 사이드카에 먼저 확정한다.
         // (Move 후 재스캔(#24)이나 폴더 전환 시 미저장 변경이 옛 사이드카로 롤백·유실되지 않게.)
+        // 이 플러시가 실패해도 전환은 계속한다(#62): items가 곧 새 폴더 것으로 바뀌어 재시도할
+        // 원본이 사라지므로 여기서 버틸 수 없다 — 대신 아래에서 유실 가능성을 Error 토스트로 알린다.
+        let mut flush_failed: Option<String> = None;
         if self.sidecar_dirty {
             if let Some(cur) = &self.folder {
                 let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
-                let _ = sidecar::save(cur, &entries);
+                if sidecar::save(cur, &entries).is_err() {
+                    // 안내용 옛 폴더명(마지막 경로 요소, lossy). 루트 등 file_name이 없으면 전체 경로.
+                    flush_failed = Some(
+                        cur.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| cur.to_string_lossy().into_owned()),
+                    );
+                }
             }
             self.sidecar_dirty = false;
         }
@@ -462,10 +481,24 @@ impl RawBlowApp {
         self.sel_anchor = None;
         self.grid_scroll_to = None;
         self.grid_visible_rows = 0..0;
+        // 저장 실패 상태는 폴더 단위(#62) — 새 폴더는 깨끗한 상태·기본 재시도 간격으로 시작.
+        self.save_error = None;
+        self.save_fail_count = 0;
         self.cfg.push_recent(&folder.to_string_lossy());
         let _ = config::save(&self.cfg);
         self.folder = Some(folder);
         self.toast_info(trf(self.lang, "{} 항목 로드", &[&self.items.len().to_string()]));
+        // 플러시 실패 안내는 위 로드 토스트 **뒤에** 설정한다(#62): 토스트 슬롯이 하나뿐이라
+        // 마지막 설정이 이기므로, 순서가 앞서면 정보 토스트가 실패 안내를 덮어 유실이 다시
+        // 무음이 된다. (로드 안내를 굳이 막을 필요는 없고 — 정상 경로 동작 불변 — Error는
+        // 자동 만료가 없어 이 순서로도 반드시 사용자 눈에 닿는다.)
+        if let Some(name) = flush_failed {
+            self.toast_error(trf(
+                self.lang,
+                "이전 폴더({}) 셀렉 저장 실패 — 최근 변경이 유실될 수 있습니다",
+                &[&name],
+            ));
+        }
         self.schedule_cache_trim(); // 폴더 열 때 캐시 상한 정리(다른/오래된 폴더 썸네일 회수).
         // 프리페치는 폴더 전체가 아니라 현재 위치 주변 윈도우만(update에서 매 프레임 슬라이드).
     }
@@ -833,12 +866,36 @@ impl RawBlowApp {
     }
 
     fn save_sidecar_if_due(&mut self) {
-        if self.sidecar_dirty && self.last_save.elapsed() > Duration::from_millis(300) {
+        if self.sidecar_dirty && self.last_save.elapsed() > sidecar_retry_interval(self.save_fail_count) {
             if let Some(folder) = &self.folder {
                 let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
-                let _ = sidecar::save(folder, &entries);
-                self.sidecar_dirty = false;
-                self.last_save = Instant::now();
+                match sidecar::save(folder, &entries) {
+                    Ok(()) => {
+                        self.sidecar_dirty = false;
+                        self.last_save = Instant::now();
+                        self.save_error = None;
+                        self.save_fail_count = 0;
+                    }
+                    Err(e) => {
+                        // dirty를 **유지**해 위 간격으로 계속 재시도한다(#62). 예전엔 결과를
+                        // 버리고 dirty를 내려, 상태바가 "saved"인 채 읽기 전용 폴더·용량 부족에서
+                        // 세션 전체가 무음 유실됐다. last_save 갱신은 재시도 스로틀용(매 프레임
+                        // 실패 I/O 반복 방지 — 다음 시도는 sidecar_retry_interval 뒤).
+                        let msg = e.to_string();
+                        self.save_fail_count += 1;
+                        self.last_save = Instant::now();
+                        // 토스트는 첫 실패에만: Error 토스트는 수동 닫기라 재시도마다 다시 띄우면
+                        // 닫아도 계속 되살아난다. 이후엔 상태바 '저장 실패'(hover=원인)가 담당.
+                        if self.save_fail_count == 1 {
+                            self.toast_error(trf(
+                                self.lang,
+                                "셀렉 저장 실패: {} — 폴더 쓰기 권한·용량을 확인하세요",
+                                &[&msg],
+                            ));
+                        }
+                        self.save_error = Some(msg);
+                    }
+                }
             }
         }
     }
@@ -1047,6 +1104,24 @@ impl eframe::App for RawBlowApp {
 
         // 토스트 오버레이는 모든 모달·배너 위(Foreground)에 마지막으로 그린다(#61).
         self.ui_toast(ctx);
+    }
+
+    /// 종료 시 동기 플러시(#62). 마지막 라벨링 후 300ms 디바운스 창 안에서 앱을 닫으면
+    /// 그 변경이 저장되지 않은 채 사라지던 갭을 막는다. 시그니처 주의: eframe 0.29의
+    /// on_exit는 "glow" 피처가 켜져 있으면 `on_exit(&mut self, Option<&glow::Context>)`인데,
+    /// 이 앱은 default-features=false + wgpu 빌드(glow 미포함)라 인자 없는 형태다.
+    fn on_exit(&mut self) {
+        if self.sidecar_dirty {
+            if let Some(folder) = &self.folder {
+                let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
+                // 결과는 버린다 — 창이 이미 닫히는 중이라 실패해도 알릴 UI가 없다(재시도 불가,
+                // 다음 실행이 직전 정상 사이드카를 복원하는 것이 최선의 폴백).
+                let _ = sidecar::save(folder, &entries);
+            }
+        }
+        // 설정도 확정: 기존엔 설정 '돌아가기'·폴더 열기 때만 저장돼, 그 뒤 바뀐 설정
+        // (정렬·오버레이 토글 등)이 종료 시점에 따라 유실될 수 있었다(#62).
+        let _ = config::save(&self.cfg);
     }
 }
 
@@ -1318,6 +1393,18 @@ fn item_file_name(it: &Item) -> String {
     it.entry.display.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string()
 }
 
+/// 사이드카 저장 재시도 간격(#62). 평소엔 300ms(라벨링 연타를 모아 쓰는 디바운스),
+/// 3연속 실패부터는 5초로 물러난다 — 읽기 전용 폴더·죽은 NAS 마운트에 매 300ms 실패 I/O를
+/// 반복해 봐야 얻는 것 없이 디스크만 두드리고(느린 마운트에선 프레임 히치) 로그·토스트성
+/// 소음만 늘기 때문. dirty는 유지되므로 원인이 해소되면 다음 주기에 자동 복구된다.
+fn sidecar_retry_interval(fail_count: u32) -> Duration {
+    if fail_count >= 3 {
+        Duration::from_secs(5)
+    } else {
+        Duration::from_millis(300)
+    }
+}
+
 /// 평가 직후의 새 필터 index(#55). `still_visible`=방금 평가한 항목이 여전히 필터를 통과하는지,
 /// `new_len`=평가 반영 후 필터 목록 길이. 항목이 남아 있으면 한 칸 전진, 빠졌으면 목록이
 /// 당겨져 같은 index가 이미 다음 사진이므로 제자리(끝 넘침만 보정). 목록이 비면 None.
@@ -1367,5 +1454,16 @@ mod tests {
         assert_eq!(ToastKind::Info.duration(), Some(Duration::from_secs(3)));
         assert_eq!(ToastKind::Notice.duration(), Some(Duration::from_secs(6)));
         assert_eq!(ToastKind::Error.duration(), None);
+    }
+
+    #[test]
+    fn sidecar_retry_interval_backs_off_after_three_failures() {
+        use super::{sidecar_retry_interval, Duration};
+        // 정상·1~2회 실패는 300ms 디바운스 유지, 3연속 실패부터 5s 백오프(#62).
+        assert_eq!(sidecar_retry_interval(0), Duration::from_millis(300));
+        assert_eq!(sidecar_retry_interval(1), Duration::from_millis(300));
+        assert_eq!(sidecar_retry_interval(2), Duration::from_millis(300));
+        assert_eq!(sidecar_retry_interval(3), Duration::from_secs(5));
+        assert_eq!(sidecar_retry_interval(100), Duration::from_secs(5));
     }
 }
