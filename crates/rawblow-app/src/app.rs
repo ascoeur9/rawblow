@@ -85,7 +85,32 @@ struct Item {
     orient: Option<u16>,
 }
 
+/// 우하단 토스트(#61) 심각도. 지속시간이 다르다: 정보는 짧게, 알림은 조금 길게, 오류는
+/// 자동으로 사라지지 않는다(놓치면 안 되는 실패 보고 — 사용자가 클릭·✕로 닫아야 함).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ToastKind {
+    Info,
+    Notice,
+    Error,
+}
 
+impl ToastKind {
+    /// 자동 만료까지의 시간. None이면 만료 없음(오류 — 클릭 전까지 유지).
+    fn duration(self) -> Option<Duration> {
+        match self {
+            ToastKind::Info => Some(Duration::from_secs(3)),
+            ToastKind::Notice => Some(Duration::from_secs(6)),
+            ToastKind::Error => None,
+        }
+    }
+}
+
+/// 우하단에 잠깐 뜨는 상태 메시지(#61). 심각도별 색·지속시간으로 표시한다.
+struct Toast {
+    text: String,
+    at: Instant,
+    kind: ToastKind,
+}
 
 pub struct RawBlowApp {
     cfg: Config,
@@ -183,7 +208,8 @@ pub struct RawBlowApp {
     bulk_hits: Vec<usize>,
     bulk_searched: bool,
 
-    toast: Option<(String, Instant)>,
+    // 우하단 토스트(#61). 심각도별 색·지속시간 — helper(toast_info/notice/error)로만 설정.
+    toast: Option<Toast>,
     // 성능 표시
     last_frame: Instant,
     frame_ms: f32,
@@ -366,6 +392,19 @@ impl RawBlowApp {
         app
     }
 
+    // ── 토스트(#61) ──────────────────────────────────────────
+    // 우하단 오버레이 메시지. 심각도별 헬퍼로 통일해 색·지속시간이 한 곳(ToastKind)에서
+    // 결정되게 한다. 모든 설정 지점은 이 셋 중 하나만 쓴다(튜플 직접 대입 금지).
+    fn toast_info(&mut self, text: String) {
+        self.toast = Some(Toast { text, at: Instant::now(), kind: ToastKind::Info });
+    }
+    fn toast_notice(&mut self, text: String) {
+        self.toast = Some(Toast { text, at: Instant::now(), kind: ToastKind::Notice });
+    }
+    fn toast_error(&mut self, text: String) {
+        self.toast = Some(Toast { text, at: Instant::now(), kind: ToastKind::Error });
+    }
+
     fn open_folder(&mut self, folder: PathBuf) {
         // 폴더를 바꾸기 전, 디바운스 대기 중인 분류/별점 변경을 현재 폴더 사이드카에 먼저 확정한다.
         // (Move 후 재스캔(#24)이나 폴더 전환 시 미저장 변경이 옛 사이드카로 롤백·유실되지 않게.)
@@ -426,7 +465,7 @@ impl RawBlowApp {
         self.cfg.push_recent(&folder.to_string_lossy());
         let _ = config::save(&self.cfg);
         self.folder = Some(folder);
-        self.toast = Some((trf(self.lang, "{} 항목 로드", &[&self.items.len().to_string()]), Instant::now()));
+        self.toast_info(trf(self.lang, "{} 항목 로드", &[&self.items.len().to_string()]));
         self.schedule_cache_trim(); // 폴더 열 때 캐시 상한 정리(다른/오래된 폴더 썸네일 회수).
         // 프리페치는 폴더 전체가 아니라 현재 위치 주변 윈도우만(update에서 매 프레임 슬라이드).
     }
@@ -986,14 +1025,21 @@ impl eframe::App for RawBlowApp {
         // 새 릴리즈 안내(#33): 유휴 시 1회 백그라운드 확인. 결과 배너는 좌측 레일 정리 버튼 위에 뜬다.
         self.maybe_check_update(ctx);
 
-        // 토스트 만료.
-        if let Some((_, t)) = &self.toast {
-            if t.elapsed() > Duration::from_secs(3) {
-                self.toast = None;
-            } else {
-                ctx.request_repaint_after(Duration::from_millis(500));
+        // 토스트 만료(#61). 심각도별 지속시간을 따르고, 오류(duration None)는 자동으로
+        // 사라지지 않는다(사용자가 클릭·✕로 닫아야 함). 살아 있는 비오류 토스트는 만료
+        // 시점에 다시 그려 사라지도록 느린 keep-alive 리페인트를 건다.
+        if let Some(t) = &self.toast {
+            // Copy 값만 먼저 뽑아 t 차용을 끝낸다(이후 self.toast 변경과 충돌하지 않게).
+            let (dur, age) = (t.kind.duration(), t.at.elapsed());
+            match dur {
+                Some(d) if age > d => self.toast = None,
+                Some(_) => ctx.request_repaint_after(Duration::from_millis(500)),
+                None => {}
             }
         }
+
+        // 토스트 오버레이는 모든 모달·배너 위(Foreground)에 마지막으로 그린다(#61).
+        self.ui_toast(ctx);
     }
 }
 
@@ -1305,5 +1351,14 @@ mod tests {
     fn index_after_rate_empty_list_is_none() {
         // 마지막 남은 항목이 필터에서 빠져 목록이 비면 이동 없음.
         assert_eq!(index_after_rate(0, false, 0), None);
+    }
+
+    #[test]
+    fn toast_kind_duration_by_severity() {
+        use super::{Duration, ToastKind};
+        // 정보=3초, 알림=6초, 오류=만료 없음(클릭 전까지 유지)(#61).
+        assert_eq!(ToastKind::Info.duration(), Some(Duration::from_secs(3)));
+        assert_eq!(ToastKind::Notice.duration(), Some(Duration::from_secs(6)));
+        assert_eq!(ToastKind::Error.duration(), None);
     }
 }

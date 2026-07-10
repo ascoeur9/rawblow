@@ -210,7 +210,7 @@ impl RawBlowApp {
                         if toggle_btn(ui, tr(lang, "캐시 비우기"), false).clicked() {
                             let _ = cache::clear(&config::cache_dir());
                             self.cache_size = Some(cache::dir_size(&config::cache_dir()));
-                            self.toast = Some((tr(lang, "썸네일 캐시를 비웠습니다").into(), Instant::now()));
+                            self.toast_info(tr(lang, "썸네일 캐시를 비웠습니다").into());
                         }
                         if toggle_btn(ui, tr(lang, "새로고침"), false).clicked() {
                             self.cache_size = Some(cache::dir_size(&config::cache_dir()));

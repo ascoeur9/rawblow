@@ -253,7 +253,7 @@ impl RawBlowApp {
                 AiCullTarget::Stars => tr(self.lang, "AI 컬링 중 — 별점이 잠겨 있습니다"),
                 AiCullTarget::Tag => tr(self.lang, "AI 컬링 중 — 색 태그가 잠겨 있습니다"),
             };
-            self.toast = Some((msg.into(), Instant::now()));
+            self.toast_info(msg.into());
             return true;
         }
         false
@@ -386,18 +386,12 @@ impl RawBlowApp {
         if let Some(result) = done_result {
             match result {
                 Ok(()) => {
-                    self.toast = Some((
-                        tr(lang, "모델 다운로드 완료").into(),
-                        std::time::Instant::now(),
-                    ));
+                    self.toast_info(tr(lang, "모델 다운로드 완료").into());
                     // 다운로드 완료 후 다이얼로그 다시 열기.
                     self.ai_cull_open = true;
                 }
                 Err(e) => {
-                    self.toast = Some((
-                        trf(lang, "다운로드 실패: {}", &[&e]),
-                        std::time::Instant::now(),
-                    ));
+                    self.toast_error(trf(lang, "다운로드 실패: {}", &[&e]));
                     self.ai_cull_open = true;
                 }
             }
@@ -1486,10 +1480,9 @@ impl RawBlowApp {
                     save_cull_cache(&snapshot);
                 });
             } else {
-                self.toast = Some((
+                self.toast_notice(
                     tr(self.lang, "폴더가 바뀌어 AI 컬링 결과를 버렸습니다").into(),
-                    Instant::now(),
-                ));
+                );
             }
             return;
         }
@@ -1566,7 +1559,7 @@ impl RawBlowApp {
 
         if stop {
             self.cancel_ai_cull();
-            self.toast = Some((tr(lang, "AI 컬링을 취소했습니다").into(), Instant::now()));
+            self.toast_info(tr(lang, "AI 컬링을 취소했습니다").into());
         } else if keep || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.ai_cull_cancel_confirm = false;
         }
@@ -1755,15 +1748,12 @@ impl RawBlowApp {
         self.sidecar_dirty = true;
         let cache_info = if cache_hits > 0 { trf(lang, " · 캐시 {}장", &[&cache_hits.to_string()]) } else { String::new() };
         let skip_info = if skipped > 0 { trf(lang, " · 제외 {}장", &[&skipped.to_string()]) } else { String::new() };
-        self.toast = Some((
-            format!(
-                "{}{}{}{}",
-                trf(lang, "AI 컬링 완료 · 좋음 {} · 탈락 {}", &[&good.to_string(), &bad.to_string()]),
-                score_info,
-                skip_info,
-                cache_info
-            ),
-            Instant::now(),
+        self.toast_notice(format!(
+            "{}{}{}{}",
+            trf(lang, "AI 컬링 완료 · 좋음 {} · 탈락 {}", &[&good.to_string(), &bad.to_string()]),
+            score_info,
+            skip_info,
+            cache_info
         ));
     }
 }

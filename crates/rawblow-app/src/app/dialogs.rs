@@ -74,11 +74,11 @@ impl RawBlowApp {
                         close = true;
                     }
                     _ => {
-                        self.toast = Some((trf(lang, "1 ~ {} 사이 번호를 입력하세요", &[&total.max(1).to_string()]), Instant::now()));
+                        self.toast_info(trf(lang, "1 ~ {} 사이 번호를 입력하세요", &[&total.max(1).to_string()]));
                     }
                 }
             } else if q.is_empty() {
-                self.toast = Some((tr(lang, "파일명 일부를 입력하세요").into(), Instant::now()));
+                self.toast_info(tr(lang, "파일명 일부를 입력하세요").into());
             } else {
                 // 파일명 점프: 단일 항(부분일치, 대소문자 무시) → 첫 매칭.
                 let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
@@ -88,10 +88,10 @@ impl RawBlowApp {
                     if let Some(pos) = f.iter().position(|&r| r == first) {
                         self.index = pos;
                     }
-                    self.toast = Some((trf(lang, "{} 건 매칭 — 첫 항목으로", &[&hits.len().to_string()]), Instant::now()));
+                    self.toast_info(trf(lang, "{} 건 매칭 — 첫 항목으로", &[&hits.len().to_string()]));
                     close = true;
                 } else {
-                    self.toast = Some((tr(lang, "매칭 없음").into(), Instant::now()));
+                    self.toast_info(tr(lang, "매칭 없음").into());
                 }
             }
         }
@@ -273,10 +273,9 @@ impl RawBlowApp {
                 // 다음 틱에서 즉시 사이드카가 저장되도록 last_save를 과거로.
                 self.last_save = Instant::now() - Duration::from_millis(400);
             }
-            self.toast = Some((
+            self.toast_info(
                 trf(lang, "{}건 → {}", &[&self.bulk_hits.len().to_string(), target.name(lang)]),
-                Instant::now(),
-            ));
+            );
             self.bulk_open = false;
             return;
         }

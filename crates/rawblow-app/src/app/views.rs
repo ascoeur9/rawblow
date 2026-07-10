@@ -1110,4 +1110,55 @@ impl RawBlowApp {
                 }
             });
     }
+
+    /// 우하단 토스트 오버레이(#61). 심각도 점 + 메시지. 어디를 클릭하든 닫힌다(오류는
+    /// 자동 만료가 없어 이 클릭·✕가 유일한 닫기 수단). 상태바를 가리지 않게 STATUS_H+여백
+    /// 만큼 띄우고, 모든 모달·배너 위(Foreground)에 그린다. Area/Frame 구성은 전송·컬링
+    /// 카드(ui_ai_cull_dialog 등)와 같은 패턴을 그대로 답습해 egui 0.29 API 사용을 맞춘다.
+    pub(super) fn ui_toast(&mut self, ctx: &egui::Context) {
+        let Some(t) = &self.toast else { return };
+        // 심각도별 상태 점 색(기존 테마 상수 재사용): 오류=REJECT, 알림=ACCENT, 정보=INK3.
+        let dot = match t.kind {
+            ToastKind::Error => theme::REJECT,
+            ToastKind::Notice => theme::ACCENT,
+            ToastKind::Info => theme::INK3,
+        };
+        // 오류만 닫기(✕)를 함께 보인다(정보/알림은 자동으로 사라지므로 군더더기 없이).
+        let is_error = t.kind == ToastKind::Error;
+        let text = t.text.clone();
+        let resp = egui::Area::new(egui::Id::new("toast_overlay"))
+            .order(egui::Order::Foreground)
+            .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-16.0, -(STATUS_H + 12.0)))
+            .show(ctx, |ui| {
+                egui::Frame::none()
+                    .fill(theme::BG3)
+                    .stroke(Stroke::new(1.0, theme::LINE2))
+                    .rounding(6.0)
+                    .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+                    .show(ui, |ui| {
+                        ui.set_max_width(380.0);
+                        // 메시지는 여러 줄일 수 있어(예: sha256 불일치는 \n 포함) 남는 폭에서
+                        // 줄바꿈되도록 horizontal_wrapped를 쓴다(전송 다이얼로그와 같은 패턴).
+                        ui.horizontal_wrapped(|ui| {
+                            let (r, _) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
+                            ui.painter().circle_filled(r.center(), 4.0, dot);
+                            ui.add_space(4.0);
+                            ui.label(egui::RichText::new(&text).font(prop(12.0)).color(theme::INK));
+                            if is_error {
+                                ui.add_space(4.0);
+                                ui.label(egui::RichText::new("✕").font(prop(12.0)).color(theme::INK3));
+                            }
+                        });
+                    })
+                    .response
+                    .interact(Sense::click())
+            })
+            .inner;
+        if resp.hovered() {
+            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if resp.clicked() {
+            self.toast = None;
+        }
+    }
 }

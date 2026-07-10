@@ -152,7 +152,7 @@ impl RawBlowApp {
     pub(super) fn open_transfer(&mut self) {
         // 컬링 중에는 파일 이동(폴더 재스캔으로 인덱스 무효화)을 막는다.
         if self.ai_cull.is_some() {
-            self.toast = Some((tr(self.lang, "AI 컬링이 끝난 뒤 전송할 수 있습니다").into(), Instant::now()));
+            self.toast_info(tr(self.lang, "AI 컬링이 끝난 뒤 전송할 수 있습니다").into());
             return;
         }
         // 마지막 사용 옵션을 기본값으로 로드(#57). dest만 현재 폴더 기준으로 새로 제안.
@@ -166,7 +166,7 @@ impl RawBlowApp {
     /// 폴더 자동 분류 다이얼로그를 연다(#34). 기본 대상은 현재 폴더(in-place 하위폴더 생성).
     pub(super) fn open_organize(&mut self) {
         if self.ai_cull.is_some() {
-            self.toast = Some((tr(self.lang, "AI 컬링이 끝난 뒤 정리할 수 있습니다").into(), Instant::now()));
+            self.toast_info(tr(self.lang, "AI 컬링이 끝난 뒤 정리할 수 있습니다").into());
             return;
         }
         // 마지막 사용 옵션을 기본값으로 로드(#57). dest만 현재 폴더로 새로 제안.
