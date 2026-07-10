@@ -458,6 +458,53 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         ),
         "폴더 바꾸기" => ("Change Folder", "フォルダを変更"),
         "계속 컬링" => ("Keep Culling", "カリングを続行"),
+        // #70 AI 컬링 다이얼로그 기본/고급 접기 + 사진가 용어 리라벨.
+        // (옛 키 "사진을 분석해 흐림···"·"P(good) 하한"·"해밍 ≤"·"COCO 클래스명"은 무해하게 표에 남긴다.)
+        "사진을 분석해 자동 분류 — 초점·노출·수평부터 미적 AI·연사 베스트·중복 정리까지 · 전부 로컬 처리" => (
+            "Analyzes photos and auto-classifies — from focus/exposure/tilt to aesthetic AI, burst best, and dedup · all processed locally",
+            "写真を分析して自動分類 — フォーカス・露出・水平から美的AI・連写ベスト・重複整理まで · すべてローカル処理",
+        ),
+        "고급 옵션" => ("Advanced Options", "詳細オプション"),
+        "메타 필터·연사·중복·AI 축·검출" => ("meta filter · burst · dedup · AI axes · detect", "メタフィルタ・連写・重複・AI軸・検出"),
+        "고급 옵션이 적용 중입니다" => ("Advanced options are active", "詳細オプションが適用中です"),
+        "미적 점수 하한" => ("Aesthetic score min", "美的スコア下限"),
+        "차이 허용 ≤" => ("Diff tolerance ≤", "差の許容 ≤"),
+        "객체 이름(영문) — 예: person, dog" => ("Object name (English) — e.g. person, dog", "オブジェクト名（英語） — 例: person, dog"),
+        "실제 속도는 디코딩·디스크 속도에 따라 다릅니다" => ("Actual speed depends on decode and disk speed", "実際の速度はデコード・ディスク速度に依存します"),
+        "이 빌드에는 모델 다운로드가 포함되지 않았습니다" => ("This build does not include model downloads", "このビルドにはモデルダウンロードが含まれていません"),
+        // #70 주요 옵션 툴팁(사진가 친화 한 줄 설명)
+        "흐린 사진(핀이 나간 컷)을 걸러냅니다" => ("Filters out blurry (missed-focus) shots", "ブレた（ピントを外した）写真を除外します"),
+        "심하게 어둡거나 하얗게 날아간 사진을 걸러냅니다" => (
+            "Filters out badly underexposed or blown-out shots",
+            "極端に暗い・白飛びした写真を除外します",
+        ),
+        "수평이 기울어진 사진을 걸러냅니다" => ("Filters out shots with a tilted horizon", "水平が傾いた写真を除外します"),
+        "AI가 구도·분위기를 채점해 잘 나온 컷을 고릅니다 (모델 필요)" => (
+            "AI scores composition and look to pick the best shots (model required)",
+            "AIが構図・雰囲気を採点して良いカットを選びます（モデルが必要）",
+        ),
+        "높일수록 더 엄격하게 흐림으로 판정합니다" => ("Higher = stricter blur judgment", "高くするほど厳しくブレと判定します"),
+        "초점을 사진 전체가 아니라 카메라가 맞춘 AF 지점에서만 봅니다" => (
+            "Checks focus only at the camera's AF points, not the whole frame",
+            "フォーカスを写真全体ではなくカメラが合わせたAF点だけで判定します",
+        ),
+        "그래픽카드로 미적 채점을 가속합니다" => ("Accelerates aesthetic scoring on the GPU", "GPUで美的採点を高速化します"),
+        "미적 채점에 쓸 AI 모델 — 클수록 정확하지만 느립니다" => (
+            "AI model for aesthetic scoring — larger is more accurate but slower",
+            "美的採点に使うAIモデル — 大きいほど正確ですが遅くなります",
+        ),
+        "AI 미적 점수(0~1) 하한 — 이보다 낮으면 탈락합니다" => (
+            "Min AI aesthetic score (0–1) — anything lower is culled",
+            "AI美的スコア（0～1）の下限 — これ未満は落選します",
+        ),
+        "짧은 간격으로 찍힌 연사를 묶어 그룹당 베스트 N장만 남깁니다" => (
+            "Groups rapid bursts and keeps only the best N per group",
+            "短い間隔の連写をまとめてグループごとにベストN枚だけ残します",
+        ),
+        "거의 같은 장면을 묶어 베스트만 남깁니다" => (
+            "Groups near-identical shots and keeps only the best",
+            "ほぼ同じ場面をまとめてベストだけ残します",
+        ),
         // #52 점프 다이얼로그
         "한 곳으로 이동 — 순번 또는 파일명 일부" => ("Go to one spot — by position or filename part", "1か所へ移動 — 番号またはファイル名の一部"),
         "순번" => ("Number", "番号"),
@@ -560,6 +607,7 @@ mod tests {
     fn ai_cull_strings_are_translated() {
         // #50~#53 AI 컬링 UI가 En/Ja에서 한국어로 폴백되던 회귀 방지(대표 키 스팟체크).
         // #64 에러 상태 문구, #67 빈 화면 문구·필터 초기화 CTA, #72 툴바 툴팁 키도 함께 스팟체크.
+        // #70 기본/고급 접기·사진가 용어 리라벨·다운로드 미포함 빌드 문구 키도 스팟체크.
         for ko in [
             "AI 컬링",
             "컬링 시작",
@@ -575,12 +623,19 @@ mod tests {
             // #69 설정 다듬기 키(대표 2개 스팟체크).
             "기본값 복원",
             "새 버전 자동 확인",
+            // #70 기본/고급 접기·용어 리라벨 키.
+            "고급 옵션",
+            "고급 옵션이 적용 중입니다",
+            "미적 점수 하한",
+            "차이 허용 ≤",
+            "이 빌드에는 모델 다운로드가 포함되지 않았습니다",
         ] {
             assert_ne!(tr(Lang::En, ko), ko, "En 번역 누락: {ko}");
             assert_ne!(tr(Lang::Ja, ko), ko, "Ja 번역 누락: {ko}");
         }
         assert_eq!(tr(Lang::En, "AI 컬링"), "AI Culling");
         assert_eq!(tr(Lang::Ja, "AI 컬링"), "AIカリング");
+        assert_eq!(tr(Lang::En, "고급 옵션"), "Advanced Options");
         // 서식 문자열도 표에 있어야 한다(슬롯 수 유지).
         assert_eq!(
             trf(Lang::En, "AI 컬링 완료 · 좋음 {} · 탈락 {}", &["3", "1"]),

@@ -255,6 +255,11 @@ pub struct AiCullConfig {
     /// 특정 객체(COCO 클래스명) 포함 컷만.
     pub use_object: bool,
     pub object_class: String,
+
+    // ───── 다이얼로그 표시 상태(#70) ─────
+    /// '고급 옵션' 섹션 펼침 여부. 기본 접힘(옛 설정 파일도 컨테이너 serde(default)로 false).
+    /// 접혀 있어도 켜 둔 고급 옵션 값은 계속 적용된다(다이얼로그가 경고 줄로 알림).
+    pub advanced_open: bool,
 }
 
 /// 방향 필터(Tier1).
@@ -317,6 +322,7 @@ impl Default for AiCullConfig {
             use_eyes_open: false,
             use_object: false,
             object_class: String::new(),
+            advanced_open: false,
         }
     }
 }

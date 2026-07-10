@@ -496,7 +496,8 @@ impl RawBlowApp {
                                 ui.horizontal(|ui| {
                                     ui.vertical(|ui| {
                                         ui.label(egui::RichText::new(tr(lang, "AI 컬링")).font(prop(15.0)).color(theme::INK));
-                                        ui.label(egui::RichText::new(tr(lang, "사진을 분석해 흐림·노출·기울기로 자동 분류 · 전부 로컬 처리")).font(mono(10.5)).color(theme::INK3));
+                                        // 부제는 실제 기능 범위(#70): 기본 검사부터 고급(미적 AI·연사·중복)까지.
+                                        ui.label(egui::RichText::new(tr(lang, "사진을 분석해 자동 분류 — 초점·노출·수평부터 미적 AI·연사 베스트·중복 정리까지 · 전부 로컬 처리")).font(mono(10.5)).color(theme::INK3));
                                     });
                                     ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                                         let (xr, xresp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
@@ -529,27 +530,108 @@ impl RawBlowApp {
 
                 section_label(ui, "CHECKS");
                 ui.horizontal_wrapped(|ui| {
-                    if check_chip(ui, tr(lang, "초점(선명도)"), None, theme::ACCENT, c.use_focus) {
+                    // 검사 칩 툴팁(#70): ML 용어 없이 무엇을 걸러내는지 한 줄로.
+                    if check_chip_resp(ui, tr(lang, "초점(선명도)"), None, theme::ACCENT, c.use_focus)
+                        .on_hover_text(tr(lang, "흐린 사진(핀이 나간 컷)을 걸러냅니다"))
+                        .clicked()
+                    {
                         c.use_focus = !c.use_focus;
                     }
-                    if check_chip(ui, tr(lang, "노출"), None, theme::ACCENT, c.use_exposure) {
+                    if check_chip_resp(ui, tr(lang, "노출"), None, theme::ACCENT, c.use_exposure)
+                        .on_hover_text(tr(lang, "심하게 어둡거나 하얗게 날아간 사진을 걸러냅니다"))
+                        .clicked()
+                    {
                         c.use_exposure = !c.use_exposure;
                     }
-                    if check_chip(ui, tr(lang, "수평 기울기"), None, theme::ACCENT, c.use_tilt) {
+                    if check_chip_resp(ui, tr(lang, "수평 기울기"), None, theme::ACCENT, c.use_tilt)
+                        .on_hover_text(tr(lang, "수평이 기울어진 사진을 걸러냅니다"))
+                        .clicked()
+                    {
                         c.use_tilt = !c.use_tilt;
                     }
-                    if check_chip(ui, tr(lang, "미적(구도) AI"), None, theme::ACCENT, c.use_aesthetic) {
+                    if check_chip_resp(ui, tr(lang, "미적(구도) AI"), None, theme::ACCENT, c.use_aesthetic)
+                        .on_hover_text(tr(lang, "AI가 구도·분위기를 채점해 잘 나온 컷을 고릅니다 (모델 필요)"))
+                        .clicked()
+                    {
                         c.use_aesthetic = !c.use_aesthetic;
                     }
                 });
+                // 미적 모델 상태는 칩 바로 아래(#70): OPTIONS(고급 접힘) 안에 숨기면 기본
+                // 모드에서 미적 AI를 켠 새 설치가 시작 버튼이 왜 비활성인지 알 수 없다.
+                let opt_spec = c.model_spec();
+                let opt_model_ok = c.use_aesthetic && Self::model_present(opt_spec);
+                if c.use_aesthetic {
+                    if opt_model_ok {
+                        ui.label(egui::RichText::new(tr(lang, "✓ 미적 모델 준비됨")).font(mono(9.5)).color(theme::ACCENT));
+                    } else {
+                        // 다운로드 버튼이 없는 빌드에선 '아래 버튼으로'가 막다른 안내(#70) — 문구 분기.
+                        ui.label(egui::RichText::new({
+                            #[cfg(feature = "model-download")]
+                            { tr(lang, "미적 모델 없음 — 아래 버튼으로 받으세요") }
+                            #[cfg(not(feature = "model-download"))]
+                            { tr(lang, "이 빌드에는 모델 다운로드가 포함되지 않았습니다") }
+                        }).font(mono(10.0)).color(theme::WARN));
+                        #[cfg(feature = "model-download")]
+                        if ui.add(egui::Button::new(
+                            egui::RichText::new(format!("  {} ({:.0} MB)  ", tr(lang, "미적 모델 다운로드"), opt_spec.bytes as f64 / 1e6))
+                                .color(Color32::from_rgb(0x0a, 0x14, 0x20))
+                        ).fill(theme::ACCENT)).clicked() {
+                            do_download = Some(opt_spec);
+                        }
+                    }
+                }
                 ui.add_space(16.0);
 
+                // ── 고급 옵션 접기(#70) ── 기본 모드는 검사·할당·범위만 보여 진입장벽을 낮춘다.
+                // 세부 섹션(OPTIONS·METADATA·DEDUP·AI AXES·DETECT)은 이 줄로 펼치고, 상태는
+                // cfg.ai_cull에 저장돼 다음에 열 때 유지된다.
+                let fold = egui::Frame::none()
+                    .fill(theme::BG1)
+                    .stroke(Stroke::new(1.0, theme::LINE2))
+                    .rounding(6.0)
+                    .inner_margin(egui::Margin::symmetric(10.0, 7.0))
+                    .show(ui, |ui| {
+                        ui.set_width(inner_w - 20.0);
+                        ui.horizontal(|ui| {
+                            let arrow = if c.advanced_open { "▾" } else { "▸" };
+                            ui.label(egui::RichText::new(format!("{arrow} {}", tr(lang, "고급 옵션"))).font(prop(12.0)).color(theme::INK2));
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.label(egui::RichText::new(tr(lang, "메타 필터·연사·중복·AI 축·검출")).font(mono(9.5)).color(theme::INK4));
+                            });
+                        });
+                    });
+                let fold_resp = fold.response.interact(Sense::click());
+                if fold_resp.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if fold_resp.clicked() {
+                    c.advanced_open = !c.advanced_open;
+                }
+                // 접힌 동안에도 켜 둔 고급 옵션(메타 필터·연사·중복·AI 축·검출)은 계속 적용된다 —
+                // 보이지 않는 필터로 결과 수가 줄어드는 혼란을 막기 위해 경고 한 줄을 남긴다.
+                let adv_active = c.filter_orientation != config::OrientationFilter::Any
+                    || c.use_iso_max
+                    || c.use_focal_range
+                    || c.use_aperture_max
+                    || c.use_shutter_min
+                    || !c.camera_contains.trim().is_empty()
+                    || !c.lens_contains.trim().is_empty()
+                    || c.use_burst
+                    || c.use_dedup
+                    || c.use_genre
+                    || c.use_sharp_ai
+                    || c.use_face
+                    || c.use_object;
+                if !c.advanced_open && adv_active {
+                    ui.label(egui::RichText::new(tr(lang, "고급 옵션이 적용 중입니다")).font(mono(9.5)).color(theme::WARN));
+                }
+                ui.add_space(16.0);
+
+                if c.advanced_open {
                 // ── OPTIONS ── 켠 검사의 세부값. METADATA와 동일 위계: [이름/토글 | 값].
                 if c.use_focus || c.use_exposure || c.use_tilt || c.use_aesthetic {
                     section_label(ui, "OPTIONS");
                 }
-                let opt_spec = c.model_spec();
-                let opt_model_ok = c.use_aesthetic && Self::model_present(opt_spec);
                 egui::Grid::new("aicull_options_grid")
                     .num_columns(2)
                     .min_col_width(140.0)
@@ -557,9 +639,13 @@ impl RawBlowApp {
                     .show(ui, |ui| {
                         if c.use_focus {
                             ui.label(egui::RichText::new(tr(lang, "흐림 임계")).font(mono(11.0)).color(theme::INK3));
-                            ui.add(egui::Slider::new(&mut c.focus_thresh, 0.2..=0.8).fixed_decimals(2));
+                            ui.add(egui::Slider::new(&mut c.focus_thresh, 0.2..=0.8).fixed_decimals(2))
+                                .on_hover_text(tr(lang, "높일수록 더 엄격하게 흐림으로 판정합니다"));
                             ui.end_row();
-                            if check_chip(ui, tr(lang, "AF 측거점만"), None, theme::ACCENT, c.use_af_focus) {
+                            if check_chip_resp(ui, tr(lang, "AF 측거점만"), None, theme::ACCENT, c.use_af_focus)
+                                .on_hover_text(tr(lang, "초점을 사진 전체가 아니라 카메라가 맞춘 AF 지점에서만 봅니다"))
+                                .clicked()
+                            {
                                 c.use_af_focus = !c.use_af_focus;
                             }
                             ui.label("");
@@ -576,13 +662,17 @@ impl RawBlowApp {
                             ui.end_row();
                         }
                         if c.use_aesthetic {
-                            if check_chip(ui, tr(lang, "⚡ GPU 고속 모드"), None, theme::ACCENT, c.use_gpu) {
+                            if check_chip_resp(ui, tr(lang, "⚡ GPU 고속 모드"), None, theme::ACCENT, c.use_gpu)
+                                .on_hover_text(tr(lang, "그래픽카드로 미적 채점을 가속합니다"))
+                                .clicked()
+                            {
                                 c.use_gpu = !c.use_gpu;
                             }
                             ui.label("");
                             ui.end_row();
                             if !c.use_gpu {
-                                ui.label(egui::RichText::new(tr(lang, "백본")).font(mono(11.0)).color(theme::INK3));
+                                ui.label(egui::RichText::new(tr(lang, "백본")).font(mono(11.0)).color(theme::INK3))
+                                    .on_hover_text(tr(lang, "미적 채점에 쓸 AI 모델 — 클수록 정확하지만 느립니다"));
                                 ui.horizontal(|ui| {
                                     for b in ClipIqaBackbone::ALL {
                                         let sel = c.backbone == b;
@@ -602,7 +692,8 @@ impl RawBlowApp {
                                     ui,
                                     &[
                                         (tr(lang, "상위 N장"), tr(lang, "최고 점수")),
-                                        (tr(lang, "임계값"), tr(lang, "P(good) 하한")),
+                                        // 사진가 용어(#70): "P(good) 하한" → "미적 점수 하한".
+                                        (tr(lang, "임계값"), tr(lang, "미적 점수 하한")),
                                     ],
                                     topn_sel,
                                 ) {
@@ -613,27 +704,15 @@ impl RawBlowApp {
                                     ui.label(egui::RichText::new(tr(lang, "최고 N장")).font(mono(11.0)).color(theme::INK3));
                                     ui.add(egui::DragValue::new(&mut c.top_n).range(1..=9999).suffix(tr(lang, "장")));
                                 } else {
+                                    // 라벨은 짧게 유지(P(good) ≥), 뜻은 툴팁으로(#70).
                                     ui.label(egui::RichText::new(tr(lang, "P(good) ≥")).font(mono(11.0)).color(theme::INK3));
-                                    ui.add(egui::Slider::new(&mut c.aesthetic_min, 0.1..=0.9).fixed_decimals(2));
+                                    ui.add(egui::Slider::new(&mut c.aesthetic_min, 0.1..=0.9).fixed_decimals(2))
+                                        .on_hover_text(tr(lang, "AI 미적 점수(0~1) 하한 — 이보다 낮으면 탈락합니다"));
                                 }
                                 ui.end_row();
                             }
                         }
                     });
-                if c.use_aesthetic {
-                    if opt_model_ok {
-                        ui.label(egui::RichText::new(tr(lang, "✓ 미적 모델 준비됨")).font(mono(9.5)).color(theme::ACCENT));
-                    } else {
-                        ui.label(egui::RichText::new(tr(lang, "미적 모델 없음 — 아래 버튼으로 받으세요")).font(mono(10.0)).color(theme::WARN));
-                        #[cfg(feature = "model-download")]
-                        if ui.add(egui::Button::new(
-                            egui::RichText::new(format!("  {} ({:.0} MB)  ", tr(lang, "미적 모델 다운로드"), opt_spec.bytes as f64 / 1e6))
-                                .color(Color32::from_rgb(0x0a, 0x14, 0x20))
-                        ).fill(theme::ACCENT)).clicked() {
-                            do_download = Some(opt_spec);
-                        }
-                    }
-                }
                 ui.add_space(16.0);
 
                 // ── METADATA FILTER (Tier1, 모델 불필요) ── 2열 Grid로 줄맞춤:
@@ -740,7 +819,10 @@ impl RawBlowApp {
                     .min_col_width(140.0)
                     .spacing([14.0, 8.0])
                     .show(ui, |ui| {
-                        if check_chip(ui, tr(lang, "연사 베스트-N"), None, theme::ACCENT, c.use_burst) {
+                        if check_chip_resp(ui, tr(lang, "연사 베스트-N"), None, theme::ACCENT, c.use_burst)
+                            .on_hover_text(tr(lang, "짧은 간격으로 찍힌 연사를 묶어 그룹당 베스트 N장만 남깁니다"))
+                            .clicked()
+                        {
                             c.use_burst = !c.use_burst;
                         }
                         if c.use_burst {
@@ -755,12 +837,16 @@ impl RawBlowApp {
                             ui.label("");
                         }
                         ui.end_row();
-                        if check_chip(ui, tr(lang, "시각적 중복 묶기"), None, theme::ACCENT, c.use_dedup) {
+                        if check_chip_resp(ui, tr(lang, "시각적 중복 묶기"), None, theme::ACCENT, c.use_dedup)
+                            .on_hover_text(tr(lang, "거의 같은 장면을 묶어 베스트만 남깁니다"))
+                            .clicked()
+                        {
                             c.use_dedup = !c.use_dedup;
                         }
                         if c.use_dedup {
                             ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(tr(lang, "해밍 ≤")).font(mono(11.0)).color(theme::INK3));
+                                // 사진가 용어(#70): "해밍 ≤" → "차이 허용 ≤" (dHash 해밍거리).
+                                ui.label(egui::RichText::new(tr(lang, "차이 허용 ≤")).font(mono(11.0)).color(theme::INK3));
                                 ui.add(egui::DragValue::new(&mut c.dedup_hamming).range(2..=16));
                                 ui.add_space(10.0);
                                 ui.label(egui::RichText::new(tr(lang, "클러스터당")).font(mono(11.0)).color(theme::INK3));
@@ -821,7 +907,12 @@ impl RawBlowApp {
                 }
                 if c.use_sharp_ai {
                     if !Self::model_present(config::CLIP_AXES_MODEL) {
-                        ui.label(egui::RichText::new(tr(lang, "CLIP 다축 모델(89MB) 없음 — 아래 버튼으로 받으세요")).font(mono(10.0)).color(theme::WARN));
+                        ui.label(egui::RichText::new({
+                            #[cfg(feature = "model-download")]
+                            { tr(lang, "CLIP 다축 모델(89MB) 없음 — 아래 버튼으로 받으세요") }
+                            #[cfg(not(feature = "model-download"))]
+                            { tr(lang, "이 빌드에는 모델 다운로드가 포함되지 않았습니다") }
+                        }).font(mono(10.0)).color(theme::WARN));
                         #[cfg(feature = "model-download")]
                         if ui.add(egui::Button::new(
                             egui::RichText::new(format!("  {} (CLIP 다축 89MB)  ", tr(lang, "AI 선명도 모델 다운로드")))
@@ -860,7 +951,8 @@ impl RawBlowApp {
                                         ui.label(egui::RichText::new(trf(lang, "→ {}", &[rawblow_core::object_detect::COCO_NAMES[idx as usize]])).font(mono(9.5)).color(theme::INK4));
                                     }
                                     None => {
-                                        ui.label(egui::RichText::new(tr(lang, "COCO 클래스명")).font(mono(9.0)).color(theme::WARN));
+                                        // 사진가 용어(#70): "COCO 클래스명" → 예시가 있는 안내.
+                                        ui.label(egui::RichText::new(tr(lang, "객체 이름(영문) — 예: person, dog")).font(mono(9.0)).color(theme::WARN));
                                     }
                                 }
                             });
@@ -870,7 +962,12 @@ impl RawBlowApp {
                         ui.end_row();
                     });
                 if c.use_object && !Self::model_present(config::OBJECT_MODEL) {
-                    ui.label(egui::RichText::new(tr(lang, "객체 모델(YOLOv10n, 9MB) 없음 — 아래 버튼으로 받으세요")).font(mono(10.0)).color(theme::WARN));
+                    ui.label(egui::RichText::new({
+                        #[cfg(feature = "model-download")]
+                        { tr(lang, "객체 모델(YOLOv10n, 9MB) 없음 — 아래 버튼으로 받으세요") }
+                        #[cfg(not(feature = "model-download"))]
+                        { tr(lang, "이 빌드에는 모델 다운로드가 포함되지 않았습니다") }
+                    }).font(mono(10.0)).color(theme::WARN));
                     #[cfg(feature = "model-download")]
                     if ui.add(egui::Button::new(
                         egui::RichText::new(format!("  {} (YOLOv10n 9MB)  ", tr(lang, "객체 모델 다운로드")))
@@ -883,7 +980,12 @@ impl RawBlowApp {
                 }
                 // 얼굴 모델 상태(장르·얼굴 공용). 없으면 다운로드 버튼.
                 if (c.use_face || c.use_genre) && !Self::model_present(config::FACE_MODEL) {
-                    ui.label(egui::RichText::new(tr(lang, "얼굴 모델(YuNet, 0.2MB) 없음 — 아래 버튼으로 받으세요")).font(mono(10.0)).color(theme::WARN));
+                    ui.label(egui::RichText::new({
+                        #[cfg(feature = "model-download")]
+                        { tr(lang, "얼굴 모델(YuNet, 0.2MB) 없음 — 아래 버튼으로 받으세요") }
+                        #[cfg(not(feature = "model-download"))]
+                        { tr(lang, "이 빌드에는 모델 다운로드가 포함되지 않았습니다") }
+                    }).font(mono(10.0)).color(theme::WARN));
                     #[cfg(feature = "model-download")]
                     if ui.add(egui::Button::new(
                         egui::RichText::new(format!("  {} (YuNet 0.2MB)  ", tr(lang, "얼굴 모델 다운로드")))
@@ -895,6 +997,7 @@ impl RawBlowApp {
                     ui.label(egui::RichText::new(tr(lang, "✓ 얼굴 모델 준비됨 (YuNet)")).font(mono(10.0)).color(theme::ACCENT));
                 }
                 ui.add_space(16.0);
+                } // if c.advanced_open — 고급 옵션 접기 끝(#70)
 
                 if !c.any_enabled() {
                     ui.label(egui::RichText::new(tr(lang, "검사 항목을 하나 이상 켜세요.")).font(mono(10.0)).color(theme::WARN));
@@ -1016,6 +1119,8 @@ impl RawBlowApp {
                                         kbd(ui, "Esc");
                                     });
                                 });
+                                // 처리량 각주(#70): 위 수치는 모델·모드 기준의 대략치일 뿐임을 명시.
+                                ui.label(egui::RichText::new(tr(lang, "실제 속도는 디코딩·디스크 속도에 따라 다릅니다")).font(mono(8.5)).color(theme::INK4));
                             });
                     }); // card Frame
             }); // card Area

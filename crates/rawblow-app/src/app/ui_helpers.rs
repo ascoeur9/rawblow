@@ -135,6 +135,12 @@ pub(super) fn hline_full(ui: &mut egui::Ui) {
 
 /// CheckChip: 라벨색 배경(체크 시 18%)+테두리 알약. 클릭되면 true.
 pub(super) fn check_chip(ui: &mut egui::Ui, label: &str, count: Option<usize>, color: Color32, checked: bool) -> bool {
+    check_chip_resp(ui, label, count, color, checked).clicked()
+}
+
+/// check_chip의 Response 반환판(#70): 호출부가 툴팁(on_hover_text)을 붙일 수 있게 분리.
+/// 기존 check_chip 호출부는 그대로 두고, 툴팁이 필요한 곳만 이걸 쓴다.
+pub(super) fn check_chip_resp(ui: &mut egui::Ui, label: &str, count: Option<usize>, color: Color32, checked: bool) -> egui::Response {
     let fill = if checked { color.linear_multiply(0.18) } else { theme::BG1 };
     let stroke = Stroke::new(1.0, if checked { color.linear_multiply(0.6) } else { theme::LINE2 });
     let inner = egui::Frame::none()
@@ -174,7 +180,7 @@ pub(super) fn check_chip(ui: &mut egui::Ui, label: &str, count: Option<usize>, c
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    resp.clicked()
+    resp
 }
 
 /// Segmented: BG1 트랙 + 활성 칸 BG4. 각 칸은 (라벨, 서브라벨) 2줄. 클릭된 인덱스 반환.
