@@ -353,6 +353,11 @@ impl RawBlowApp {
                 crate::fonts::install(ctx, self.lang);
             }
             self.bg_hex = hex_str(self.photo_bg_rgb());
+            // 정렬도 기본값(촬영시간순)으로 즉시 반영: 다른 미러와 달리 정렬은 self.sort 재설정 +
+            // 재정렬이 필요하다. set_sort_order로 self.sort·cfg.sort·화면 순서를 함께 맞춘다
+            // (안 하면 설정 UI는 기본값을, 화면은 이전 정렬을 보여 다음 폴더 열기 전까지 어긋남).
+            let target_sort = self.cfg.sort;
+            self.set_sort_order(target_sort);
             self.settings_reset_armed = false;
             let _ = config::save(&self.cfg);
             self.schedule_cache_trim(); // 기본 상한으로 캐시 정리.
