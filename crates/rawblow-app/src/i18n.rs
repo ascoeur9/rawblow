@@ -505,6 +505,9 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "핀치" => ("Pinch", "ピンチ"),
         "드래그" => ("Drag", "ドラッグ"),
         "열기" => ("Open", "開く"),
+        // #72 툴바 툴팁 보완(Single/Grid 토글·⚙ 설정 버튼).
+        "T 키로 전환" => ("Press T to switch", "Tキーで切替"),
+        "설정" => ("Settings", "設定"),
         _ => return None,
     })
 }
@@ -550,7 +553,7 @@ mod tests {
     #[test]
     fn ai_cull_strings_are_translated() {
         // #50~#53 AI 컬링 UI가 En/Ja에서 한국어로 폴백되던 회귀 방지(대표 키 스팟체크).
-        // #64 에러 상태 문구, #67 빈 화면 문구·필터 초기화 CTA 키도 함께 스팟체크.
+        // #64 에러 상태 문구, #67 빈 화면 문구·필터 초기화 CTA, #72 툴바 툴팁 키도 함께 스팟체크.
         for ko in [
             "AI 컬링",
             "컬링 시작",
@@ -562,6 +565,7 @@ mod tests {
             "이 폴더에 표시할 사진이 없습니다",
             "필터와 일치하는 사진이 없습니다",
             "필터 초기화",
+            "T 키로 전환",
         ] {
             assert_ne!(tr(Lang::En, ko), ko, "En 번역 누락: {ko}");
             assert_ne!(tr(Lang::Ja, ko), ko, "Ja 번역 누락: {ko}");

@@ -62,10 +62,11 @@ impl RawBlowApp {
                     }
                     vsep(ui);
                     let single = self.view == ViewMode::Single;
-                    if toggle_btn(ui, "Single (T)", single).clicked() {
+                    // "(T)"만으로는 토글임이 드러나지 않아 툴팁으로 보완(#72).
+                    if toggle_btn(ui, "Single (T)", single).on_hover_text(tr(lang, "T 키로 전환")).clicked() {
                         self.view = ViewMode::Single;
                     }
-                    if toggle_btn(ui, "Grid (T)", !single).clicked() {
+                    if toggle_btn(ui, "Grid (T)", !single).on_hover_text(tr(lang, "T 키로 전환")).clicked() {
                         self.view = ViewMode::Grid;
                     }
                     vsep(ui);
@@ -125,13 +126,14 @@ impl RawBlowApp {
                             self.bulk_searched = false;
                             self.bulk_hits.clear();
                         }
-                        if toggle_btn(ui, "⚙", self.show_settings).clicked() {
+                        // 아이콘만으로는 기능이 드러나지 않아 툴팁으로 보완(#72).
+                        if toggle_btn(ui, "⚙", self.show_settings).on_hover_text(tr(lang, "설정")).clicked() {
                             self.show_settings = true;
                             self.cache_size = None; // 설정 열 때 캐시 용량 새로 계산.
                             self.bg_hex = hex_str(self.photo_bg_rgb()); // 배경 HEX 입력 버퍼 동기화(#36).
                         }
                         // 단축키 치트시트(#66): ⚙ 옆 작은 ? 토글(⚙과 같은 스타일). ?/F1로도 여닫는다.
-                        if toggle_btn(ui, "?", self.show_help).clicked() {
+                        if toggle_btn(ui, "?", self.show_help).on_hover_text(tr(lang, "단축키")).clicked() {
                             self.show_help = !self.show_help;
                         }
                     });
@@ -168,6 +170,10 @@ impl RawBlowApp {
                     p.text(Pos2::new(rect.left() + 26.0, rect.center().y), Align2::LEFT_CENTER, name, prop(11.5), theme::INK2);
                     p.text(Pos2::new(rect.right() - 36.0, rect.center().y), Align2::RIGHT_CENTER, n.to_string(), mono(11.0), theme::INK);
                     p.text(Pos2::new(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, key, mono(10.0), theme::INK3);
+                    // 클릭 가능함을 알리는 포인터 커서(#72) — 별점·태그 칩과 동일하게.
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
                     if resp.clicked() {
                         self.set_label(label);
                     }
@@ -313,6 +319,10 @@ impl RawBlowApp {
                         p.rect_filled(rect, Rounding::same(4.0), theme::BG3);
                     }
                     p.text(Pos2::new(rect.left() + 12.0, rect.center().y), Align2::LEFT_CENTER, filt.name(lang), prop(12.0), if active { theme::INK } else { theme::INK2 });
+                    // 클릭 가능함을 알리는 포인터 커서(#72) — 별점·태그 칩과 동일하게.
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
                     if resp.clicked() {
                         self.filter = filt;
                         self.index = 0;

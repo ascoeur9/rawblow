@@ -850,6 +850,18 @@ impl RawBlowApp {
         let report = self.result.clone().unwrap();
         let mut close = false;
         let mut open_dest = false;
+
+        // 뒤 화면 어둡게 + 클릭 차단(#72). 결과는 명시적으로 닫혀야 하므로 dim을
+        // 클릭해도 닫히지 않는다 — 클릭 통과만 막는다.
+        let screen = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("result_dim"))
+            .order(egui::Order::Middle)
+            .fixed_pos(Pos2::ZERO)
+            .show(ctx, |ui| {
+                ui.painter().with_clip_rect(screen).rect_filled(screen, 0.0, Color32::from_black_alpha(180));
+                let _ = ui.allocate_rect(screen, Sense::click_and_drag());
+            });
+
         egui::Window::new("transfer_result")
             .title_bar(false)
             .collapsible(false)
@@ -857,6 +869,7 @@ impl RawBlowApp {
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .fixed_size(Vec2::new(560.0, 0.0))
             .frame(modal_frame())
+            .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 // 정리(#34) 결과면 제목을 분리해 표시(#63).
                 let title = if self.result_organize { tr(lang, "정리 완료") } else { tr(lang, "전송 완료") };
