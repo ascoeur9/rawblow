@@ -131,6 +131,7 @@ impl RawBlowApp {
                             self.show_settings = true;
                             self.cache_size = None; // 설정 열 때 캐시 용량 새로 계산.
                             self.bg_hex = hex_str(self.photo_bg_rgb()); // 배경 HEX 입력 버퍼 동기화(#36).
+                            self.settings_reset_armed = false; // '기본값 복원' 확인 arm 해제(#69).
                         }
                         // 단축키 치트시트(#66): ⚙ 옆 작은 ? 토글(⚙과 같은 스타일). ?/F1로도 여닫는다.
                         if toggle_btn(ui, "?", self.show_help).on_hover_text(tr(lang, "단축키")).clicked() {
@@ -532,6 +533,10 @@ impl RawBlowApp {
                     if let Some(ver) = self.update_available.clone() {
                         ui.add_space(8.0);
                         let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 80.0), Sense::click());
+                        // ✕ dismiss 히트 영역(우상단, #69): 배너 본문과 겹치되 별개 rect·id로 상호작용을
+                        // 분리한다. 여기 클릭은 브라우저를 열지 않고 이번 세션 동안만 배너를 닫는다.
+                        let x_rect = Rect::from_min_size(Pos2::new(rect.right() - 22.0, rect.top() + 4.0), Vec2::splat(18.0));
+                        let x_resp = ui.interact(x_rect, ui.id().with("update_dismiss"), Sense::click());
                         {
                             let p = ui.painter();
                             let dark = Color32::from_rgb(0x0a, 0x14, 0x20);
@@ -560,11 +565,22 @@ impl RawBlowApp {
                                 prop(12.5),
                                 dark,
                             );
+                            // 우상단 ✕(hover 시 밝게). 배너 텍스트와 같은 dark 톤을 기본으로.
+                            p.text(
+                                x_rect.center(),
+                                Align2::CENTER_CENTER,
+                                "✕",
+                                prop(12.0),
+                                if x_resp.hovered() { theme::INK } else { dark },
+                            );
                         }
-                        if resp.hovered() {
+                        if x_resp.hovered() || resp.hovered() {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                         }
-                        if resp.clicked() {
+                        // ✕를 먼저 확인 — 겹친 배너 본문 클릭이 함께 발동해 브라우저가 열리지 않도록(#69).
+                        if x_resp.clicked() {
+                            self.update_available = None;
+                        } else if resp.clicked() {
                             open_url("https://github.com/ascoeur9/rawblow/releases/latest");
                             self.update_available = None;
                         }

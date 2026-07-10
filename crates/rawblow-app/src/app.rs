@@ -184,6 +184,9 @@ pub struct RawBlowApp {
     // 결과 모달이 전송이 아니라 폴더 정리 작업의 결과인지(#63): 제목을 "정리 완료"로 바꾸는 데 쓴다.
     result_organize: bool,
     show_settings: bool,
+    // 기본값 복원(#69): '기본값 복원' 버튼을 2단 확인으로. true면 확인 행(복원/취소)이 뜬다.
+    // 설정을 열 때마다 false로 리셋(설정을 떠나면 arm 상태가 풀린다).
+    settings_reset_armed: bool,
     // AI 컬링(#50): 설정 다이얼로그 표시 여부 + 진행 중인 채점 작업.
     ai_cull_open: bool,
     ai_cull: Option<AiCullJob>,
@@ -365,6 +368,7 @@ impl RawBlowApp {
             result: None,
             result_organize: false,
             show_settings: false,
+            settings_reset_armed: false,
             licenses: None,
             last_dest: None,
             cache_size: None,

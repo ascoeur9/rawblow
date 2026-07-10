@@ -508,6 +508,12 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         // #72 툴바 툴팁 보완(Single/Grid 토글·⚙ 설정 버튼).
         "T 키로 전환" => ("Press T to switch", "Tキーで切替"),
         "설정" => ("Settings", "設定"),
+        // #69 설정 다듬기 — 기본값 복원·자동 업데이트 확인
+        "기본값 복원" => ("Reset to Defaults", "デフォルトに戻す"),
+        "모든 설정을 기본값으로 되돌립니다" => ("This resets all settings to their defaults", "すべての設定をデフォルトに戻します"),
+        "복원" => ("Reset", "リセット"),
+        "설정을 기본값으로 되돌렸습니다" => ("Settings were reset to defaults", "設定をデフォルトに戻しました"),
+        "새 버전 자동 확인" => ("Check for new versions automatically", "新バージョンを自動確認"),
         _ => return None,
     })
 }
@@ -566,6 +572,9 @@ mod tests {
             "필터와 일치하는 사진이 없습니다",
             "필터 초기화",
             "T 키로 전환",
+            // #69 설정 다듬기 키(대표 2개 스팟체크).
+            "기본값 복원",
+            "새 버전 자동 확인",
         ] {
             assert_ne!(tr(Lang::En, ko), ko, "En 번역 누락: {ko}");
             assert_ne!(tr(Lang::Ja, ko), ko, "Ja 번역 누락: {ko}");

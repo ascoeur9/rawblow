@@ -6,15 +6,17 @@ use super::*;
 impl RawBlowApp {
     pub(super) fn ui_settings(&mut self, ctx: &egui::Context) {
         let lang = self.lang;
+        // 돌아가기(버튼·Esc 공통)와 기본값 복원은 플래그로 모아 패널을 그린 뒤 한 곳에서 실행한다 —
+        // 버튼과 Esc가 서로 다른 동작으로 어긋나지 않게(#69).
+        let mut go_back = false;
+        let mut do_reset = false;
         egui::TopBottomPanel::top("settings_top")
             .exact_height(TOOLBAR_H)
             .frame(egui::Frame::none().fill(theme::BG1).inner_margin(egui::Margin::symmetric(12.0, 6.0)))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
                     if ui.button(format!("← {}", tr(lang, "돌아가기"))).clicked() {
-                        self.show_settings = false;
-                        let _ = config::save(&self.cfg);
-                        self.schedule_cache_trim(); // 변경된 상한으로 캐시 정리.
+                        go_back = true;
                     }
                     ui.label(egui::RichText::new("Settings — Keyboard & General").font(prop(14.0)).color(theme::INK));
                 });
@@ -24,17 +26,35 @@ impl RawBlowApp {
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.label(egui::RichText::new("GENERAL").font(prop(11.0)).color(theme::INK3));
-                    ui.checkbox(&mut self.cfg.auto_advance, tr(lang, "라벨링 후 자동 전진"));
-                    ui.checkbox(&mut self.cfg.recursive, tr(lang, "하위 폴더 포함 스캔"));
-                    ui.checkbox(&mut self.cfg.show_exif, tr(lang, "EXIF 오버레이 기본 표시"));
-                    ui.checkbox(&mut self.cfg.show_histogram, tr(lang, "히스토그램 기본 표시"));
+                    // 모든 설정 컨트롤은 변경 즉시 저장(#69). config::save는 작은 원자적 JSON 쓰기라
+                    // 체크박스/드래그/텍스트 입력마다 저장해도 부담이 적다(DragValue·TextEdit의 .changed()는
+                    // 드래그 틱·키 입력마다 발생). '돌아가기' 저장은 최종 catch-all로 남긴다.
+                    if ui.checkbox(&mut self.cfg.auto_advance, tr(lang, "라벨링 후 자동 전진")).changed() {
+                        let _ = config::save(&self.cfg);
+                    }
+                    if ui.checkbox(&mut self.cfg.recursive, tr(lang, "하위 폴더 포함 스캔")).changed() {
+                        let _ = config::save(&self.cfg);
+                    }
+                    if ui.checkbox(&mut self.cfg.show_exif, tr(lang, "EXIF 오버레이 기본 표시")).changed() {
+                        let _ = config::save(&self.cfg);
+                    }
+                    if ui.checkbox(&mut self.cfg.show_histogram, tr(lang, "히스토그램 기본 표시")).changed() {
+                        let _ = config::save(&self.cfg);
+                    }
+                    if ui.checkbox(&mut self.cfg.check_updates, tr(lang, "새 버전 자동 확인")).changed() {
+                        let _ = config::save(&self.cfg);
+                    }
                     ui.horizontal(|ui| {
                         ui.label(tr(lang, "프리로드 ±"));
-                        ui.add(egui::DragValue::new(&mut self.cfg.preload).range(0..=10));
+                        if ui.add(egui::DragValue::new(&mut self.cfg.preload).range(0..=10)).changed() {
+                            let _ = config::save(&self.cfg);
+                        }
                     });
                     ui.horizontal(|ui| {
                         ui.label(tr(lang, "그리드 열 수"));
-                        ui.add(egui::DragValue::new(&mut self.cfg.grid_cols).range(4..=12));
+                        if ui.add(egui::DragValue::new(&mut self.cfg.grid_cols).range(4..=12)).changed() {
+                            let _ = config::save(&self.cfg);
+                        }
                     });
                     // 스트립·그리드 표기 크기(#44): 셀 위 선택 표시·별점·색상 태그를 크게(기본)/작게.
                     ui.horizontal(|ui| {
@@ -145,6 +165,10 @@ impl RawBlowApp {
                                 let _ = config::save(&self.cfg);
                             }
                         }
+                        // HEX 무효 입력 빨간 테두리(#69): 버퍼가 비지 않았는데 파싱 실패면 필드에 REJECT 테두리.
+                        if !self.bg_hex.is_empty() && parse_hex_rgb(&self.bg_hex).is_none() {
+                            ui.painter().rect_stroke(resp.rect, Rounding::same(2.0), Stroke::new(1.0, theme::REJECT));
+                        }
                         ui.add_space(8.0);
                         let mut rgb = self.photo_bg_rgb();
                         let mut changed = false;
@@ -190,11 +214,16 @@ impl RawBlowApp {
                             let rgb = tag.color_rgb().unwrap_or([0x6b, 0x72, 0x80]);
                             let (r, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
                             ui.painter().circle_filled(r.center(), 6.0, Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.cfg.tag_names[i])
-                                    .hint_text(tag.default_name(lang))
-                                    .desired_width(220.0),
-                            );
+                            if ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut self.cfg.tag_names[i])
+                                        .hint_text(tag.default_name(lang))
+                                        .desired_width(220.0),
+                                )
+                                .changed()
+                            {
+                                let _ = config::save(&self.cfg); // 태그 이름은 키 입력마다 즉시 저장(#69).
+                            }
                         });
                     }
 
@@ -218,12 +247,53 @@ impl RawBlowApp {
                     });
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(tr(lang, "자동 상한")).font(mono(11.0)).color(theme::INK2));
-                        ui.add(egui::DragValue::new(&mut self.cfg.cache_limit_mb).speed(64.0).range(0..=1_048_576).suffix(" MB"));
+                        if ui.add(egui::DragValue::new(&mut self.cfg.cache_limit_mb).speed(64.0).range(0..=1_048_576).suffix(" MB")).changed() {
+                            let _ = config::save(&self.cfg); // 캐시 상한 변경 즉시 저장(#69).
+                        }
                         ui.label(egui::RichText::new(tr(lang, "(0 = 무제한)")).font(mono(10.0)).color(theme::INK4));
                     });
                     ui.label(egui::RichText::new(tr(lang, "상한을 넘으면 오래된 썸네일부터 자동 삭제 — 폴더 열 때·설정 변경 시 정리됩니다.")).font(mono(10.0)).color(theme::INK4));
                     ui.label(egui::RichText::new(tr(lang, "폴더를 다시 열어도 재디코딩 없이 즉시 표시됩니다.")).font(mono(10.0)).color(theme::INK4));
-                    ui.label(egui::RichText::new(config::cache_dir().to_string_lossy().to_string()).font(mono(9.5)).color(theme::INK4));
+                    // 캐시 경로: 클릭하면 OS 파일 관리자에서 캐시 폴더를 연다(#69). hover 시 밝게 + 손가락 커서.
+                    let cache_path = config::cache_dir();
+                    let cache_path_str = cache_path.to_string_lossy().to_string();
+                    let cache_font = mono(9.5);
+                    let galley = ui.painter().layout_no_wrap(cache_path_str.clone(), cache_font.clone(), theme::INK4);
+                    let (cp_rect, cp_resp) = ui.allocate_exact_size(galley.size(), Sense::click());
+                    let cp_col = if cp_resp.hovered() { theme::INK2 } else { theme::INK4 };
+                    ui.painter().text(cp_rect.left_top(), Align2::LEFT_TOP, &cache_path_str, cache_font, cp_col);
+                    if cp_resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if cp_resp.clicked() {
+                        reveal_in_file_manager(&cache_path);
+                    }
+
+                    // ── RESET (#69): 모든 설정을 기본값으로 — 2단 인라인 확인(모달 없이) ──
+                    ui.add_space(18.0);
+                    ui.label(egui::RichText::new("RESET").font(prop(11.0)).color(theme::INK3));
+                    if !self.settings_reset_armed {
+                        if toggle_btn(ui, tr(lang, "기본값 복원"), false).clicked() {
+                            self.settings_reset_armed = true;
+                        }
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(tr(lang, "모든 설정을 기본값으로 되돌립니다")).font(mono(11.0)).color(theme::WARN));
+                            // '복원'은 경고색(WARN) 테두리 버튼으로 위험 동작임을 알린다. 실행은 패널을 그린 뒤
+                            // 한 곳(do_reset)에서 — 재동기화·폰트 교체에 ctx가 필요하고 self 대량 변경을 피하기 위해.
+                            let restore = ui.add(
+                                egui::Button::new(egui::RichText::new(tr(lang, "복원")).font(prop(12.0)).color(theme::WARN))
+                                    .fill(Color32::TRANSPARENT)
+                                    .stroke(Stroke::new(1.0, theme::WARN)),
+                            );
+                            if restore.clicked() {
+                                do_reset = true;
+                            }
+                            if toggle_btn(ui, tr(lang, "취소"), false).clicked() {
+                                self.settings_reset_armed = false;
+                            }
+                        });
+                    }
 
                     // ── ABOUT / LINKS (#18): 버전·릴리즈·이슈·제작자·cosly ──
                     ui.add_space(18.0);
@@ -252,9 +322,56 @@ impl RawBlowApp {
                     link_label(ui, "https://cosly.link", "https://cosly.link");
                 });
             });
+        // Esc = 돌아가기(#69). 라이센스 페이지가 떠 있으면 그 페이지가 Esc를 처리한다(실제로 licenses가
+        // Some이면 ui_settings가 호출되지 않지만, 방어적으로 가드). has_modal이 전역 키를 막으므로 여기가
+        // 설정 화면에서 Esc의 유일한 소비처다.
+        if self.licenses.is_none() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            go_back = true;
+        }
+        // 기본값 복원 실행(#69): 사용자 데이터(폴더 히스토리·다이얼로그 마지막 사용 옵션)는 보존하고
+        // 나머지 설정만 Config::default()로. 보존 필드는 self.cfg를 덮어쓰기 前에 clone out한다.
+        if do_reset {
+            let last_folder = self.cfg.last_folder.clone();
+            let recent_folders = self.cfg.recent_folders.clone();
+            let transfer_defaults = self.cfg.transfer_defaults.clone();
+            let organize_defaults = self.cfg.organize_defaults.clone();
+            let prev_lang = self.lang;
+            self.cfg = Config::default();
+            self.cfg.last_folder = last_folder;
+            self.cfg.recent_folders = recent_folders;
+            self.cfg.transfer_defaults = transfer_defaults;
+            self.cfg.organize_defaults = organize_defaults;
+            // 라이브 미러 재동기화(설정 컨트롤이 하던 것과 동일하게).
+            self.show_exif = self.cfg.show_exif;
+            self.show_hist = self.cfg.show_histogram;
+            self.show_map = self.cfg.show_map;
+            self.show_af = self.cfg.show_af;
+            self.grid_cols = self.cfg.grid_cols.clamp(4, 12);
+            self.lang = crate::i18n::effective_lang(&self.cfg);
+            if self.lang != prev_lang {
+                // 언어가 바뀌면 폰트 primary도 교체(#32 후속: 세로 어긋남 방지).
+                crate::fonts::install(ctx, self.lang);
+            }
+            self.bg_hex = hex_str(self.photo_bg_rgb());
+            self.settings_reset_armed = false;
+            let _ = config::save(&self.cfg);
+            self.schedule_cache_trim(); // 기본 상한으로 캐시 정리.
+            self.toast_info(tr(self.lang, "설정을 기본값으로 되돌렸습니다").into());
+        }
+        if go_back {
+            self.settings_back();
+        }
         self.grid_cols = self.cfg.grid_cols.clamp(4, 12);
         self.show_exif = self.cfg.show_exif;
         self.show_hist = self.cfg.show_histogram;
+    }
+
+    /// 설정 화면 닫기(#69): '돌아가기' 버튼과 Esc가 공유하는 단일 동작 — 저장 + 변경된 상한으로
+    /// 캐시 정리 후 닫는다. 한 곳에 모아 버튼과 Esc 동작이 어긋나지 않게 한다.
+    fn settings_back(&mut self) {
+        self.show_settings = false;
+        let _ = config::save(&self.cfg);
+        self.schedule_cache_trim(); // 변경된 상한으로 캐시 정리.
     }
 
     /// 오픈소스 라이센스 페이지(#39): 좌측 구성요소 목록(검색 가능) + 우측 라이센스 전문.

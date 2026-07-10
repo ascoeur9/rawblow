@@ -22,6 +22,11 @@ impl RawBlowApp {
                 }
             }
         }
+        // 자동 확인 끔(#69): 새 확인을 시작하지 않는다(이미 뜬 배너는 그대로 둔다). 나중에 다시 켜면
+        // update_checked가 아직 false라 그때 1회 확인한다.
+        if !self.cfg.check_updates {
+            return;
+        }
         if self.update_checked {
             return;
         }

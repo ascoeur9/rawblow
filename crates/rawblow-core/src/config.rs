@@ -539,6 +539,11 @@ pub struct Config {
     /// `Config::default()`(=true)로 채우게 해야 한다. 필드 레벨을 달면 bool 기본값 false가 되어
     /// 기존 사용자가 '작게'로 켜진다.
     pub large_badges: bool,
+    /// 새 버전 자동 확인(#69). 기본 켬. 끄면 `maybe_check_update`가 아무 것도 시작하지 않는다.
+    /// `large_badges`와 같은 이유로 **필드 레벨 `#[serde(default)]`를 달지 않는다**(달면 누락 시
+    /// bool 기본값 false가 되어 기존 사용자에게서 자동 확인이 꺼진다). 컨테이너 `#[serde(default)]`가
+    /// 누락 필드를 `Config::default()`(=true)로 채우게 한다.
+    pub check_updates: bool,
     /// AI 컬링(#50) 설정. 누락 시 기본값.
     #[serde(default)]
     pub ai_cull: AiCullConfig,
@@ -572,6 +577,7 @@ impl Default for Config {
             show_map: false,      // GPS 미니 지도(#38). 기본 off.
             show_af: false,       // AF 포인트 오버레이(#37). 기본 off.
             large_badges: true,   // 스트립·그리드 표기 크게가 기본(#44).
+            check_updates: true,  // 새 버전 자동 확인 기본 켬(#69).
             ai_cull: AiCullConfig::default(), // AI 컬링 기본 설정(#50).
             sort: crate::model::SortOrder::default(), // 촬영시간순이 기본(#56 코멘트).
             transfer_defaults: TransferDefaults::default(), // 전송 마지막 사용 옵션(#57).
