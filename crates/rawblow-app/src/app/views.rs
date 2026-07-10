@@ -661,7 +661,9 @@ impl RawBlowApp {
                             Some((t, _, s)) => (Some(t), s),
                             None => (None, Vec2::ZERO),
                         };
-                        if tex.is_none() {
+                        // 디코드가 3회 실패한 파일(decode_dead)은 썸네일이 영영 안 채워지므로
+                        // 재요청·재페인트를 걸지 않는다(#64 유휴 보장). 실패 배지는 아래 ThumbInfo.failed로 그린다.
+                        if tex.is_none() && !self.decode_dead(real) {
                             self.request_thumb(real, true); // 보이는 셀 우선
                             ui.ctx().request_repaint(); // 회색이면 채워질 때까지 재요청·재그리기(자가복구)
                         }
@@ -1014,7 +1016,7 @@ impl RawBlowApp {
             for row in pf_start..pf_end {
                 for c in 0..cols {
                     let fi = row * cols + c;
-                    if fi < f.len() && !self.thumbs.contains(f[fi]) {
+                    if fi < f.len() && !self.thumbs.contains(f[fi]) && !self.decode_dead(f[fi]) {
                         self.request_thumb(f[fi], true);
                     }
                 }
@@ -1033,7 +1035,9 @@ impl RawBlowApp {
                             Some((t, _, s)) => (Some(t), s),
                             None => (None, Vec2::ZERO),
                         };
-                        if tex.is_none() {
+                        // 디코드가 3회 실패한 파일(decode_dead)은 썸네일이 영영 안 채워지므로
+                        // 재요청·재페인트를 걸지 않는다(#64 유휴 보장). 실패 배지는 아래 ThumbInfo.failed로 그린다.
+                        if tex.is_none() && !self.decode_dead(real) {
                             self.request_thumb(real, true); // 보이는 셀 우선
                             ui.ctx().request_repaint(); // 회색이면 채워질 때까지 재요청·재그리기(자가복구)
                         }
