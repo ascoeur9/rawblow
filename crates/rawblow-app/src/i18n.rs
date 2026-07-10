@@ -69,6 +69,8 @@ fn fmt_lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         " · 제외 {}장" => (" · {} skipped", " · 除外 {}枚"),
         "1 ~ {} 사이 번호" => ("Number from 1 to {}", "1～{} の番号"),
         "1 ~ {} 사이 번호를 입력하세요" => ("Enter a number from 1 to {}", "1～{} の番号を入力してください"),
+        // #65 끝 도달 피드백
+        "마지막 사진 · 미분류 {}장" => ("Last photo · {} unrated", "最後の写真 · 未分類 {}枚"),
         "{} 건 매칭 — 첫 항목으로" => ("{} matched — jumped to first", "{} 件一致 — 最初の項目へ"),
         // #50 모델 다운로드 오류(토스트에 그대로 노출되는 문자열)
         "다운로드 실패: {}" => ("Download failed: {}", "ダウンロード失敗: {}"),
@@ -462,6 +464,9 @@ mod tests {
             trf(Lang::En, "RAW {} · 이미지 {} · {:.1} MB", &["3", "5", "12.3"]),
             "RAW 3 · Images 5 · 12.3 MB"
         );
+        // #65 끝 도달 피드백.
+        assert_eq!(trf(Lang::En, "마지막 사진 · 미분류 {}장", &["3"]), "Last photo · 3 unrated");
+        assert_eq!(trf(Lang::Ja, "마지막 사진 · 미분류 {}장", &["3"]), "最後の写真 · 未分類 3枚");
     }
 
     #[test]

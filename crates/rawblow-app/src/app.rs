@@ -779,6 +779,13 @@ impl RawBlowApp {
             return;
         }
         let cur = self.index as i64 + delta;
+        // 끝 도달 피드백(#65): 마지막 사진 너머로 더 밀면(→·휠) 조용히 멈추는 대신
+        // 남은 미분류 수를 알려 "다 봤는지"를 확인시켜 준다. 탐색 경로에만 달아
+        // 라벨링 자동 전진(advance_after_rate)의 필터 축소 케이스와는 얽히지 않는다.
+        if delta > 0 && cur >= len as i64 {
+            let unrated = self.counts().3;
+            self.toast_info(trf(self.lang, "마지막 사진 · 미분류 {}장", &[&unrated.to_string()]));
+        }
         self.index = cur.clamp(0, len as i64 - 1) as usize;
         self.full_raw = false; // 이동 시 프리뷰로 복귀
     }
