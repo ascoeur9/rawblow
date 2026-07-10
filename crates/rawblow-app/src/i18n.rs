@@ -84,6 +84,9 @@ fn fmt_lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "{} 건 매칭 — 첫 항목으로" => ("{} matched — jumped to first", "{} 件一致 — 最初の項目へ"),
         // #50 모델 다운로드 오류(토스트에 그대로 노출되는 문자열)
         "다운로드 실패: {}" => ("Download failed: {}", "ダウンロード失敗: {}"),
+        // #71 영어 하드코딩이던 HTTP/mkdir 에러도 번역.
+        "HTTP 오류: {}" => ("HTTP error: {}", "HTTPエラー: {}"),
+        "폴더 생성 실패: {}" => ("Failed to create folder: {}", "フォルダ作成失敗: {}"),
         "파일 생성: {}" => ("create file: {}", "ファイル作成: {}"),
         "쓰기 오류: {}" => ("write error: {}", "書き込みエラー: {}"),
         "읽기 오류: {}" => ("read error: {}", "読み取りエラー: {}"),
@@ -444,6 +447,7 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "RN50 (GPU 고속)" => ("RN50 (GPU fast)", "RN50（GPU高速）"),
         "모델 다운로드" => ("Model Download", "モデルダウンロード"),
         "모델 다운로드 완료" => ("Model download complete", "モデルのダウンロード完了"),
+        "모델 다운로드를 취소했습니다" => ("Model download canceled", "モデルのダウンロードをキャンセルしました"), // #71
         "연결 끊김" => ("connection lost", "接続が切断されました"),
         "폴더가 바뀌어 AI 컬링 결과를 버렸습니다" => ("Folder changed — AI culling results were discarded", "フォルダが変わったためAIカリング結果を破棄しました"),
         "AI 컬링 진행 중" => ("AI Culling in Progress", "AIカリング進行中"),
@@ -636,6 +640,11 @@ mod tests {
         assert_eq!(tr(Lang::En, "AI 컬링"), "AI Culling");
         assert_eq!(tr(Lang::Ja, "AI 컬링"), "AIカリング");
         assert_eq!(tr(Lang::En, "고급 옵션"), "Advanced Options");
+        // #71 모델 다운로드 모달 — 취소 토스트·HTTP/mkdir 에러 번역.
+        assert_eq!(tr(Lang::En, "모델 다운로드를 취소했습니다"), "Model download canceled");
+        assert_eq!(tr(Lang::Ja, "모델 다운로드를 취소했습니다"), "モデルのダウンロードをキャンセルしました");
+        assert_eq!(trf(Lang::En, "HTTP 오류: {}", &["timeout"]), "HTTP error: timeout");
+        assert_eq!(trf(Lang::Ja, "폴더 생성 실패: {}", &["denied"]), "フォルダ作成失敗: denied");
         // 서식 문자열도 표에 있어야 한다(슬롯 수 유지).
         assert_eq!(
             trf(Lang::En, "AI 컬링 완료 · 좋음 {} · 탈락 {}", &["3", "1"]),

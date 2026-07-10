@@ -144,15 +144,23 @@ pub(super) enum ModelDlMsg {
     Progress(u64, u64),
     /// 다운로드+검증 완료. Err이면 오류 메시지.
     Done(Result<(), String>),
+    /// 사용자 취소(#71). 스레드가 부분 파일(.tmp)을 지운 뒤 보낸다 — 수신 시 다이얼로그 복귀.
+    Canceled,
 }
 
 /// 진행 중인 모델 다운로드.
 #[cfg(feature = "model-download")]
 pub(super) struct ModelDlJob {
     pub(super) rx: crossbeam_channel::Receiver<ModelDlMsg>,
+    /// 취소 요청 플래그(#71). 모달의 취소 버튼·Esc가 켜고, 다운로드 루프가 청크마다 확인한다.
+    pub(super) cancel: Arc<AtomicBool>,
     pub(super) label: String,
     pub(super) done: u64,
     pub(super) total: u64,
+    /// 속도 표시용 직전 샘플(시각, 그 시점 누적 바이트)(#71). UI 스레드에서만 읽고 쓴다.
+    pub(super) last_sample: (Instant, u64),
+    /// 지수평활(EMA)한 다운로드 속도(bytes/s)(#71). 0이면 아직 표본 없음.
+    pub(super) speed_bps: f64,
 }
 
 /// AI 컬링 메타 수집 결과(카메라/렌즈 distinct, 정렬됨).
@@ -278,19 +286,21 @@ impl RawBlowApp {
         let sha = spec.sha256.to_string();
         let expected = spec.bytes;
         let (tx, rx) = crossbeam_channel::unbounded::<ModelDlMsg>();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_t = cancel.clone();
         let lang = self.lang; // 오류 메시지가 토스트로 사용자에게 노출되므로 번역해 보낸다.
         std::thread::spawn(move || {
             use std::io::{Read, Write};
             if let Some(parent) = dest.parent() {
                 if let Err(e) = std::fs::create_dir_all(parent) {
-                    let _ = tx.send(ModelDlMsg::Done(Err(format!("mkdir: {e}"))));
+                    let _ = tx.send(ModelDlMsg::Done(Err(trf(lang, "폴더 생성 실패: {}", &[&e.to_string()]))));
                     return;
                 }
             }
             let resp = match ureq::get(&url).call() {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = tx.send(ModelDlMsg::Done(Err(format!("HTTP: {e}"))));
+                    let _ = tx.send(ModelDlMsg::Done(Err(trf(lang, "HTTP 오류: {}", &[&e.to_string()]))));
                     return;
                 }
             };
@@ -306,6 +316,14 @@ impl RawBlowApp {
             let mut buf = vec![0u8; 1 << 16];
             let mut downloaded = 0u64;
             loop {
+                // 취소(#71): 청크마다 확인. 파일 핸들을 닫고(Windows 삭제 요건) 부분 파일을
+                // 지운 뒤 별도 결과로 알린다 — 실패와 구분해 토스트/복귀 처리가 다르다.
+                if cancel_t.load(Ordering::Relaxed) {
+                    drop(file);
+                    let _ = std::fs::remove_file(&tmp);
+                    let _ = tx.send(ModelDlMsg::Canceled);
+                    return;
+                }
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
@@ -364,24 +382,40 @@ impl RawBlowApp {
             }
             let _ = tx.send(ModelDlMsg::Done(Ok(())));
         });
-        self.model_dl = Some(ModelDlJob { rx, label, done: 0, total: expected });
+        self.model_dl = Some(ModelDlJob {
+            rx,
+            cancel,
+            label,
+            done: 0,
+            total: expected,
+            last_sample: (Instant::now(), 0),
+            speed_bps: 0.0,
+        });
     }
 
-    /// 모델 다운로드 진행 모달(#50).
+    /// 모델 다운로드 진행 모달(#50). 취소 버튼·Esc, 퍼센트·속도 표시(#71).
     #[cfg(feature = "model-download")]
     pub(super) fn ui_model_dl_progress(&mut self, ctx: &egui::Context) {
         let lang = self.lang;
         let mut job = self.model_dl.take().unwrap();
         let mut done_result: Option<Result<(), String>> = None;
+        let mut canceled = false;
         loop {
             match job.rx.try_recv() {
                 Ok(ModelDlMsg::Progress(d, t)) => { job.done = d; job.total = t; }
                 Ok(ModelDlMsg::Done(r)) => { done_result = Some(r); break; }
+                Ok(ModelDlMsg::Canceled) => { canceled = true; break; }
                 Err(crossbeam_channel::TryRecvError::Empty) => break,
                 Err(crossbeam_channel::TryRecvError::Disconnected) => {
                     done_result = Some(Err(tr(lang, "연결 끊김").into())); break;
                 }
             }
+        }
+        if canceled {
+            // 스레드가 부분 파일(.tmp)을 정리하고 보낸 취소 확인(#71). 성공/실패와 같은 복귀 흐름.
+            self.toast_info(tr(lang, "모델 다운로드를 취소했습니다").into());
+            self.ai_cull_open = true;
+            return;
         }
         if let Some(result) = done_result {
             match result {
@@ -403,6 +437,15 @@ impl RawBlowApp {
         } else {
             0.0
         };
+        // 속도(#71): UI 샘플 간 (증가 바이트 ÷ 경과 시간)을 EMA(0.3)로 평활해 요동을 줄인다.
+        // 다운로드 스레드는 누적 바이트만 보내고 표본화·평활은 UI 쪽에서 한다.
+        let now = Instant::now();
+        let dt = now.duration_since(job.last_sample.0).as_secs_f64();
+        if dt >= 0.25 {
+            let inst = job.done.saturating_sub(job.last_sample.1) as f64 / dt;
+            job.speed_bps = if job.speed_bps > 0.0 { job.speed_bps * 0.7 + inst * 0.3 } else { inst };
+            job.last_sample = (now, job.done);
+        }
         let mb_done = job.done as f32 / 1_000_000.0;
         let mb_total = job.total as f32 / 1_000_000.0;
         let screen = ctx.screen_rect();
@@ -413,6 +456,7 @@ impl RawBlowApp {
                 ui.painter().with_clip_rect(screen).rect_filled(screen, 0.0, Color32::from_black_alpha(180));
                 let _ = ui.allocate_rect(screen, Sense::click_and_drag());
             });
+        let mut do_cancel = false;
         egui::Window::new("model_dl_modal")
             .title_bar(false)
             .collapsible(false)
@@ -426,11 +470,29 @@ impl RawBlowApp {
                 ui.add(egui::ProgressBar::new(frac).fill(theme::ACCENT).desired_height(10.0));
                 ui.add_space(10.0);
                 ui.label(
-                    egui::RichText::new(format!("{:.1} / {:.1} MB", mb_done, mb_total))
-                        .font(mono(11.0))
-                        .color(theme::INK3),
+                    egui::RichText::new(format!(
+                        "{:.1} / {:.1} MB · {:.0}% · {:.1} MB/s",
+                        mb_done,
+                        mb_total,
+                        frac * 100.0,
+                        job.speed_bps / 1e6
+                    ))
+                    .font(mono(11.0))
+                    .color(theme::INK3),
                 );
+                ui.add_space(12.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if toggle_btn(ui, tr(lang, "취소"), false).clicked() {
+                        do_cancel = true;
+                    }
+                    ui.add_space(5.0);
+                    kbd(ui, "Esc");
+                });
             });
+        if do_cancel || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            // 플래그만 켠다 — 루프가 다음 청크에서 확인해 .tmp 정리 후 Canceled를 보내면 닫힌다.
+            job.cancel.store(true, Ordering::Relaxed);
+        }
         self.model_dl = Some(job);
     }
 
