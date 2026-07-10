@@ -320,7 +320,7 @@ impl RawBlowApp {
                                 ui.set_width(616.0);
                                 // ── SCOPE ── 전송 대상 범위(#68): 전체 폴더 vs 현재 필터. AI 컬링과 동일한 세그먼트.
                                 // 필터가 없으면 두 카운트가 같지만 특수처리하지 않는다(그대로 노출).
-                                section_label(ui, "SCOPE");
+                                section_label(ui, tr(lang, "범위"));
                                 let scope_sel = if st.scope_all { 0 } else { 1 };
                                 let all_lbl = trf(lang, "{} 항목", &[&total_items.to_string()]);
                                 let filt_lbl = trf(lang, "{} 항목", &[&filtered_count.to_string()]);
@@ -328,7 +328,7 @@ impl RawBlowApp {
                                     st.scope_all = i == 0;
                                 }
                                 ui.add_space(16.0);
-                                section_label(ui, "SOURCE LABELS");
+                                section_label(ui, tr(lang, "원본 라벨"));
                                 ui.horizontal_wrapped(|ui| {
                                     for (label, n) in [(Label::Pick, pick), (Label::Hold, hold), (Label::Reject, reject), (Label::Unrated, unrated)] {
                                         let on = st.labels.contains(&label);
@@ -344,7 +344,7 @@ impl RawBlowApp {
                                 ui.add_space(16.0);
 
                                 // 별점 기준(#23): 라벨과 합집합(OR). 각 별점 칸은 독립 체크.
-                                section_label(ui, "STAR RATING");
+                                section_label(ui, tr(lang, "별점 기준"));
                                 ui.horizontal_wrapped(|ui| {
                                     for n in 1..=5u8 {
                                         let on = st.stars.contains(&n);
@@ -363,7 +363,7 @@ impl RawBlowApp {
                                 ui.add_space(16.0);
 
                                 // 컬러 태그 기준(#27): 라벨·별점과 합집합(OR). 태그별 하위폴더 분기 옵션.
-                                section_label(ui, "COLOR TAGS");
+                                section_label(ui, tr(lang, "컬러 태그 기준"));
                                 ui.horizontal_wrapped(|ui| {
                                     for (i, tag) in ColorTag::ALL.iter().enumerate() {
                                         let on = st.tags.contains(tag);
@@ -384,27 +384,27 @@ impl RawBlowApp {
                                 }
                                 ui.add_space(16.0);
 
-                                section_label(ui, "ACTION");
+                                section_label(ui, tr(lang, "동작"));
                                 let act_sel = if st.action == Action::Copy { 0 } else { 1 };
-                                if let Some(i) = segmented(ui, &[("Copy", tr(lang, "원본 유지")), ("Move", tr(lang, "원본 이동"))], act_sel) {
+                                if let Some(i) = segmented(ui, &[(tr(lang, "복사"), tr(lang, "원본 유지")), (tr(lang, "이동"), tr(lang, "원본 이동"))], act_sel) {
                                     st.action = if i == 0 { Action::Copy } else { Action::Move };
                                     // Copy로 되돌리면 확인 오버레이 상태를 해제(#63).
                                     if st.action == Action::Copy { st.confirm_move = false; }
                                 }
                                 ui.add_space(16.0);
 
-                                section_label(ui, "COMPANIONS");
+                                section_label(ui, tr(lang, "동반 파일"));
                                 let comp_sel = match st.companions { Companions::Both => 0, Companions::RawOnly => 1, Companions::ImageOnly => 2 };
                                 if let Some(i) = segmented(ui, &[(tr(lang, "RAW+이미지"), tr(lang, "페어 함께")), (tr(lang, "RAW만"), tr(lang, "RAW만")), (tr(lang, "이미지만"), tr(lang, "JPG만"))], comp_sel) {
                                     st.companions = [Companions::Both, Companions::RawOnly, Companions::ImageOnly][i];
                                 }
                                 ui.add_space(16.0);
 
-                                section_label(ui, "DESTINATION");
+                                section_label(ui, tr(lang, "대상 폴더"));
                                 ui.horizontal(|ui| {
                                     let rest = (ui.available_width() - 96.0).max(120.0);
                                     ui.add(egui::TextEdit::singleline(&mut st.dest).font(mono(12.0)).desired_width(rest));
-                                    if toggle_btn(ui, "Browse…", false).clicked() {
+                                    if toggle_btn(ui, tr(lang, "찾아보기…"), false).clicked() {
                                         if let Some(d) = rfd::FileDialog::new().pick_folder() {
                                             st.dest = d.to_string_lossy().to_string();
                                         }
@@ -412,7 +412,7 @@ impl RawBlowApp {
                                 });
                                 ui.add_space(16.0);
 
-                                section_label(ui, "ON FILENAME CONFLICT");
+                                section_label(ui, tr(lang, "이름 충돌 시"));
                                 let conf_sel = if st.conflict == ConflictPolicy::AutoIncrement { 0 } else { 1 };
                                 if let Some(i) = segmented(ui, &[(tr(lang, "자동 일련번호"), tr(lang, "_001 접미")), (tr(lang, "건너뛰기"), tr(lang, "기존 유지"))], conf_sel) {
                                     st.conflict = if i == 0 { ConflictPolicy::AutoIncrement } else { ConflictPolicy::Skip };
@@ -420,7 +420,7 @@ impl RawBlowApp {
                                 ui.add_space(16.0);
 
                                 // 분류 기반 파일명 변경(#26): 프리셋 + 자유 템플릿 + 라이브 프리뷰.
-                                section_label(ui, "RENAME");
+                                section_label(ui, tr(lang, "리네임"));
                                 let modes: [(RenameMode, &str); 4] = [
                                     (RenameMode::Off, tr(lang, "원본 유지")),
                                     (RenameMode::Seq, tr(lang, "순번 (1,2,3)")),
@@ -481,7 +481,7 @@ impl RawBlowApp {
                             .show(ui, |ui| {
                                 ui.set_width(616.0);
                                 ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new("WILL TRANSFER").font(prop(10.0)).color(theme::INK3));
+                                    ui.label(egui::RichText::new(tr(lang, "전송 대상")).font(prop(10.0)).color(theme::INK3));
                                     ui.add_space(8.0);
                                     ui.label(egui::RichText::new(plan.len().to_string()).font(mono(13.0)).color(theme::ACCENT));
                                     ui.label(egui::RichText::new(tr(lang, "파일")).font(mono(10.0)).color(theme::INK3));
@@ -888,14 +888,14 @@ impl RawBlowApp {
                 }
                 if !report.renamed.is_empty() {
                     ui.add_space(8.0);
-                    ui.label(egui::RichText::new(format!("RENAMED · {}", report.renamed.len())).font(prop(10.0)).color(theme::WARN));
+                    ui.label(egui::RichText::new(format!("{} · {}", tr(lang, "이름 변경"), report.renamed.len())).font(prop(10.0)).color(theme::WARN));
                     for (a, b) in report.renamed.iter().take(10) {
                         ui.label(egui::RichText::new(format!("{a} → {b}")).font(mono(10.5)).color(theme::INK3));
                     }
                 }
                 if !report.failed.is_empty() {
                     ui.add_space(8.0);
-                    ui.label(egui::RichText::new(format!("FAILED · {}", report.failed.len())).font(prop(10.0)).color(theme::REJECT));
+                    ui.label(egui::RichText::new(format!("{} · {}", tr(lang, "실패 목록"), report.failed.len())).font(prop(10.0)).color(theme::REJECT));
                     for (p, e) in report.failed.iter().take(5) {
                         ui.label(egui::RichText::new(format!("{} — {e}", p.display())).font(mono(10.0)).color(theme::INK3));
                     }
@@ -1003,7 +1003,7 @@ impl RawBlowApp {
                     tr(lang, "폴더 안 사진을 기준별 하위폴더로 정리 · 셀렉 전송과 별개"),
                 );
 
-                section_label(ui, "BY");
+                section_label(ui, tr(lang, "기준"));
                 let keys: [(OrganizeKey, &str); 4] = [
                     (OrganizeKey::Date, tr(lang, "촬영일")),
                     (OrganizeKey::Camera, tr(lang, "카메라")),
@@ -1019,20 +1019,20 @@ impl RawBlowApp {
                 });
                 ui.add_space(16.0);
 
-                section_label(ui, "ACTION");
+                section_label(ui, tr(lang, "동작"));
                 let act_sel = if st.action == Action::Copy { 0 } else { 1 };
-                if let Some(i) = segmented(ui, &[("Copy", tr(lang, "원본 유지")), ("Move", tr(lang, "원본 이동"))], act_sel) {
+                if let Some(i) = segmented(ui, &[(tr(lang, "복사"), tr(lang, "원본 유지")), (tr(lang, "이동"), tr(lang, "원본 이동"))], act_sel) {
                     st.action = if i == 0 { Action::Copy } else { Action::Move };
                     // Copy로 되돌리면 확인 오버레이 상태를 해제(#63).
                     if st.action == Action::Copy { st.confirm_move = false; }
                 }
                 ui.add_space(16.0);
 
-                section_label(ui, "DESTINATION");
+                section_label(ui, tr(lang, "대상 폴더"));
                 ui.horizontal(|ui| {
                     let rest = (ui.available_width() - 96.0).max(120.0);
                     ui.add(egui::TextEdit::singleline(&mut st.dest).font(mono(12.0)).desired_width(rest));
-                    if toggle_btn(ui, "Browse…", false).clicked() {
+                    if toggle_btn(ui, tr(lang, "찾아보기…"), false).clicked() {
                         if let Some(d) = rfd::FileDialog::new().pick_folder() {
                             st.dest = d.to_string_lossy().to_string();
                         }
@@ -1042,7 +1042,7 @@ impl RawBlowApp {
                 ui.label(egui::RichText::new(tr(lang, "대상 폴더 안에 기준별 하위폴더가 생성됩니다.")).font(mono(10.0)).color(theme::INK4));
                 ui.add_space(16.0);
 
-                section_label(ui, "ON FILENAME CONFLICT");
+                section_label(ui, tr(lang, "이름 충돌 시"));
                 let conf_sel = if st.conflict == ConflictPolicy::AutoIncrement { 0 } else { 1 };
                 if let Some(i) = segmented(ui, &[(tr(lang, "자동 일련번호"), tr(lang, "_001 접미")), (tr(lang, "건너뛰기"), tr(lang, "기존 유지"))], conf_sel) {
                     st.conflict = if i == 0 { ConflictPolicy::AutoIncrement } else { ConflictPolicy::Skip };
@@ -1051,7 +1051,7 @@ impl RawBlowApp {
 
                 // 미리보기/안내: 확장자는 즉석 폴더 분포, EXIF 기준은 실행 중 분류 안내.
                 if st.key == OrganizeKey::Extension && !ext_breakdown.is_empty() {
-                    section_label(ui, "PREVIEW");
+                    section_label(ui, tr(lang, "미리보기"));
                     for (folder, n) in ext_breakdown.iter().take(6) {
                         ui.label(egui::RichText::new(format!("{}/  ·  {}", folder, n)).font(mono(10.5)).color(theme::INK3));
                     }
@@ -1068,7 +1068,7 @@ impl RawBlowApp {
                 ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0, theme::LINE));
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("WILL ORGANIZE").font(prop(10.0)).color(theme::INK3));
+                    ui.label(egui::RichText::new(tr(lang, "정리 대상")).font(prop(10.0)).color(theme::INK3));
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new(file_count.to_string()).font(mono(13.0)).color(theme::ACCENT));
                     ui.label(egui::RichText::new(tr(lang, "파일")).font(mono(10.0)).color(theme::INK3));

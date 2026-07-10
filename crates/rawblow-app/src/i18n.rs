@@ -565,6 +565,52 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "복원" => ("Reset", "リセット"),
         "설정을 기본값으로 되돌렸습니다" => ("Settings were reset to defaults", "設定をデフォルトに戻しました"),
         "새 버전 자동 확인" => ("Check for new versions automatically", "新バージョンを自動確認"),
+        // #73 i18n 마감 — 다이얼로그 캡션·레일 라벨·설정 섹션 등 하드코딩 영문을 tr() 경유로.
+        // En 값은 모두 기존 영문과 동일(영어 UI 무변화). section_head/section_label이 표시 시
+        // 대문자화하는 캡션은 소스가 이미 대문자거나(설정) En 원형(레일 "Color" 등)을 그대로 둔다.
+        // ── 전송·정리 다이얼로그 섹션 캡션(section_label) ──
+        "원본 라벨" => ("SOURCE LABELS", "元ラベル"),
+        "별점 기준" => ("STAR RATING", "評価"), // 기존 "별점"(Rating)과 별개 키(캡션용).
+        "컬러 태그 기준" => ("COLOR TAGS", "カラータグ"),
+        "동작" => ("ACTION", "動作"),
+        "동반 파일" => ("COMPANIONS", "付随ファイル"),
+        "대상 폴더" => ("DESTINATION", "出力先"), // 기존 "대상 폴더 열기"와 별개 키.
+        "이름 충돌 시" => ("ON FILENAME CONFLICT", "同名ファイル時"),
+        "리네임" => ("RENAME", "リネーム"),
+        "범위" => ("SCOPE", "範囲"),
+        "기준" => ("BY", "基準"),
+        "미리보기" => ("PREVIEW", "プレビュー"),
+        // ── 푸터/결과 목록 라벨 ──
+        "전송 대상" => ("WILL TRANSFER", "転送対象"),
+        "정리 대상" => ("WILL ORGANIZE", "整理対象"),
+        "분석 대상" => ("WILL ANALYZE", "分析対象"),
+        "이름 변경" => ("RENAMED", "リネーム済み"), // 결과창 "RENAMED · N" 헤더(· N 접미는 유지).
+        "실패 목록" => ("FAILED", "失敗"),           // 결과창 "FAILED · N" 헤더.
+        // ── Browse 버튼 · Copy 세그 제목("이동"→Move는 #66 키 재사용) ──
+        "찾아보기…" => ("Browse…", "参照…"),
+        "복사" => ("Copy", "コピー"),
+        // ── AI 컬링 다이얼로그 섹션 캡션(section_label). "범위"(SCOPE)는 위 전송 키 재사용 ──
+        "검사" => ("CHECKS", "検査"),
+        "옵션" => ("OPTIONS", "オプション"),
+        "메타 필터" => ("METADATA FILTER", "メタフィルタ"),
+        "중복 정리" => ("DEDUP / BEST-OF", "重複整理"),
+        "AI 축" => ("AI AXES", "AI軸"),
+        "검출" => ("DETECT", "検出"),
+        "결과 지정" => ("ASSIGN RESULT TO", "結果の割り当て"),
+        // ── 좌측 레일 섹션 헤더(section_head — 표시 시 대문자화). "분류"(Classify)·"별점"(Rating)은 재사용 ──
+        "색" => ("Color", "色"),
+        "진행" => ("Progress", "進行"),
+        "보기 필터" => ("Filter View", "表示フィルタ"),
+        "별점 필터" => ("Filter Stars", "評価フィルタ"),
+        "색 필터" => ("Filter Color", "色フィルタ"),
+        // ── 설정 섹션 캡션. 제목 "설정"(Settings)은 #72 키 재사용 ──
+        "일반" => ("GENERAL", "一般"),
+        "사진 배경" => ("PHOTO BACKGROUND", "写真の背景"),
+        "라벨" => ("LABELS", "ラベル"),
+        "색 태그 이름" => ("COLOR TAGS", "カラータグ"), // 설정 캡션용(전송의 "컬러 태그 기준"과 별개).
+        "캐시" => ("CACHE", "キャッシュ"),
+        "초기화" => ("RESET", "リセット"), // 기존 "복원"(Reset, 버튼)과 별개 키(섹션 캡션용).
+        "정보" => ("ABOUT", "情報"),
         _ => return None,
     })
 }
@@ -698,5 +744,38 @@ mod tests {
         assert_eq!(tr(Lang::Ja, "단축키"), "ショートカット");
         // 섹션 헤더 "파일"은 기존 키 재사용(중복 추가 없이 폴백 아님).
         assert_eq!(tr(Lang::En, "파일"), "Files");
+    }
+
+    #[test]
+    fn issue73_caption_and_rail_labels_translated() {
+        // #73 i18n 마감: 다이얼로그 섹션 캡션·푸터·레일 헤더의 대표 키가 En/Ja에서 한국어로
+        // 폴백되지 않는지 스팟체크(대화상자 캡션 + 레일 헤더 + 버튼/푸터 혼합).
+        for ko in [
+            "원본 라벨", // 전송 SOURCE LABELS
+            "검사",      // 컬링 CHECKS
+            "일반",      // 설정 GENERAL
+            "보기 필터", // 레일 Filter View
+            "찾아보기…", // Browse 버튼
+            "전송 대상", // 푸터 WILL TRANSFER
+        ] {
+            assert_ne!(tr(Lang::En, ko), ko, "En 번역 누락: {ko}");
+            assert_ne!(tr(Lang::Ja, ko), ko, "Ja 번역 누락: {ko}");
+        }
+        // En 값은 기존 하드코딩 영문과 바이트 동일해야 한다(영어 UI 무변화).
+        assert_eq!(tr(Lang::En, "원본 라벨"), "SOURCE LABELS");
+        assert_eq!(tr(Lang::En, "검사"), "CHECKS");
+        assert_eq!(tr(Lang::En, "일반"), "GENERAL");
+        assert_eq!(tr(Lang::En, "찾아보기…"), "Browse…");
+        assert_eq!(tr(Lang::En, "전송 대상"), "WILL TRANSFER");
+        assert_eq!(tr(Lang::En, "이름 변경"), "RENAMED"); // 결과창 "RENAMED · N" 헤더의 접두.
+        // 재사용 키(레일 헤더·Copy/Move·설정 제목)는 기존 En 값을 그대로 쓴다 — section_head가
+        // 표시 시 대문자화하므로 "Classify"→"CLASSIFY"로 기존 영문과 동일하게 보인다.
+        assert_eq!(tr(Lang::En, "분류"), "Classify");
+        assert_eq!(tr(Lang::En, "별점"), "Rating");
+        assert_eq!(tr(Lang::En, "복사"), "Copy"); // Copy 세그(이동=Move는 #66 키 재사용).
+        assert_eq!(tr(Lang::En, "설정"), "Settings"); // 설정 제목(#72 키 재사용).
+        // Ja 대표 확인(레일 헤더 + 컬링 캡션).
+        assert_eq!(tr(Lang::Ja, "결과 지정"), "結果の割り当て");
+        assert_eq!(tr(Lang::Ja, "색 필터"), "色フィルタ");
     }
 }

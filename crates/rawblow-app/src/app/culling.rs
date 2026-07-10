@@ -590,7 +590,7 @@ impl RawBlowApp {
                 ui.spacing_mut().button_padding = Vec2::new(8.0, 5.0);
                 ui.spacing_mut().item_spacing = Vec2::new(6.0, 8.0);
 
-                section_label(ui, "CHECKS");
+                section_label(ui, tr(lang, "검사"));
                 ui.horizontal_wrapped(|ui| {
                     // 검사 칩 툴팁(#70): ML 용어 없이 무엇을 걸러내는지 한 줄로.
                     if check_chip_resp(ui, tr(lang, "초점(선명도)"), None, theme::ACCENT, c.use_focus)
@@ -692,7 +692,7 @@ impl RawBlowApp {
                 if c.advanced_open {
                 // ── OPTIONS ── 켠 검사의 세부값. METADATA와 동일 위계: [이름/토글 | 값].
                 if c.use_focus || c.use_exposure || c.use_tilt || c.use_aesthetic {
-                    section_label(ui, "OPTIONS");
+                    section_label(ui, tr(lang, "옵션"));
                 }
                 egui::Grid::new("aicull_options_grid")
                     .num_columns(2)
@@ -779,7 +779,7 @@ impl RawBlowApp {
 
                 // ── METADATA FILTER (Tier1, 모델 불필요) ── 2열 Grid로 줄맞춤:
                 //   왼쪽=항목 토글/이름, 오른쪽=값/콤보. 값들이 같은 x에서 시작해 정렬된다(#53).
-                section_label(ui, "METADATA FILTER");
+                section_label(ui, tr(lang, "메타 필터"));
                 let all_label = tr(lang, "(전체)");
                 egui::Grid::new("aicull_meta_grid")
                     .num_columns(2)
@@ -875,7 +875,7 @@ impl RawBlowApp {
                 ui.add_space(16.0);
 
                 // ── DEDUP / BEST-OF (Tier2+3a) ── METADATA와 동일 위계: [토글 | 값(오른쪽)].
-                section_label(ui, "DEDUP / BEST-OF");
+                section_label(ui, tr(lang, "중복 정리"));
                 egui::Grid::new("aicull_dedup_grid")
                     .num_columns(2)
                     .min_col_width(140.0)
@@ -926,7 +926,7 @@ impl RawBlowApp {
 
                 // ── AI AXES ── 장르=YuNet, AI 선명도=CLIP sharp. [토글 | 값] 위계 통일.
                 // (커스텀 프롬프트는 텍스트 인코더 필요로 메뉴 제외 — #53. config 필드는 유지.)
-                section_label(ui, "AI AXES");
+                section_label(ui, tr(lang, "AI 축"));
                 egui::Grid::new("aicull_aiaxes_grid")
                     .num_columns(2)
                     .min_col_width(140.0)
@@ -990,7 +990,7 @@ impl RawBlowApp {
 
                 // ── DETECT ── 얼굴(YuNet)·객체(YOLOv10n) 실동작.
                 // (눈 뜬 컷은 눈감음 분류기가 필요해 메뉴에서 제외 — #53. config 필드는 유지.)
-                section_label(ui, "DETECT");
+                section_label(ui, tr(lang, "검출"));
                 egui::Grid::new("aicull_detect_grid")
                     .num_columns(2)
                     .min_col_width(140.0)
@@ -1066,7 +1066,7 @@ impl RawBlowApp {
                 }
                 ui.add_space(16.0);
 
-                section_label(ui, "ASSIGN RESULT TO");
+                section_label(ui, tr(lang, "결과 지정"));
                 let tgt_sel = match c.target {
                     AiCullTarget::Label => 0,
                     AiCullTarget::Stars => 1,
@@ -1123,7 +1123,7 @@ impl RawBlowApp {
                 }
                 ui.add_space(16.0);
 
-                section_label(ui, "SCOPE");
+                section_label(ui, tr(lang, "범위"));
                 let scope_sel = if c.scope_all { 0 } else { 1 };
                 let all_lbl = trf(lang, "{} 항목", &[&total_items.to_string()]);
                 let filt_lbl = trf(lang, "{} 항목", &[&filtered_count.to_string()]);
@@ -1156,7 +1156,7 @@ impl RawBlowApp {
                             .show(ui, |ui| {
                                 ui.set_width(inner_w);
                                 ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new("WILL ANALYZE").font(prop(10.0)).color(theme::INK3));
+                                    ui.label(egui::RichText::new(tr(lang, "분석 대상")).font(prop(10.0)).color(theme::INK3));
                                     ui.add_space(8.0);
                                     ui.label(egui::RichText::new(count.to_string()).font(mono(13.0)).color(theme::ACCENT));
                                     ui.label(egui::RichText::new(tr(lang, "장")).font(mono(10.0)).color(theme::INK3));

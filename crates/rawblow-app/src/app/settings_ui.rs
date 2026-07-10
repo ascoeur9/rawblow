@@ -18,14 +18,14 @@ impl RawBlowApp {
                     if ui.button(format!("← {}", tr(lang, "돌아가기"))).clicked() {
                         go_back = true;
                     }
-                    ui.label(egui::RichText::new("Settings — Keyboard & General").font(prop(14.0)).color(theme::INK));
+                    ui.label(egui::RichText::new(tr(lang, "설정")).font(prop(14.0)).color(theme::INK));
                 });
             });
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(theme::BG1).inner_margin(egui::Margin::same(24.0)))
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.label(egui::RichText::new("GENERAL").font(prop(11.0)).color(theme::INK3));
+                    ui.label(egui::RichText::new(tr(lang, "일반")).font(prop(11.0)).color(theme::INK3));
                     // 모든 설정 컨트롤은 변경 즉시 저장(#69). config::save는 작은 원자적 JSON 쓰기라
                     // 체크박스/드래그/텍스트 입력마다 저장해도 부담이 적다(DragValue·TextEdit의 .changed()는
                     // 드래그 틱·키 입력마다 발생). '돌아가기' 저장은 최종 catch-all로 남긴다.
@@ -107,7 +107,7 @@ impl RawBlowApp {
                     });
                     // ── PHOTO BACKGROUND (#36): 사진 표시 화면 배경색 — 프리셋 + HEX/RGB ──
                     ui.add_space(18.0);
-                    ui.label(egui::RichText::new("PHOTO BACKGROUND").font(prop(11.0)).color(theme::INK3));
+                    ui.label(egui::RichText::new(tr(lang, "사진 배경")).font(prop(11.0)).color(theme::INK3));
                     ui.add_space(2.0);
                     ui.label(egui::RichText::new(tr(lang, "사진 표시 화면 배경색 — 프리셋 또는 HEX/RGB로 지정(Lightroom Develop 기본값은 50% 회색)")).font(mono(10.0)).color(theme::INK4));
                     ui.add_space(6.0);
@@ -186,7 +186,7 @@ impl RawBlowApp {
                     });
 
                     ui.add_space(16.0);
-                    ui.label(egui::RichText::new("LABELS").font(prop(11.0)).color(theme::INK3));
+                    ui.label(egui::RichText::new(tr(lang, "라벨")).font(prop(11.0)).color(theme::INK3));
                     let km = &self.cfg.keymap;
                     for (lbl, key) in [(Label::Pick, &km.pick), (Label::Hold, &km.hold), (Label::Reject, &km.reject), (Label::Unrated, &km.clear)] {
                         ui.horizontal(|ui| {
@@ -205,7 +205,7 @@ impl RawBlowApp {
 
                     // ── COLOR TAGS (#27): 색별 커스텀 이름. 비우면 기본 색 이름 표시 ──
                     ui.add_space(18.0);
-                    ui.label(egui::RichText::new("COLOR TAGS").font(prop(11.0)).color(theme::INK3));
+                    ui.label(egui::RichText::new(tr(lang, "색 태그 이름")).font(prop(11.0)).color(theme::INK3));
                     ui.add_space(2.0);
                     ui.label(egui::RichText::new(tr(lang, "색별 이름을 지정해 보정 방식 등 나만의 분류로 — ⇧1~5로 부여")).font(mono(10.0)).color(theme::INK4));
                     ui.add_space(4.0);
@@ -229,7 +229,7 @@ impl RawBlowApp {
 
                     // ── CACHE (#22): 썸네일 디스크 캐시 사용량 + 비우기 ──
                     ui.add_space(18.0);
-                    ui.label(egui::RichText::new("CACHE").font(prop(11.0)).color(theme::INK3));
+                    ui.label(egui::RichText::new(tr(lang, "캐시")).font(prop(11.0)).color(theme::INK3));
                     if self.cache_size.is_none() {
                         self.cache_size = Some(cache::dir_size(&config::cache_dir()));
                     }
@@ -271,7 +271,7 @@ impl RawBlowApp {
 
                     // ── RESET (#69): 모든 설정을 기본값으로 — 2단 인라인 확인(모달 없이) ──
                     ui.add_space(18.0);
-                    ui.label(egui::RichText::new("RESET").font(prop(11.0)).color(theme::INK3));
+                    ui.label(egui::RichText::new(tr(lang, "초기화")).font(prop(11.0)).color(theme::INK3));
                     if !self.settings_reset_armed {
                         if toggle_btn(ui, tr(lang, "기본값 복원"), false).clicked() {
                             self.settings_reset_armed = true;
@@ -297,7 +297,7 @@ impl RawBlowApp {
 
                     // ── ABOUT / LINKS (#18): 버전·릴리즈·이슈·제작자·cosly ──
                     ui.add_space(18.0);
-                    ui.label(egui::RichText::new("ABOUT").font(prop(11.0)).color(theme::INK3));
+                    ui.label(egui::RichText::new(tr(lang, "정보")).font(prop(11.0)).color(theme::INK3));
                     ui.label(egui::RichText::new(format!("RawBlow v{}", env!("CARGO_PKG_VERSION"))).font(mono(11.0)).color(theme::INK2));
                     ui.add_space(6.0);
                     link_label(ui, tr(lang, "최신 버전 받기 · GitHub Releases"), "https://github.com/ascoeur9/rawblow/releases");

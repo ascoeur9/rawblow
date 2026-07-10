@@ -151,15 +151,17 @@ impl RawBlowApp {
             .resizable(false)
             .frame(egui::Frame::none().fill(theme::BG1))
             .show(ctx, |ui| {
-                section_head(ui, "Classify", Some("Q W E R"));
+                section_head(ui, tr(lang, "분류"), Some("Q W E R"));
+                // 레일 라벨명은 아래 필터 행(Label::name)과 동일 출처로 통일(#73): 이중 표기 제거.
+                // 대문자화로 기존 시각 스타일(PICK/HOLD/…) 유지 — 한/일은 대소문자 없어 그대로 표시.
                 let rows = [
-                    (Label::Pick, "PICK", pick, "Q"),
-                    (Label::Hold, "HOLD", hold, "W"),
-                    (Label::Reject, "REJECT", reject, "E"),
-                    (Label::Unrated, "UNRATED", unrated, "R"),
+                    (Label::Pick, pick, "Q"),
+                    (Label::Hold, hold, "W"),
+                    (Label::Reject, reject, "E"),
+                    (Label::Unrated, unrated, "R"),
                 ];
                 let cur_label = self.current_real().and_then(|r| self.items.get(r)).map(|i| i.entry.label);
-                for (label, name, n, key) in rows {
+                for (label, n, key) in rows {
                     let active = cur_label == Some(label) && !matches!(label, Label::Unrated);
                     let resp = ui.allocate_response(Vec2::new(RAIL_W - 16.0, 30.0), Sense::click());
                     let rect = resp.rect;
@@ -168,7 +170,7 @@ impl RawBlowApp {
                         p.rect(rect, Rounding::same(5.0), theme::BG2, Stroke::new(1.0, widgets::with_alpha(theme::label_color(label), 64)));
                     }
                     p.circle_filled(Pos2::new(rect.left() + 12.0, rect.center().y), 4.0, theme::label_color(label));
-                    p.text(Pos2::new(rect.left() + 26.0, rect.center().y), Align2::LEFT_CENTER, name, prop(11.5), theme::INK2);
+                    p.text(Pos2::new(rect.left() + 26.0, rect.center().y), Align2::LEFT_CENTER, label.name(lang).to_uppercase(), prop(11.5), theme::INK2);
                     p.text(Pos2::new(rect.right() - 36.0, rect.center().y), Align2::RIGHT_CENTER, n.to_string(), mono(11.0), theme::INK);
                     p.text(Pos2::new(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, key, mono(10.0), theme::INK3);
                     // 클릭 가능함을 알리는 포인터 커서(#72) — 별점·태그 칩과 동일하게.
@@ -181,7 +183,7 @@ impl RawBlowApp {
                 }
 
                 // ── Rating (별점, #23) ── 라벨과 독립. 현재 항목 별점을 1~5로 지정/해제.
-                section_head(ui, "Rating", Some("1–5 · `"));
+                section_head(ui, tr(lang, "별점"), Some("1–5 · `"));
                 let cur_stars = self
                     .current_real()
                     .and_then(|r| self.items.get(r))
@@ -230,7 +232,7 @@ impl RawBlowApp {
                 }
 
                 // ── Color tag (#27) ── 라벨·별점과 독립. 현재 항목에 5색 중 하나 부여/해제(⇧1~5).
-                section_head(ui, "Color", Some("⇧1–5"));
+                section_head(ui, tr(lang, "색"), Some("⇧1–5"));
                 let cur_tag = self
                     .current_real()
                     .and_then(|r| self.items.get(r))
@@ -280,7 +282,7 @@ impl RawBlowApp {
                     self.set_tag(t);
                 }
 
-                section_head(ui, "Progress", None);
+                section_head(ui, tr(lang, "진행"), None);
                 ui.horizontal(|ui| {
                     ui.add_space(14.0);
                     let labeled = pick + hold + reject;
@@ -292,7 +294,7 @@ impl RawBlowApp {
                     });
                 });
 
-                section_head(ui, "Filter View", None);
+                section_head(ui, tr(lang, "보기 필터"), None);
                 // 필터 초기화 어포던스(#67): 세 축(라벨·별점·태그) 중 하나라도 걸려 있을 때만 노출.
                 if self.any_filter_active() {
                     let resp = ui.allocate_response(Vec2::new(RAIL_W - 16.0, 18.0), Sense::click());
@@ -331,7 +333,7 @@ impl RawBlowApp {
                 }
 
                 // 별점 필터(#23 후속): 라벨 필터와 독립 AND. 정확히 N점만 표시. `전체`=별점 무시.
-                section_head(ui, "Filter Stars", None);
+                section_head(ui, tr(lang, "별점 필터"), None);
                 let star_sel = self.star_filter;
                 let star_cnt = self.star_counts(); // [미부여, 1★ .. 5★]
                 let mut new_star: Option<StarFilter> = None;
@@ -382,7 +384,7 @@ impl RawBlowApp {
                 }
 
                 // 컬러 태그 필터(#27): 라벨·별점 필터와 독립 AND. 특정 색만 표시. `전체`=태그 무시.
-                section_head(ui, "Filter Color", None);
+                section_head(ui, tr(lang, "색 필터"), None);
                 let tag_sel = self.tag_filter;
                 let tcnt = self.tag_counts();
                 let mut new_tag_filter: Option<TagFilter> = None;
