@@ -461,6 +461,9 @@ pub struct TransferDefaults {
     pub rename_mode: RenameMode,
     pub rename_template: String,
     pub rename_numbering: crate::transfer::Numbering,
+    /// 전송 대상 범위(#68): true=전체 items, false=현재 필터(라벨·별점·태그 AND) 통과분만. 기본 전체.
+    /// 컨테이너 `#[serde(default)]`가 옛 설정의 누락 필드를 `Default`(=true)로 채운다.
+    pub scope_all: bool,
 }
 
 impl Default for TransferDefaults {
@@ -477,6 +480,7 @@ impl Default for TransferDefaults {
             rename_mode: RenameMode::Off,
             rename_template: "{gradeseq}_{orig}".into(),
             rename_numbering: crate::transfer::Numbering::GradeGrouped,
+            scope_all: true,
         }
     }
 }
@@ -772,6 +776,7 @@ mod tests {
                 rename_mode: RenameMode::Custom,
                 rename_template: "{orig}_final".into(),
                 rename_numbering: crate::transfer::Numbering::Order,
+                scope_all: false, // 기본(true)과 다른 값으로 저장·복원 확인(#68)
                 ..Default::default()
             },
             organize_defaults: OrganizeDefaults {
@@ -790,6 +795,7 @@ mod tests {
         assert_eq!(l.transfer_defaults.rename_mode, RenameMode::Custom);
         assert_eq!(l.transfer_defaults.rename_template, "{orig}_final");
         assert_eq!(l.transfer_defaults.rename_numbering, crate::transfer::Numbering::Order);
+        assert!(!l.transfer_defaults.scope_all); // 전송 범위(#68)도 저장·복원
         assert_eq!(l.organize_defaults.key, crate::organize::OrganizeKey::Camera);
         assert_eq!(l.organize_defaults.action, crate::transfer::Action::Copy);
 
@@ -798,6 +804,7 @@ mod tests {
         let legacy = load_from(&path);
         assert_eq!(legacy.transfer_defaults.labels, vec![crate::model::Label::Pick]);
         assert_eq!(legacy.transfer_defaults.action, crate::transfer::Action::Copy);
+        assert!(legacy.transfer_defaults.scope_all); // 누락 필드는 기본 전체(#68)
         assert_eq!(legacy.organize_defaults.action, crate::transfer::Action::Move); // 정리는 이동 기본(#34)
     }
 

@@ -24,6 +24,9 @@ pub(super) struct TransferDialogState {
     rename_mode: RenameMode,
     rename_template: String,
     rename_numbering: Numbering,
+    /// 전송 대상 범위(#68): true=전체 items, false=현재 필터(라벨·별점·태그 AND) 통과분만.
+    /// #57 방식으로 저장·복원(기본 전체). AI 컬링의 scope_all과 같은 개념.
+    scope_all: bool,
     /// Move 원본 이동 확인 오버레이 표시 여부(#63). 세션 한정 UI 상태 — 저장하지 않는다
     /// (to_defaults에 넣지 않으므로 #57 기본값 복원 대상이 아님).
     confirm_move: bool,
@@ -45,6 +48,7 @@ impl TransferDialogState {
             rename_mode: d.rename_mode,
             rename_template: d.rename_template.clone(),
             rename_numbering: d.rename_numbering,
+            scope_all: d.scope_all,
             confirm_move: false, // 확인 오버레이는 항상 닫힌 상태로 시작(비저장, #63).
         }
     }
@@ -63,6 +67,7 @@ impl TransferDialogState {
             rename_mode: self.rename_mode,
             rename_template: self.rename_template.clone(),
             rename_numbering: self.rename_numbering,
+            scope_all: self.scope_all,
         }
     }
 
@@ -185,6 +190,16 @@ impl RawBlowApp {
         self.organize = Some(st);
     }
 
+    /// 전송 대상 엔트리 목록(#68). scope_all이면 전체 items, 아니면 현재 필터(라벨·별점·태그 AND)를
+    /// 통과한 항목만. 미리보기 플랜과 실제 시작이 반드시 같은 집합을 쓰도록 한 곳에서 만든다.
+    fn scoped_transfer_entries(&self, scope_all: bool) -> Vec<Entry> {
+        if scope_all {
+            self.items.iter().map(|i| i.entry.clone()).collect()
+        } else {
+            self.filtered().into_iter().map(|r| self.items[r].entry.clone()).collect()
+        }
+    }
+
     // ── 전송 다이얼로그 ──────────────────────────────────
     pub(super) fn ui_transfer_dialog(&mut self, ctx: &egui::Context) {
         let lang = self.lang;
@@ -198,11 +213,29 @@ impl RawBlowApp {
         // Enter를 시작으로 오인하지 않게 막는 가드.
         let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
         let typing = ctx.memory(|m| m.focused().is_some());
-        let (pick, hold, reject, unrated) = self.counts();
-        let star_cnt = self.star_counts();
-        let tag_cnt = self.tag_counts();
         let tag_names: Vec<String> =
             ColorTag::ALL.iter().map(|t| self.cfg.tag_label(*t, lang)).collect();
+        // 전송 범위(#68): scope_all이면 전체 items, 아니면 현재 필터(라벨·별점·태그 AND) 통과분만.
+        // 칩 카운트·플랜·리네임 프리뷰·시작·Move 확인 수까지 전부 이 스코프 기준으로 계산한다.
+        let total_items = self.items.len();
+        let filtered_count = self.filtered().len();
+        let entries = self.scoped_transfer_entries(st.scope_all);
+        // 칩 카운트는 스코프 엔트리에서 직접 센다(self.counts()/star_counts()/tag_counts()는 전체 기준이라 미사용).
+        let (mut pick, mut hold, mut reject, mut unrated) = (0usize, 0usize, 0usize, 0usize);
+        let mut star_cnt = [0usize; 6];
+        let mut tag_cnt = [0usize; 5];
+        for e in &entries {
+            match e.label {
+                Label::Pick => pick += 1,
+                Label::Hold => hold += 1,
+                Label::Reject => reject += 1,
+                Label::Unrated => unrated += 1,
+            }
+            star_cnt[e.stars.min(5) as usize] += 1;
+            if let Some(i) = e.tag.index() {
+                tag_cnt[i] += 1;
+            }
+        }
 
         // 뒤 화면 어둡게(dim) + 클릭 차단. Middle 레이어 → 패널 위, 카드(Foreground) 아래.
         let screen = ctx.screen_rect();
@@ -214,8 +247,7 @@ impl RawBlowApp {
                 let _ = ui.allocate_rect(screen, Sense::click_and_drag());
             });
 
-        // 미리보기 계획(footer 통계).
-        let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
+        // 미리보기 계획(footer 통계). entries는 위에서 스코프 기준으로 구성됨(#68).
         let plan = transfer::plan(&TransferRequest {
             entries: &entries,
             labels: st.labels.clone(),
@@ -286,6 +318,16 @@ impl RawBlowApp {
                             .inner_margin(egui::Margin::symmetric(22.0, 18.0))
                             .show(ui, |ui| {
                                 ui.set_width(616.0);
+                                // ── SCOPE ── 전송 대상 범위(#68): 전체 폴더 vs 현재 필터. AI 컬링과 동일한 세그먼트.
+                                // 필터가 없으면 두 카운트가 같지만 특수처리하지 않는다(그대로 노출).
+                                section_label(ui, "SCOPE");
+                                let scope_sel = if st.scope_all { 0 } else { 1 };
+                                let all_lbl = trf(lang, "{} 항목", &[&total_items.to_string()]);
+                                let filt_lbl = trf(lang, "{} 항목", &[&filtered_count.to_string()]);
+                                if let Some(i) = segmented(ui, &[(tr(lang, "전체"), all_lbl.as_str()), (tr(lang, "현재 필터"), filt_lbl.as_str())], scope_sel) {
+                                    st.scope_all = i == 0;
+                                }
+                                ui.add_space(16.0);
                                 section_label(ui, "SOURCE LABELS");
                                 ui.horizontal_wrapped(|ui| {
                                     for (label, n) in [(Label::Pick, pick), (Label::Hold, hold), (Label::Reject, reject), (Label::Unrated, unrated)] {
@@ -559,7 +601,8 @@ impl RawBlowApp {
         // 마지막 사용 옵션 저장(#57) — 다음 열기 때 기본값으로 복원된다.
         self.cfg.transfer_defaults = st.to_defaults();
         let _ = config::save(&self.cfg);
-        let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
+        // 플랜(미리보기)과 동일한 스코프로 엔트리를 구성 — 보여준 것만 정확히 전송한다(#68).
+        let entries = self.scoped_transfer_entries(st.scope_all);
         let labels = st.labels.clone();
         let stars = st.stars.clone();
         let tags = st.tags.clone();
@@ -1123,6 +1166,7 @@ mod tests {
         assert!(!st.split_by_tag);
         assert_eq!(st.conflict, ConflictPolicy::AutoIncrement);
         assert!(matches!(st.rename_mode, RenameMode::Off)); // RenameMode는 Debug 미구현이라 matches! 사용
+        assert!(st.scope_all); // 전송 범위 기본값은 전체(#68)
     }
 
     #[test]
@@ -1134,6 +1178,7 @@ mod tests {
             rename_mode: RenameMode::Custom,
             rename_template: "{orig}_pick".into(),
             rename_numbering: Numbering::Order,
+            scope_all: false, // 기본(true)과 다른 값으로 저장·복원 확인(#68)
             dest: r"X:\old\folder_selected".into(),
             ..Default::default()
         };
@@ -1143,6 +1188,7 @@ mod tests {
         assert_eq!(st2.rename_mode, RenameMode::Custom);
         assert_eq!(st2.rename_template, "{orig}_pick");
         assert_eq!(st2.rename_numbering, Numbering::Order);
+        assert!(!st2.scope_all); // 전송 범위도 저장·복원(#68)
         assert!(st2.dest.is_empty()); // dest는 복원 대상 아님
     }
 
