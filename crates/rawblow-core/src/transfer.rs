@@ -79,6 +79,9 @@ pub struct TransferReport {
     pub bytes: u64,
     /// 사용자가 진행 중 취소해 도중에 멈췄으면 true(#35). 이미 옮긴 파일은 그대로 둔다.
     pub canceled: bool,
+    /// Move에서 대상 복사는 성공했으나 원본 삭제가 실패해 **원본이 그대로 남은** 파일들(#63).
+    /// 전송 자체는 성공(transferred에 포함)으로 세되, 사용자에게 원본 잔존을 정직하게 알리려고 기록한다.
+    pub remove_failed: Vec<PathBuf>,
 }
 
 /// 전송/정리 진행 상황(#35). 백그라운드 스레드가 파일마다 콜백으로 보고하고,
@@ -354,6 +357,11 @@ pub fn execute_with_progress(
                         Some(Kind::Raw) => report.raw_count += 1,
                         Some(Kind::Image) => report.image_count += 1,
                         None => {}
+                    }
+                    // Move인데 원본이 남아 있으면 copy는 됐으나 원본 삭제가 실패한 경우(#63).
+                    // 전송 성공(위에서 집계)은 유지하고, 원본 잔존만 따로 기록해 결과창에서 알린다.
+                    if req.action == Action::Move && src.exists() {
+                        report.remove_failed.push((*src).clone());
                     }
                     let final_name = conflict_renamed.unwrap_or(out_name);
                     if final_name != file_name {

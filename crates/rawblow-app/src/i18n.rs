@@ -55,6 +55,16 @@ fn fmt_lookup(ko: &str) -> Option<(&'static str, &'static str)> {
             "✓ {} ファイル転送 · {} リネーム · {} 失敗",
         ),
         "RAW {} · 이미지 {} · {:.1} MB" => ("RAW {} · Images {} · {:.1} MB", "RAW {} · 画像 {} · {:.1} MB"),
+        // #63 원본 이동 확인 · 전송 결과 정직성
+        "원본 {}개를 이동합니다 — 원래 폴더에서 제거됩니다." => (
+            "Moving {} originals — they will be removed from the source folder.",
+            "元ファイル {} 個を移動します — 元のフォルダからは削除されます。",
+        ),
+        "건너뜀 {} — 동명 파일 존재" => ("Skipped {} — same-name file exists", "スキップ {} — 同名ファイルあり"),
+        "원본 삭제 실패 {} — 원본 파일이 남아 있습니다" => (
+            "Failed to delete {} originals — the source files remain",
+            "元ファイル {} 個の削除に失敗 — 元ファイルが残っています",
+        ),
         "{} 건 매칭" => ("{} matched", "{} 件一致"),
         "매칭 {}건" => ("{} matched", "一致 {} 件"),
         "{}건 → {}" => ("{} → {}", "{} 件 → {}"),
@@ -171,8 +181,10 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "파일" => ("Files", "ファイル"),
         "이미지" => ("Images", "画像"),
         "전송 시작" => ("Start Transfer", "転送開始"),
+        "이동 시작" => ("Start Move", "移動開始"), // #63 원본 이동 확인 오버레이
         "취소" => ("Cancel", "キャンセル"),
         "전송 완료" => ("Transfer Complete", "転送完了"),
+        "정리 완료" => ("Organize Complete", "整理完了"), // #63 정리 결과창 제목 분리
         "닫기" => ("Close", "閉じる"),
         "대상 폴더 열기" => ("Open Destination Folder", "出力先フォルダを開く"),
         "파일번호 점프" => ("Jump to File Number", "ファイル番号へジャンプ"),
@@ -288,6 +300,11 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "전송 중" => ("Transferring", "転送中"),
         "폴더 정리 중" => ("Organizing", "整理中"),
         "취소됨" => ("Canceled", "キャンセルされました"),
+        // #63 워커가 Done 없이 종료(패닉 등)했을 때 결과창에 표시하는 실패 사유.
+        "작업이 예기치 않게 중단되었습니다" => (
+            "The operation stopped unexpectedly",
+            "処理が予期せず中断されました",
+        ),
         // #36 사진 배경색
         "사진 표시 화면 배경색 — 프리셋 또는 HEX/RGB로 지정(Lightroom Develop 기본값은 50% 회색)" => (
             "Photo viewer background — pick a preset or set HEX/RGB (Lightroom Develop default is 50% gray)",
@@ -519,6 +536,24 @@ mod tests {
         assert_eq!(
             trf(Lang::Ja, "이전 폴더({}) 셀렉 저장 실패 — 최근 변경이 유실될 수 있습니다", &["DCIM"]),
             "前のフォルダ（DCIM）のセレクト保存に失敗 — 直近の変更が失われた可能性があります"
+        );
+    }
+
+    #[test]
+    fn issue63_move_confirm_and_result_strings_translated() {
+        // #63 원본 이동 확인 오버레이·전송 결과 정직성 문자열이 En/Ja로 번역되는지 스팟체크.
+        assert_eq!(tr(Lang::En, "이동 시작"), "Start Move");
+        assert_eq!(tr(Lang::Ja, "정리 완료"), "整理完了");
+        assert_eq!(tr(Lang::En, "작업이 예기치 않게 중단되었습니다"), "The operation stopped unexpectedly");
+        // 서식 문자열(슬롯 유지) — 확인 안내·건너뜀·원본 삭제 실패.
+        assert_eq!(
+            trf(Lang::En, "원본 {}개를 이동합니다 — 원래 폴더에서 제거됩니다.", &["12"]),
+            "Moving 12 originals — they will be removed from the source folder."
+        );
+        assert_eq!(trf(Lang::Ja, "건너뜀 {} — 동명 파일 존재", &["3"]), "スキップ 3 — 同名ファイルあり");
+        assert_eq!(
+            trf(Lang::En, "원본 삭제 실패 {} — 원본 파일이 남아 있습니다", &["2"]),
+            "Failed to delete 2 originals — the source files remain"
         );
     }
 }

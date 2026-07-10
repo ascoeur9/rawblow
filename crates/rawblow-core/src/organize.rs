@@ -213,6 +213,10 @@ pub fn organize_with_progress(
                         Some(Kind::Image) => report.image_count += 1,
                         None => {}
                     }
+                    // Move인데 원본이 남아 있으면 원본 삭제 실패 — 정직하게 기록(#63, 전송 결과창 공용).
+                    if req.action == Action::Move && src.exists() {
+                        report.remove_failed.push(src.clone());
+                    }
                     if let Some(new_name) = conflict_renamed {
                         if new_name != file_name {
                             report.renamed.push((file_name.clone(), new_name));

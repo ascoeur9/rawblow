@@ -181,6 +181,8 @@ pub struct RawBlowApp {
     // 진행 중인 백그라운드 파일 작업(전송/정리)의 프로그레스바 상태(#35).
     progress: Option<ProgressJob>,
     result: Option<TransferReport>,
+    // 결과 모달이 전송이 아니라 폴더 정리 작업의 결과인지(#63): 제목을 "정리 완료"로 바꾸는 데 쓴다.
+    result_organize: bool,
     show_settings: bool,
     // AI 컬링(#50): 설정 다이얼로그 표시 여부 + 진행 중인 채점 작업.
     ai_cull_open: bool,
@@ -357,6 +359,7 @@ impl RawBlowApp {
             model_dl: None,
             progress: None,
             result: None,
+            result_organize: false,
             show_settings: false,
             licenses: None,
             last_dest: None,

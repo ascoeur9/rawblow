@@ -593,6 +593,79 @@ fn transfer_split_by_label_subfolders() {
 }
 
 #[test]
+fn transfer_copy_leaves_remove_failed_empty() {
+    // 정상 복사(Copy)는 원본을 지우지 않으므로 remove_failed는 항상 비어 있어야 한다(#63).
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("IMG_1.JPG"), b"aaa").unwrap();
+
+    let mut entries = scan::scan_folder(&src, false, rawblow_core::SortOrder::Name);
+    entries[0].label = Label::Pick;
+
+    let req = transfer::TransferRequest {
+        entries: &entries,
+        labels: vec![Label::Pick],
+        stars: vec![],
+        action: transfer::Action::Copy,
+        companions: transfer::Companions::Both,
+        dest: dst.clone(),
+        split_by_label: false,
+        conflict: transfer::ConflictPolicy::AutoIncrement,
+        tags: vec![],
+        split_by_tag: false,
+        rename: None,
+    };
+    let report = transfer::execute(&req);
+    assert_eq!(report.transferred, 1);
+    assert!(report.remove_failed.is_empty(), "복사는 원본 삭제 실패가 있을 수 없음");
+}
+
+/// Move에서 대상 복사는 됐으나 원본 삭제가 거부되면 remove_failed에 원본 경로가 기록되고,
+/// 전송 자체는 성공(transferred)으로 집계된다(#63). 원본 폴더를 읽기전용(0o555)으로 만들어
+/// rename·remove_file이 모두 거부되는 상황을 재현한다(Unix 전용, root에선 무의미해 제외).
+#[cfg(unix)]
+#[test]
+fn transfer_move_records_source_when_delete_denied() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("locked");
+    let dst = tmp.path().join("dst");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&dst).unwrap();
+    std::fs::write(src.join("IMG_1.JPG"), b"aaa").unwrap();
+
+    let mut entries = scan::scan_folder(&src, false, rawblow_core::SortOrder::Name);
+    entries[0].label = Label::Pick;
+    // 원본 폴더를 읽기전용으로 → rename(엔트리 제거 불가)·remove_file(src) 모두 거부.
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let req = transfer::TransferRequest {
+        entries: &entries,
+        labels: vec![Label::Pick],
+        stars: vec![],
+        action: transfer::Action::Move,
+        companions: transfer::Companions::Both,
+        dest: dst.clone(),
+        split_by_label: false,
+        conflict: transfer::ConflictPolicy::AutoIncrement,
+        tags: vec![],
+        split_by_tag: false,
+        rename: None,
+    };
+    let report = transfer::execute(&req);
+
+    // tempdir 정리를 위해 권한 원복(결과는 이미 확정).
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(report.transferred, 1, "대상에 온전히 복사됐으면 전송 성공으로 집계");
+    assert_eq!(report.remove_failed.len(), 1, "삭제 거부된 원본을 기록");
+    assert!(dst.join("IMG_1.JPG").exists(), "대상에는 파일이 있음");
+    assert!(src.join("IMG_1.JPG").exists(), "삭제 거부된 원본은 잔존");
+}
+
+#[test]
 fn rawpull_jump_matching() {
     let entries = vec![
         Entry::from_members("P1063603".into(), vec![PathBuf::from("P1063603.RW2")]),

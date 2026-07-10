@@ -24,6 +24,9 @@ pub(super) struct TransferDialogState {
     rename_mode: RenameMode,
     rename_template: String,
     rename_numbering: Numbering,
+    /// Move 원본 이동 확인 오버레이 표시 여부(#63). 세션 한정 UI 상태 — 저장하지 않는다
+    /// (to_defaults에 넣지 않으므로 #57 기본값 복원 대상이 아님).
+    confirm_move: bool,
 }
 
 impl TransferDialogState {
@@ -42,6 +45,7 @@ impl TransferDialogState {
             rename_mode: d.rename_mode,
             rename_template: d.rename_template.clone(),
             rename_numbering: d.rename_numbering,
+            confirm_move: false, // 확인 오버레이는 항상 닫힌 상태로 시작(비저장, #63).
         }
     }
 
@@ -98,12 +102,14 @@ pub(super) struct OrganizeDialogState {
     /// 분류 결과를 담을 루트(기본: 현재 폴더 — in-place로 하위폴더 생성).
     dest: String,
     conflict: ConflictPolicy,
+    /// Move 원본 이동 확인 오버레이 표시 여부(#63). 세션 한정 — 저장하지 않는다(to_defaults 제외).
+    confirm_move: bool,
 }
 
 impl OrganizeDialogState {
     /// 저장된 마지막 사용 옵션으로 초기화(#57). dest는 호출부가 현재 폴더로 채운다.
     fn from_defaults(d: &OrganizeDefaults) -> Self {
-        OrganizeDialogState { key: d.key, action: d.action, dest: String::new(), conflict: d.conflict }
+        OrganizeDialogState { key: d.key, action: d.action, dest: String::new(), conflict: d.conflict, confirm_move: false }
     }
 
     /// 저장용 마지막 사용 옵션(#57). dest(폴더 종속)는 제외한다.
@@ -146,6 +152,8 @@ pub(super) struct ProgressJob {
     reopen: Option<ReopenMode>,
     /// 결과 다이얼로그의 "대상 폴더 열기"에 쓸 경로.
     dest: Option<PathBuf>,
+    /// 이 작업이 폴더 정리(true)인지 전송(false)인지(#63). 결과창 제목 분리에 쓴다.
+    organize: bool,
 }
 
 impl RawBlowApp {
@@ -183,6 +191,13 @@ impl RawBlowApp {
         let mut st = self.transfer.clone().unwrap();
         let mut do_start = false;
         let mut do_cancel = false;
+        let mut want_start = false; // 시작 요청(버튼/Enter). Move면 확인 오버레이 경유(#63).
+        let mut confirm_yes = false; // 확인 오버레이 "이동 시작".
+        let mut confirm_no = false; // 확인 오버레이 "돌아가기".
+        // Enter로 시작(#63). typing은 대상 폴더/리네임 템플릿 TextEdit에 포커스가 있을 때
+        // Enter를 시작으로 오인하지 않게 막는 가드.
+        let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+        let typing = ctx.memory(|m| m.focused().is_some());
         let (pick, hold, reject, unrated) = self.counts();
         let star_cnt = self.star_counts();
         let tag_cnt = self.tag_counts();
@@ -216,6 +231,8 @@ impl RawBlowApp {
         });
         let raw_n = plan.iter().filter(|(p, _, _)| rawblow_core::model::kind_of(p) == Some(rawblow_core::model::Kind::Raw)).count();
         let img_n = plan.len().saturating_sub(raw_n);
+        // 시작 가능 조건: 대상 0건이 아니고, 대상 폴더가 공백이 아닐 것(#63 — 정리와 일관되게 dest 검증 추가).
+        let can_start = !plan.is_empty() && !st.dest.trim().is_empty();
 
         // 중앙 모달 카드. 너비 660 고정이라 left를 화면중앙-330으로 두면 가로 정중앙
         // (Area::anchor는 이전 프레임 크기 기반이라 수렴이 안 돼 fixed_pos로 직접 배치).
@@ -329,6 +346,8 @@ impl RawBlowApp {
                                 let act_sel = if st.action == Action::Copy { 0 } else { 1 };
                                 if let Some(i) = segmented(ui, &[("Copy", tr(lang, "원본 유지")), ("Move", tr(lang, "원본 이동"))], act_sel) {
                                     st.action = if i == 0 { Action::Copy } else { Action::Move };
+                                    // Copy로 되돌리면 확인 오버레이 상태를 해제(#63).
+                                    if st.action == Action::Copy { st.confirm_move = false; }
                                 }
                                 ui.add_space(16.0);
 
@@ -432,10 +451,9 @@ impl RawBlowApp {
                                     ui.label(egui::RichText::new(tr(lang, "이미지")).font(mono(9.5)).color(theme::INK3));
 
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        // 라벨·별점 둘 다 비어 대상이 0건이면 시작 버튼 비활성(빈 전송 방지).
-                                        let can_start = !plan.is_empty();
+                                        // 대상이 0건이거나 대상 폴더가 공백이면 시작 버튼 비활성(빈 전송·미지정 방지, #63).
                                         if ui.add_enabled(can_start, egui::Button::new(egui::RichText::new(format!("  {}  ", tr(lang, "전송 시작"))).color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT)).clicked() {
-                                            do_start = true;
+                                            want_start = true;
                                         }
                                         ui.add_space(5.0);
                                         kbd(ui, "Enter");
@@ -451,8 +469,35 @@ impl RawBlowApp {
                     });
             });
 
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            do_cancel = true;
+        // 원본 이동 확인 오버레이(#63): Move인데 아직 미확인이면 다이얼로그 위에 확인 카드를 띄운다.
+        // #57로 Move가 기본값 복원될 수 있어, 토글 하나로 즉시 실행되던 걸 확인 경유로 바꾼 안전장치.
+        if st.confirm_move {
+            let (yes, no) = self.ui_move_confirm_overlay(ctx, screen, plan.len());
+            confirm_yes = yes;
+            confirm_no = no;
+        }
+
+        let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        if st.confirm_move {
+            // 확인 오버레이가 떠 있는 동안: Enter/이동 시작 → 실제 시작, Esc/돌아가기 → 오버레이 닫기.
+            // Esc를 여기서 소비하므로 아래 다이얼로그 Esc(취소)는 !confirm_move 가드로 막힌다.
+            if enter || confirm_yes {
+                do_start = true;
+            } else if esc || confirm_no {
+                st.confirm_move = false;
+            }
+        } else {
+            // 일반 상태: 버튼 또는 Enter(입력 포커스 아님·시작 가능)로 시작 요청.
+            if want_start || (enter && !typing && can_start) {
+                if st.action == Action::Move {
+                    st.confirm_move = true; // 즉시 실행 대신 확인 오버레이를 띄운다(#63).
+                } else {
+                    do_start = true; // Copy는 종전처럼 즉시 시작.
+                }
+            }
+            if esc {
+                do_cancel = true;
+            }
         }
 
         if do_cancel {
@@ -464,6 +509,47 @@ impl RawBlowApp {
         } else {
             self.transfer = Some(st);
         }
+    }
+
+    /// 원본 이동 확인 오버레이(#63, 전송·정리 공용). 다이얼로그 위에 두 번째 dim + 중앙 카드를
+    /// 그린다. 반환값은 (이동 시작 클릭, 돌아가기 클릭). 순서상 이 오버레이가 다이얼로그 카드보다
+    /// 나중에 그려져 그 위에 겹친다.
+    fn ui_move_confirm_overlay(&self, ctx: &egui::Context, screen: Rect, n: usize) -> (bool, bool) {
+        let lang = self.lang;
+        let mut yes = false;
+        let mut no = false;
+        // 두 번째 dim 레이어(다이얼로그 카드까지 덮도록 Foreground, 카드보다 나중에 표시).
+        // 확인 카드는 한 단계 위(Tooltip)에 두어, dim을 클릭해도 카드가 dim 뒤로 가려지지
+        // 않게 한다(egui의 클릭 시 앞으로 올리기는 같은 Order 안에서만 동작하므로 Order를 분리).
+        egui::Area::new(egui::Id::new("move_confirm_dim"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(Pos2::ZERO)
+            .show(ctx, |ui| {
+                ui.painter().with_clip_rect(screen).rect_filled(screen, 0.0, Color32::from_black_alpha(180));
+                let _ = ui.allocate_rect(screen, Sense::click_and_drag());
+            });
+        egui::Window::new("move_confirm_modal")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .fixed_size(Vec2::new(420.0, 0.0))
+            .frame(modal_frame())
+            .order(egui::Order::Tooltip)
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new(trf(lang, "원본 {}개를 이동합니다 — 원래 폴더에서 제거됩니다.", &[&n.to_string()])).font(prop(13.0)).color(theme::WARN));
+                ui.add_space(14.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.add(egui::Button::new(egui::RichText::new(format!("  {}  ", tr(lang, "이동 시작"))).color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT)).clicked() {
+                        yes = true;
+                    }
+                    ui.add_space(8.0);
+                    if toggle_btn(ui, tr(lang, "돌아가기"), false).clicked() {
+                        no = true;
+                    }
+                });
+            });
+        (yes, no)
     }
 
     /// 전송을 백그라운드 스레드에서 시작하고 진행 모달로 전환한다(#35). 큰 폴더에서
@@ -521,6 +607,7 @@ impl RawBlowApp {
             latest: Progress::default(),
             reopen,
             dest: Some(dest),
+            organize: false,
         });
     }
 
@@ -578,6 +665,7 @@ impl RawBlowApp {
             latest: Progress::default(),
             reopen,
             dest: Some(dest),
+            organize: true,
         });
     }
 
@@ -627,12 +715,21 @@ impl RawBlowApp {
                 None => {}
             }
             self.last_dest = dest;
+            self.result_organize = job.organize; // 결과창 제목 분리(전송/정리)(#63).
             self.result = Some(report);
             return;
         }
         if disconnected {
-            // 작업 스레드가 결과 없이 종료(이례적 — 패닉 등). 진행 모달만 닫는다.
+            // 작업 스레드가 Done 없이 종료(패닉 등, #63). 무음으로 닫지 않고 실패 리포트를
+            // 띄워 작업이 죽었음을 알린다 — 사용자가 결과를 오해하지 않게.
             self.progress = None;
+            let report = TransferReport {
+                failed: vec![(PathBuf::from("-"), tr(lang, "작업이 예기치 않게 중단되었습니다").to_string())],
+                ..Default::default()
+            };
+            self.result_organize = job.organize;
+            self.last_dest = job.dest.clone();
+            self.result = Some(report);
             return;
         }
 
@@ -718,7 +815,9 @@ impl RawBlowApp {
             .fixed_size(Vec2::new(560.0, 0.0))
             .frame(modal_frame())
             .show(ctx, |ui| {
-                modal_header(ui, tr(lang, "전송 완료"), "");
+                // 정리(#34) 결과면 제목을 분리해 표시(#63).
+                let title = if self.result_organize { tr(lang, "정리 완료") } else { tr(lang, "전송 완료") };
+                modal_header(ui, title, "");
                 if report.canceled {
                     ui.label(egui::RichText::new(tr(lang, "취소됨")).font(prop(12.0)).color(theme::WARN));
                     ui.add_space(4.0);
@@ -726,6 +825,11 @@ impl RawBlowApp {
                 ui.label(egui::RichText::new(trf(lang, "✓ {} 파일 전송 · {} 리네임 · {} 실패", &[&report.transferred.to_string(), &report.renamed.len().to_string(), &report.failed.len().to_string()])).font(prop(13.0)).color(theme::OK));
                 ui.add_space(6.0);
                 ui.label(egui::RichText::new(trf(lang, "RAW {} · 이미지 {} · {:.1} MB", &[&report.raw_count.to_string(), &report.image_count.to_string(), &format!("{:.1}", report.bytes as f64 / 1_048_576.0)])).font(mono(11.0)).color(theme::INK2));
+                // 동명 파일 존재로 건너뛴 수(#63): 조용히 사라지지 않게 명시한다.
+                if report.skipped > 0 {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(trf(lang, "건너뜀 {} — 동명 파일 존재", &[&report.skipped.to_string()])).font(mono(11.0)).color(theme::WARN));
+                }
                 if !report.renamed.is_empty() {
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new(format!("RENAMED · {}", report.renamed.len())).font(prop(10.0)).color(theme::WARN));
@@ -738,6 +842,14 @@ impl RawBlowApp {
                     ui.label(egui::RichText::new(format!("FAILED · {}", report.failed.len())).font(prop(10.0)).color(theme::REJECT));
                     for (p, e) in report.failed.iter().take(5) {
                         ui.label(egui::RichText::new(format!("{} — {e}", p.display())).font(mono(10.0)).color(theme::INK3));
+                    }
+                }
+                // 이동 후 원본 삭제 실패(#63): 전송은 됐지만 원본이 남았음을 경고로 알리고 경로를 나열.
+                if !report.remove_failed.is_empty() {
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new(trf(lang, "원본 삭제 실패 {} — 원본 파일이 남아 있습니다", &[&report.remove_failed.len().to_string()])).font(prop(10.0)).color(theme::WARN));
+                    for p in report.remove_failed.iter().take(3) {
+                        ui.label(egui::RichText::new(p.display().to_string()).font(mono(10.0)).color(theme::INK3));
                     }
                 }
                 ui.add_space(14.0);
@@ -781,9 +893,17 @@ impl RawBlowApp {
         let mut st = self.organize.clone().unwrap();
         let mut do_start = false;
         let mut do_cancel = false;
+        let mut want_start = false; // 시작 요청(버튼/Enter). Move면 확인 오버레이 경유(#63).
+        let mut confirm_yes = false; // 확인 오버레이 "이동 시작".
+        let mut confirm_no = false; // 확인 오버레이 "돌아가기".
+        // Enter로 시작(#63). typing은 대상 폴더 TextEdit 포커스 중 Enter 오인을 막는 가드.
+        let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+        let typing = ctx.memory(|m| m.focused().is_some());
 
         // 대상 카운트(가벼움). 확장자 기준은 폴더 분포도 즉석 계산(EXIF 불필요).
         let file_count: usize = self.items.iter().map(|i| i.entry.members.len()).sum();
+        // 시작 가능: 대상 파일이 있고 대상 폴더가 공백이 아닐 것(정리는 기존부터 dest 검증).
+        let can_start = file_count > 0 && !st.dest.trim().is_empty();
         let ext_breakdown: Vec<(String, usize)> = if st.key == OrganizeKey::Extension {
             use std::collections::BTreeMap;
             let mut m: BTreeMap<String, usize> = BTreeMap::new();
@@ -847,6 +967,8 @@ impl RawBlowApp {
                 let act_sel = if st.action == Action::Copy { 0 } else { 1 };
                 if let Some(i) = segmented(ui, &[("Copy", tr(lang, "원본 유지")), ("Move", tr(lang, "원본 이동"))], act_sel) {
                     st.action = if i == 0 { Action::Copy } else { Action::Move };
+                    // Copy로 되돌리면 확인 오버레이 상태를 해제(#63).
+                    if st.action == Action::Copy { st.confirm_move = false; }
                 }
                 ui.add_space(16.0);
 
@@ -895,9 +1017,8 @@ impl RawBlowApp {
                     ui.label(egui::RichText::new(file_count.to_string()).font(mono(13.0)).color(theme::ACCENT));
                     ui.label(egui::RichText::new(tr(lang, "파일")).font(mono(10.0)).color(theme::INK3));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let can_start = file_count > 0 && !st.dest.trim().is_empty();
                         if ui.add_enabled(can_start, egui::Button::new(egui::RichText::new(format!("  {}  ", tr(lang, "정리 시작"))).color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT)).clicked() {
-                            do_start = true;
+                            want_start = true;
                         }
                         ui.add_space(8.0);
                         if toggle_btn(ui, tr(lang, "취소"), false).clicked() {
@@ -907,9 +1028,34 @@ impl RawBlowApp {
                 });
             });
 
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            do_cancel = true;
+        // 원본 이동 확인 오버레이(#63): Move인데 아직 미확인이면 정리 다이얼로그 위에 확인 카드를 띄운다.
+        if st.confirm_move {
+            let (yes, no) = self.ui_move_confirm_overlay(ctx, screen, file_count);
+            confirm_yes = yes;
+            confirm_no = no;
         }
+
+        let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        if st.confirm_move {
+            // 오버레이가 떠 있으면 Enter/이동 시작 → 실제 시작, Esc/돌아가기 → 닫기(Esc 소비).
+            if enter || confirm_yes {
+                do_start = true;
+            } else if esc || confirm_no {
+                st.confirm_move = false;
+            }
+        } else {
+            if want_start || (enter && !typing && can_start) {
+                if st.action == Action::Move {
+                    st.confirm_move = true; // 즉시 실행 대신 확인 오버레이(#63).
+                } else {
+                    do_start = true;
+                }
+            }
+            if esc {
+                do_cancel = true;
+            }
+        }
+
         if do_cancel {
             self.organize = None;
             return;
@@ -1008,6 +1154,7 @@ mod tests {
             action: Action::Copy,
             conflict: ConflictPolicy::Skip,
             dest: r"X:\old\folder".into(),
+            confirm_move: false,
         };
         let st2 = OrganizeDialogState::from_defaults(&st.to_defaults());
         assert_eq!(st2.key, OrganizeKey::Lens);
