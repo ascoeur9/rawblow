@@ -282,6 +282,24 @@ impl RawBlowApp {
                 });
 
                 section_head(ui, "Filter View", None);
+                // 필터 초기화 어포던스(#67): 세 축(라벨·별점·태그) 중 하나라도 걸려 있을 때만 노출.
+                if self.any_filter_active() {
+                    let resp = ui.allocate_response(Vec2::new(RAIL_W - 16.0, 18.0), Sense::click());
+                    let rect = resp.rect;
+                    ui.painter().text(
+                        Pos2::new(rect.left() + 12.0, rect.center().y),
+                        Align2::LEFT_CENTER,
+                        tr(lang, "필터 초기화"),
+                        prop(10.5),
+                        if resp.hovered() { theme::INK } else { theme::INK3 },
+                    );
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if resp.clicked() {
+                        self.reset_filters();
+                    }
+                }
                 for filt in [Filter::All, Filter::Pick, Filter::Hold, Filter::Reject, Filter::Unrated] {
                     let active = self.filter == filt;
                     let resp = ui.allocate_response(Vec2::new(RAIL_W - 16.0, 24.0), Sense::click());
@@ -637,14 +655,11 @@ impl RawBlowApp {
     }
 
     pub(super) fn ui_single(&mut self, ui: &mut egui::Ui) {
-        let lang = self.lang;
         let rect = ui.max_rect();
         let real = match self.current_real() {
             Some(r) => r,
             None => {
-                ui.centered_and_justified(|ui| {
-                    ui.label(egui::RichText::new(tr(lang, "표시할 항목이 없습니다")).color(theme::INK3));
-                });
+                self.ui_empty_state(ui);
                 return;
             }
         };
@@ -654,6 +669,44 @@ impl RawBlowApp {
             self.paint_hud(ui, rect, real, suffix);
             self.ui_map_overlay(ui, rect, real);
         }
+    }
+
+    /// 빈 화면 사유 구분(#67): "폴더가 원래 비어 있음" vs "필터가 전량 배제함" vs (방어) 그 외.
+    /// 단일뷰(ui_single)·그리드(ui_grid)가 공유 — 문구·버튼이 두 화면에서 따로 놀지 않게 한다.
+    pub(super) fn ui_empty_state(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let avail_h = ui.available_height();
+        ui.vertical_centered(|ui| {
+            ui.add_space((avail_h * 0.5 - 40.0).max(0.0));
+            if self.items.is_empty() {
+                ui.label(egui::RichText::new(tr(lang, "이 폴더에 표시할 사진이 없습니다")).color(theme::INK3));
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("JPG · HEIC · PNG · RW2 · CR3 · ARW · NEF · DNG · …")
+                        .font(mono(10.0))
+                        .color(theme::INK4),
+                );
+            } else if self.any_filter_active() {
+                ui.label(egui::RichText::new(tr(lang, "필터와 일치하는 사진이 없습니다")).color(theme::INK3));
+                ui.add_space(10.0);
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new(format!("  {}  ", tr(lang, "필터 초기화")))
+                                .color(Color32::from_rgb(0x0a, 0x14, 0x20)),
+                        )
+                        .fill(theme::ACCENT),
+                    )
+                    .clicked()
+                {
+                    self.reset_filters();
+                }
+            } else {
+                // 방어 폴백: items도 있고 필터도 전부 기본값인데 목록이 비는 경우는 이론상 없어야
+                // 하지만(filtered()가 AND 결합이라 논리적으로 도달 불가) 안전하게 옛 문구를 남긴다.
+                ui.label(egui::RichText::new(tr(lang, "표시할 항목이 없습니다")).color(theme::INK3));
+            }
+        });
     }
 
     /// 사진 영역: 줌/이동 인터랙션 + 그리기.
@@ -890,6 +943,11 @@ impl RawBlowApp {
 
     pub(super) fn ui_grid(&mut self, ui: &mut egui::Ui) {
         let f = self.filtered();
+        if f.is_empty() {
+            // 예전엔 문구 없이 빈 캔버스였다(#67) — 단일뷰와 같은 헬퍼로 사유를 보여준다.
+            self.ui_empty_state(ui);
+            return;
+        }
         let cols = self.grid_cols.clamp(4, 12);
         let cur = self.index.min(f.len().saturating_sub(1));
         let gap = 6.0;

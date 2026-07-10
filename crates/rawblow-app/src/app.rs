@@ -669,6 +669,23 @@ impl RawBlowApp {
             .collect()
     }
 
+    /// 필터 세 축(라벨·별점·태그) 중 하나라도 기본값이 아니면 true(#67). 빈 화면에서
+    /// "폴더가 원래 비어 있음"과 "필터가 전량 배제함"을 구분하는 데 쓴다.
+    fn any_filter_active(&self) -> bool {
+        self.filter != Filter::All
+            || self.star_filter != StarFilter::Any
+            || self.tag_filter != TagFilter::Any
+    }
+
+    /// 필터 세 축을 모두 기본값으로 되돌린다(#67). 레일의 개별 필터 클릭 핸들러와 동일하게
+    /// index도 0으로 리셋한다.
+    fn reset_filters(&mut self) {
+        self.filter = Filter::All;
+        self.star_filter = StarFilter::Any;
+        self.tag_filter = TagFilter::Any;
+        self.index = 0;
+    }
+
     fn counts(&self) -> (usize, usize, usize, usize) {
         let mut c = (0, 0, 0, 0); // pick, hold, reject, unrated
         for it in &self.items {
