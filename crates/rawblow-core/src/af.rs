@@ -398,7 +398,13 @@ fn nikon_af(nikon_tiff: &[u8]) -> Option<AfInfo> {
     let ifd0 = t.u32(4)? as usize;
     let (off, len) = t.data(&t.find(ifd0, 0x00b7)?)?; // AFInfo2(0x00b7)
     let ver = nikon_tiff.get(off..off + 4)?;
-    // V04xx(미러리스)만 이 레이아웃을 쓴다 — DSLR(01xx~03xx)은 구조가 전혀 다르므로 제외.
+    // DSLR 153점(D5/D500/D850): AFInfo2 V0101 + FocusPointSchema=7 (#80). 위상차(뷰파인더)
+    // 측거점은 미러리스와 달리 픽셀좌표가 없고, 센서에 고정된 물리 그리드(9행 A–I × 17열 1–17)를
+    // 20바이트 비트마스크로 지목한다. 아래 V04xx 경로와 레이아웃이 전혀 달라 별도 함수로 뺀다.
+    if ver == b"0101" {
+        return nikon_af_dslr153(nikon_tiff, off, len);
+    }
+    // V04xx(미러리스)만 이 레이아웃을 쓴다 — 그 밖의 DSLR(01xx~03xx)은 구조가 전혀 다르므로 제외.
     if len < 0x46 || &ver[..2] != b"04" {
         return None;
     }
@@ -456,6 +462,80 @@ fn nikon_af(nikon_tiff: &[u8]) -> Option<AfInfo> {
         }
     }
     (!points.is_empty()).then_some(AfInfo { points, source: "nikon-zone" })
+}
+
+// ── Nikon DSLR 153점: AFInfo2 V0101 + FocusPointSchema=7 — D5/D500/D850 (#80) ────────
+// 위상차(뷰파인더) AF는 미러리스처럼 픽셀좌표를 주지 않는다. 대신 센서에 고정된 물리
+// 측거점 그리드(9행 A–I × 17열 1–17 = 153점, 중심 E9)를 20바이트 비트마스크로 지목한다.
+// 레이아웃(ExifTool Nikon.pm `AFInfo2V0101`, 태그 0x00b7 데이터 선두 기준):
+//   off 4  AFDetectionMethod(0=위상차/뷰파인더, 1=콘트라스트/라이브뷰).
+//   off 6  FocusPointSchema(7=153점 D5/D500/D850). 다른 값=점 수·기하가 달라 미지원.
+//   off 8  AFPointsUsed(20바이트, LSB-first, 153비트).  off 28 AFPointsSelected.  off 48 AFPointsInFocus.
+//   off 68 PrimaryAFPoint(int8, 1-based; 0=없음, 1=E9 중심).
+// 비트 i(0-based) → ExifTool 키 (i+1) → 점 이름. 키→(행,열)은 센서 스캔 순서를 역산한다:
+//   9점씩 한 열, 열 순서 = 중앙에서 바깥(9,10,11,8,7,12,13,14,15,16,17,6,5,4,3,2,1),
+//   열 내 행 순서 = E,D,C,B,A,F,G,H,I. 좌표는 실측(8256×5504) 정규화값(Focus-Points 플러그인).
+const N153_COL_X: [f64; 17] = [
+    0.2235, 0.2489, 0.2743, 0.3352, 0.3609, 0.3867, 0.4484, 0.4742, 0.5000, 0.5258, 0.5516, 0.6133,
+    0.6391, 0.6648, 0.7257, 0.7511, 0.7765,
+];
+// 내측 11열(4~14)과 외측 6열(1,2,3,15,16,17)의 세로 스케일이 미세하게 다르다(실측).
+const N153_ROW_Y_INNER: [f64; 9] =
+    [0.3503, 0.3877, 0.4251, 0.4626, 0.5000, 0.5374, 0.5749, 0.6123, 0.6497];
+const N153_ROW_Y_OUTER: [f64; 9] =
+    [0.3612, 0.3959, 0.4306, 0.4653, 0.5000, 0.5347, 0.5694, 0.6041, 0.6388];
+// 키(1-based)를 9열 블록으로 나눈 열 순서와 열 내 행 순서(0=A..8=I).
+const N153_COL_ORDER: [usize; 17] = [9, 10, 11, 8, 7, 12, 13, 14, 15, 16, 17, 6, 5, 4, 3, 2, 1];
+const N153_ROW_ORDER: [usize; 9] = [4, 3, 2, 1, 0, 5, 6, 7, 8];
+
+/// ExifTool 키(1..=153)를 정규화 중심좌표(cx,cy)로. 범위 밖이면 None.
+fn nikon_153_center(key: usize) -> Option<(f64, f64)> {
+    if !(1..=153).contains(&key) {
+        return None;
+    }
+    let g = (key - 1) / 9; // 열 블록 인덱스(0..16)
+    let r = (key - 1) % 9; // 열 내 행 인덱스(0..8)
+    let col = N153_COL_ORDER[g]; // 1..=17
+    let row = N153_ROW_ORDER[r]; // 0..=8 (A..I)
+    let cx = N153_COL_X[col - 1];
+    let outer = matches!(col, 1 | 2 | 3 | 15 | 16 | 17);
+    let cy = if outer { N153_ROW_Y_OUTER[row] } else { N153_ROW_Y_INNER[row] };
+    Some((cx, cy))
+}
+
+/// Nikon DSLR 153점(D850 등)의 AFInfo2 V0101을 파싱한다(#80). `off`/`len`은 nikon_tiff 안에서의
+/// 0x00b7 데이터 위치·길이. FocusPointSchema≠7(다른 점 수 바디)이나 길이 부족은 None.
+fn nikon_af_dslr153(nikon_tiff: &[u8], off: usize, len: usize) -> Option<AfInfo> {
+    // PrimaryAFPoint(off 68)까지 읽어야 하므로 최소 69바이트. schema 7만 이 그리드를 쓴다.
+    if len < 69 || *nikon_tiff.get(off + 6)? != 7 {
+        return None;
+    }
+    let used = nikon_tiff.get(off + 8..off + 28)?; // AFPointsUsed
+    let infocus = nikon_tiff.get(off + 48..off + 68)?; // AFPointsInFocus
+    let primary = *nikon_tiff.get(off + 68)? as usize; // 1-based, 0=없음
+    let bit = |m: &[u8], i: usize| m[i / 8] >> (i % 8) & 1 == 1;
+
+    // 그릴 대상 = Used ∪ InFocus ∪ {primary}. 각 점의 in_focus=InFocus 소속(또는 primary),
+    // selected=primary. 오토에어리어는 여러 점, 단일/그룹은 소수 점이 켜진다.
+    let mut points = Vec::new();
+    for i in 0..153 {
+        let in_used = bit(used, i);
+        let in_focus = bit(infocus, i);
+        let is_primary = primary != 0 && primary - 1 == i;
+        if !in_used && !in_focus && !is_primary {
+            continue;
+        }
+        let Some((cx, cy)) = nikon_153_center(i + 1) else { continue };
+        points.push(AfPoint {
+            cx,
+            cy,
+            w: 157.0 / 8256.0, // 실측 측거점 폭·높이(정규화).
+            h: 145.0 / 5504.0,
+            in_focus: in_focus || is_primary,
+            selected: is_primary,
+        });
+    }
+    (!points.is_empty()).then_some(AfInfo { points, source: "nikon-dslr153" })
 }
 
 #[cfg(test)]
@@ -760,7 +840,42 @@ mod tests {
         // 범위 밖 좌표(레이아웃 불일치 신호) → clamp로 가짜 점 그리지 않고 None.
         assert!(nikon_af(&nikon_embedded_tiff(&mk(b"0408", 8256, 5504, 9000, 2752))).is_none());
 
-        // DSLR 계열(01xx~03xx)은 레이아웃 자체가 달라 단일점이라도 제외.
+        // DSLR 계열(0300 등)은 레이아웃 자체가 달라 단일점이라도 제외(0101=153점만 별도 처리).
         assert!(nikon_af(&nikon_embedded_tiff(&mk(b"0300", 6000, 4000, 3000, 2000))).is_none());
+    }
+
+    /// Nikon DSLR 153점(D850 등) AFInfo2 V0101 — 물리 그리드 매핑·primary·schema 게이트 검증(#80).
+    /// 실제 d850 sample 구조(schema=7, 20바이트 마스크 3개 @8/28/48 + PrimaryAFPoint @68)를 합성 재현.
+    #[test]
+    fn nikon_v0101_d850_153point() {
+        let mk = |set_bits: &[usize], primary: u8, schema: u8| {
+            let mut blob = vec![0u8; 84];
+            blob[0..4].copy_from_slice(b"0101");
+            blob[4] = 0; // AFDetectionMethod = 위상차(뷰파인더)
+            blob[5] = 8; // AFAreaMode = Auto-area
+            blob[6] = schema; // FocusPointSchema
+            for &b in set_bits {
+                blob[8 + b / 8] |= 1 << (b % 8); // AFPointsUsed
+                blob[48 + b / 8] |= 1 << (b % 8); // AFPointsInFocus
+            }
+            blob[68] = primary; // PrimaryAFPoint(1-based)
+            blob
+        };
+
+        // 중심 E9(키 1 → 비트 0) + primary=1 → 정확히 (0.5, 0.5), 합초·선택.
+        let info = nikon_af(&nikon_embedded_tiff(&mk(&[0], 1, 7))).expect("d850 153 center");
+        assert_eq!(info.source, "nikon-dslr153");
+        let c = *info.points.iter().find(|p| p.selected).expect("primary point");
+        assert!((c.cx - 0.5).abs() < 1e-6 && (c.cy - 0.5).abs() < 1e-6);
+        assert!(c.in_focus && c.selected);
+
+        // 좌상단 코너 A1(키 149 → 비트 148): 외측 열 y·좌측 열 x = (0.2235, 0.3612).
+        let info = nikon_af(&nikon_embedded_tiff(&mk(&[148], 0, 7))).expect("d850 153 corner");
+        assert_eq!(info.points.len(), 1);
+        let p = info.points[0];
+        assert!((p.cx - 0.2235).abs() < 1e-6 && (p.cy - 0.3612).abs() < 1e-6);
+
+        // FocusPointSchema≠7(51점 D7500 등 다른 바디)은 그리드가 달라 미표시(잘못 찍느니 안 그림).
+        assert!(nikon_af(&nikon_embedded_tiff(&mk(&[0], 1, 1))).is_none());
     }
 }
