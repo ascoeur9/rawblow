@@ -110,6 +110,112 @@ load-dynamic은 "앱은 뜨되 SAC PC에서 AI는 비활성"까지다. **모든 
 3. `scripts/build-release-windows.ps1` 마지막에 서명 단계 추가(스테이징 후, NSIS 전). setup.exe도 서명.
 - EV/Trusted Signing은 Microsoft Intelligent Security Graph 평판을 빠르게 쌓아 SAC가 신뢰한다. OV 인증서는 평판 누적 전까지 여전히 막힐 수 있다.
 
+## 옵션 ④ — MS 스토어(MSIX) 배포로 SAC 우회 (권장 대안, 무료 서명)
+
+스토어는 **MSIX/APPX 패키지를 무료로 재서명**한다(MSI/EXE는 안 해줌 — Learn app-package-requirements, 2026-07-17). MSIX는 **패키지 전체가 하나의 공통 카탈로그 서명**으로 신뢰되므로, 안에 든 **미서명 `webgpu_dawn.dll`·`onnxruntime.dll`도 포함으로 신뢰**되어 SAC의 `0xc0e90002` 차단이 사라진다. **DLL 손대지 않고, load-dynamic 없이도** 해결.
+
+RawBlow 적합성(코드 확인 완료): config→`%APPDATA%\RawBlow`(config.rs:619), 캐시→`%LOCALAPPDATA%`(config.rs:651), **설치 폴더 쓰기 없음** → MSIX(풀트러스트)에서 유일한 파괴 지점(설치폴더 쓰기)이 없음. 임의 사진 폴더 사이드카 쓰기도 풀트러스트라 통과(`broadFileSystemAccess` 불필요). → **코드 변경 없이 재패키징만으로 가능성 높음.**
+
+> ⚠ "패키지 서명이 내부 미서명 DLL까지 신뢰시킨다"는 결론은 근거는 탄탄하나 일부 추론 → **SAC 켜진 클린 Win11 1대에서 사이드로드로 실검증**(아래 5단계) 후 확정.
+
+### 사전 준비
+- **Windows 10/11 SDK** 설치(→ `makeappx.exe`·`signtool.exe`·WACK 제공). **Developer Command Prompt**에서 작업.
+
+### 1) 스토어에서 이름 예약 + Identity 값 확보
+1. Partner Center → **Apps and games** → **New product** → **MSIX or PWA app** → 이름 입력 → **Check availability** → **Reserve product name**("RawBlow").
+2. 좌측 **Product management → Product identity**에서 **3개 값 그대로 복사**(대소문자·구두점 민감):
+   - **Package/Identity/Name** → 매니페스트 `<Identity Name="…">`
+   - **Package/Identity/Publisher** → `<Identity Publisher="CN=…">` (스토어가 배정한 문자열, 내 이름 아님)
+   - **Package/Properties/PublisherDisplayName** → `<Properties><PublisherDisplayName>`
+   - (PFN·SID는 매니페스트에 안 넣음)
+
+### 2) `AppxManifest.xml` 작성 (위 3개 값 + RawBlow 값으로)
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities">
+  <Identity Name="[Partner Center Name]" Publisher="CN=[Partner Center Publisher]"
+            Version="0.5.8.0" ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>RawBlow</DisplayName>
+    <PublisherDisplayName>[Partner Center PublisherDisplayName]</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Resources><Resource Language="en-us" /></Resources>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.22631.0" />
+  </Dependencies>
+  <Capabilities><rescap:Capability Name="runFullTrust" /></Capabilities>
+  <Applications>
+    <Application Id="RawBlow" Executable="RawBlow.exe"
+        uap10:RuntimeBehavior="packagedClassicApp" uap10:TrustLevel="mediumIL">
+      <uap:VisualElements DisplayName="RawBlow" Description="빠른 RAW 사진 컬링 뷰어"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" BackgroundColor="#464646" />
+    </Application>
+  </Applications>
+</Package>
+```
+- `Version`은 **4번째 자리 반드시 0**(스토어 예약), 첫 자리 0 불가 → 릴리즈 버전이 x.y.z면 `x.y.z.0`.
+- `ProcessorArchitecture="x64"`, `MinVersion="10.0.19041.0"`(packagedClassicApp+mediumIL 요구), `runFullTrust`(풀트러스트 Win32 필수).
+- **번들 DLL은 매니페스트 선언 불필요** — 그냥 패키지 파일로 포함. 개별 서명도 불필요(BlockMap이 전 파일 해시, 패키지 서명이 커버).
+- `broadFileSystemAccess`는 **넣지 말 것**(mediumIL은 이미 사용자 파일 전권 → 불필요·심사 가중).
+
+### 3) 아이콘 에셋 3종 (`Assets\`)
+`StoreLogo.png`(50×50), `Square150x150Logo.png`, `Square44x44Logo.png`. 기존 로고(`crates/rawblow-app/src/logo.rs`)에서 PNG로 뽑아 만들면 됨.
+
+### 4) 스테이징 + 패키징 (기존 빌드 스크립트 재활용)
+`scripts/build-release-windows.ps1`이 이미 `RawBlow.exe + 전체 DLL`을 스테이지 폴더에 모은다. 그 폴더 **루트에 `AppxManifest.xml` + `Assets\`** 를 얹고:
+```
+makeappx pack /d <스테이지폴더> /p RawBlow.msix /o
+```
+(→ 빌드 스크립트에 makeappx 단계를 추가하면 NSIS와 병행 산출 가능)
+
+### 5) 로컬 사이드로드 실검증 (제출 전 필수)
+자체서명 인증서의 `-Subject`를 **매니페스트 Publisher와 동일**하게 → 같은 .msix로 테스트·제출.
+```powershell
+New-SelfSignedCertificate -Type Custom -KeyUsage DigitalSignature `
+  -Subject "CN=[Partner Center Publisher]" -CertStoreLocation "Cert:\CurrentUser\My" `
+  -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3","2.5.29.19={text}")
+$pw = ConvertTo-SecureString "Test123!" -Force -AsPlainText
+Export-PfxCertificate -cert "Cert:\CurrentUser\My\<Thumbprint>" -FilePath .\dev.pfx -Password $pw
+Import-PfxCertificate -CertStoreLocation "Cert:\LocalMachine\TrustedPeople" -FilePath .\dev.pfx -Password $pw
+SignTool sign /fd SHA256 /a /f .\dev.pfx /p "Test123!" RawBlow.msix
+Add-AppxPackage .\RawBlow.msix
+```
+→ 실행해서 **AI 컬링(DLL 로드)·`%APPDATA%`/`%LOCALAPPDATA%` 정상**인지 확인. **가능하면 SAC 켜진 클린 Win11에서** 사이드로드해 차단 안 됨을 확인. 이어 **WACK(Windows App Certification Kit)** 로 패키지 검사.
+
+### 6) Partner Center 제출 (섹션별)
+앱 overview → **Start submission**:
+- **Pricing and availability**: Base price **Free**, Markets 전체.
+- **Properties**: **Category**(Photo & video). 개인정보 전송이 있으면(업데이트 확인·AI 등) **Privacy policy URL 필수**(§공통 반려 사유).
+- **Age ratings**: IARC 설문 **필수**(사진 유틸이라 2분).
+- **Packages**: `RawBlow.msix` 업로드 → 매니페스트 Identity가 예약 제품과 **일치해야 통과**(불일치 시 여기서 반려).
+- **Store listings**: **Description(≤10,000자) + 스크린샷 최소 1장**(권장 4장, PNG, Desktop ≥1366×768). 300×300 앱 타일 아이콘 권장.
+- **Submission options**: `runFullTrust` **정당화 한 줄**("Packaged classic Win32 desktop app; runs as mediumIL full-trust process.").
+- → **Submit for certification** → 보통 **1~3 영업일**(멀웨어 스캔·크래시·정책·restricted-cap 검토). 통과 시 스토어가 재서명·게시.
+
+### 자주 겪는 반려 + 예방
+- **개인정보 처리방침 누락**(가장 흔함) → 전송하는 게 있으면 URL 제공, 전부 오프라인이면 그 취지 명시.
+- **스크린샷 부족/저품질** → 실제 앱 화면 1366×768+ PNG ≥1장.
+- **인증 머신에서 크래시** → 서명한 .msix를 **클린 VM에서 먼저 테스트**(§5), 필요 시 Notes for certification에 설명.
+- **runFullTrust 정당화** → 위 한 줄. `broadFileSystemAccess` 추가 금지.
+
+### 배포 채널 주의
+스토어(MSIX)를 **Windows 주 배포로** 삼으면 #79 해결. **NSIS setup.exe 병행 시** 그 사용자는 여전히 SAC에 막히므로 → 그 채널엔 load-dynamic 또는 서명 필요.
+
+### 출처(추가)
+- Store가 MSIX/AppX만 재서명: Learn `publish/publish-your-app/msix/app-package-requirements`(2026-07-17)
+- 수동 매니페스트/makeappx: Learn `msix/desktop/desktop-to-uwp-manual-conversion`, `msix/package/create-app-package-with-makeappx-tool`
+- 서명·사이드로드: Learn `msix/package/sign-msix-package-guide`(2026-04)
+- 이름 예약·제출·리스팅: Learn `apps/publish/publish-your-app/msix/{reserve-your-apps-name,create-app-submission,add-and-edit-store-listing-info}`
+- Product identity: Learn `apps/publish/view-app-identity-details`
+- capabilities(runFullTrust): Learn `uwp/packaging/app-capability-declarations`
+- 인증 FAQ/기간·Store Policies: Learn `apps/publish/faq/get-your-app-certified`, `apps/publish/store-policies`
+
 ## 현재 상태(2026-07-20)
 - v0.5.8 준비 커밋까지 푸시됨(main). 이슈 후속 5건 완료: #80 AF, #78 Undo, #75 디코드 회복, #76 토스트, #74 설정 제목.
 - **남은 릴리즈 게이트: 이 #79.** 이 문서대로 Windows에서 수정·검증 후 돌아오면, macOS 쪽에서 새로 빌드해 **macOS 릴리즈**를 진행한다(사용자 계획).
