@@ -24,3 +24,6 @@
 /BUILD_NOTES.md
 /packaging/
 /dist/
+
+# 스토어 제출 자격증명(실값) — 절대 커밋 금지. 예시(.example)만 추적.
+/scripts/store-credentials.ps1
