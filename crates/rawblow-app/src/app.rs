@@ -116,6 +116,20 @@ struct Toast {
     kind: ToastKind,
 }
 
+/// 컬링 편집 1회의 되돌리기 스냅샷(#78). 편집 대상 항목들의 편집 **전** (라벨·별점·태그)과
+/// 편집 시점의 필터 뷰 위치를 담는다. undo는 값을 복원하고 그 사진으로 뷰를 되돌리며, redo는
+/// 대칭으로 동작한다. real 인덱스는 폴더 전환·재정렬 시 재배정되므로 그때 스택을 비운다.
+#[derive(Clone)]
+struct CullEdit {
+    /// (real, 라벨, 별점, 태그) — 편집 대상 항목들의 편집 전 상태.
+    prev: Vec<(usize, Label, u8, ColorTag)>,
+    /// 편집 시점의 self.index(필터 뷰 위치).
+    index: usize,
+}
+
+/// undo/redo 이력 최대 길이. 빠른 컬링에서 충분히 길되 메모리는 묶는다.
+const UNDO_LIMIT: usize = 300;
+
 pub struct RawBlowApp {
     cfg: Config,
     folder: Option<PathBuf>,
@@ -155,6 +169,11 @@ pub struct RawBlowApp {
     grid_scroll_to: Option<usize>,
     // 마지막 프레임에 그리드에 보였던 행 범위(스크롤 필요 여부 판단용).
     grid_visible_rows: std::ops::Range<usize>,
+
+    // 컬링 되돌리기(#78): 라벨·별점·태그 변경 이력. Ctrl/⌘Z로 직전 편집을 취소, ⇧를 더해 재실행.
+    // 폴더 전환·재정렬(real 인덱스 재배정) 시 비운다. 새 편집이 생기면 redo_stack은 무효화.
+    undo_stack: Vec<CullEdit>,
+    redo_stack: Vec<CullEdit>,
 
     worker: Worker,
     cache: TexCache,  // 단일/전체화면 프리뷰(큰 해상도)
@@ -340,6 +359,8 @@ impl RawBlowApp {
             sel_anchor: None,
             grid_scroll_to: None,
             grid_visible_rows: 0..0,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
             folder: None,
             items: Vec::new(),
             index: 0,
@@ -496,6 +517,8 @@ impl RawBlowApp {
         self.failed_preview.clear();
         self.failed_thumb.clear();
         self.decode_fails.clear(); // real 인덱스가 재배정되므로 실패 카운터도 함께 리셋(#64).
+        self.undo_stack.clear(); // real 인덱스 재배정 → 되돌리기 스냅샷도 무효(#78).
+        self.redo_stack.clear();
         self.histo.clear();
         self.selected.clear();
         self.sel_anchor = None;
@@ -653,6 +676,8 @@ impl RawBlowApp {
         self.failed_preview.clear();
         self.failed_thumb.clear();
         self.decode_fails.clear(); // real 인덱스가 재배정되므로 실패 카운터도 함께 리셋(#64).
+        self.undo_stack.clear(); // real 인덱스 재배정 → 되돌리기 스냅샷도 무효(#78).
+        self.redo_stack.clear();
         self.histo.clear();
         self.selected.clear();
         self.sel_anchor = None;
@@ -741,6 +766,87 @@ impl RawBlowApp {
 
 
 
+    /// 컬링 변경(라벨/별점/태그) 직전 상태를 undo 이력에 기록한다(#78). `reals` 중 실제 존재하는
+    /// 항목만 스냅샷하며, 대상이 없으면 아무 것도 하지 않는다. 새 편집이므로 redo 스택은 비운다.
+    fn push_undo(&mut self, reals: &[usize]) {
+        let prev: Vec<(usize, Label, u8, ColorTag)> = reals
+            .iter()
+            .filter_map(|&r| self.items.get(r).map(|it| (r, it.entry.label, it.entry.stars, it.entry.tag)))
+            .collect();
+        if prev.is_empty() {
+            return;
+        }
+        self.undo_stack.push(CullEdit { prev, index: self.index });
+        if self.undo_stack.len() > UNDO_LIMIT {
+            self.undo_stack.remove(0);
+        }
+        self.redo_stack.clear();
+    }
+
+    /// 스냅샷의 (라벨·별점·태그)를 현재 항목들에 적용하고, 적용 **전** 상태를 반대 방향
+    /// 스택용 스냅샷으로 반환한다. 편집 대상 사진으로 뷰 위치도 되돌린다(#78, undo/redo 공용).
+    fn apply_cull_snapshot(&mut self, edit: &CullEdit) -> CullEdit {
+        let inverse: Vec<(usize, Label, u8, ColorTag)> = edit
+            .prev
+            .iter()
+            .filter_map(|&(r, ..)| self.items.get(r).map(|it| (r, it.entry.label, it.entry.stars, it.entry.tag)))
+            .collect();
+        let inverse_index = self.index;
+        for &(r, label, stars, tag) in &edit.prev {
+            if let Some(it) = self.items.get_mut(r) {
+                it.entry.label = label;
+                it.entry.stars = stars;
+                it.entry.tag = tag;
+            }
+        }
+        self.sidecar_dirty = true;
+        self.focus_after_undo(edit.prev.first().map(|e| e.0), edit.index);
+        CullEdit { prev: inverse, index: inverse_index }
+    }
+
+    /// undo/redo 후 편집 대상(real)이 현재 필터에 보이면 그 위치로, 아니면 저장된 인덱스로 뷰를 옮긴다.
+    /// (라벨 복원으로 필터에서 빠졌던 항목이 다시 보이는 경우를 우선 처리 — 바로 재평가할 수 있게.)
+    fn focus_after_undo(&mut self, real: Option<usize>, fallback: usize) {
+        let f = self.filtered();
+        if f.is_empty() {
+            self.index = 0;
+            return;
+        }
+        let pos = real
+            .and_then(|r| f.iter().position(|&x| x == r))
+            .unwrap_or_else(|| fallback.min(f.len() - 1));
+        self.index = pos;
+        self.full_raw = false;
+        if self.view == ViewMode::Grid {
+            self.selected.clear();
+            self.sel_anchor = Some(self.index);
+            let cols = self.grid_cols.clamp(4, 12);
+            self.grid_scroll_to = Some(self.index / cols);
+        }
+    }
+
+    /// 직전 컬링 편집을 되돌린다(#78, Ctrl/⌘Z). 값 복원 후 그 사진으로 뷰를 옮겨 바로 재평가할 수 있게 한다.
+    fn undo(&mut self) {
+        let Some(edit) = self.undo_stack.pop() else {
+            self.toast_info(tr(self.lang, "되돌릴 작업이 없습니다").to_owned());
+            return;
+        };
+        let inverse = self.apply_cull_snapshot(&edit);
+        self.redo_stack.push(inverse);
+        self.toast_info(tr(self.lang, "되돌렸습니다").to_owned());
+    }
+
+    /// 되돌린 편집을 다시 실행한다(#78, Ctrl/⌘⇧Z · Ctrl/⌘Y).
+    fn redo(&mut self) {
+        let Some(edit) = self.redo_stack.pop() else {
+            self.toast_info(tr(self.lang, "다시 실행할 작업이 없습니다").to_owned());
+            return;
+        };
+        let inverse = self.apply_cull_snapshot(&edit);
+        self.undo_stack.push(inverse);
+        self.toast_info(tr(self.lang, "다시 실행했습니다").to_owned());
+    }
+
     fn set_label(&mut self, label: Label) {
         if self.cull_axis_locked(AiCullTarget::Label) {
             return;
@@ -748,6 +854,7 @@ impl RawBlowApp {
         // 그리드에서 다중 선택 중이면 선택한 항목 전부에 일괄 적용(토글·자동진행 없음).
         if self.view == ViewMode::Grid && !self.selected.is_empty() {
             let targets: Vec<usize> = self.selected.iter().copied().collect();
+            self.push_undo(&targets); // #78
             for real in targets {
                 if let Some(it) = self.items.get_mut(real) {
                     it.entry.label = label;
@@ -757,6 +864,7 @@ impl RawBlowApp {
             return;
         }
         if let Some(real) = self.current_real() {
+            self.push_undo(&[real]); // #78
             if let Some(it) = self.items.get_mut(real) {
                 // 같은 라벨 재입력 시 미선택으로 토글.
                 it.entry.label = if it.entry.label == label {
@@ -784,6 +892,7 @@ impl RawBlowApp {
         // 그리드 다중 선택 → 선택 전부에 그대로 적용(토글·자동진행 없음).
         if self.view == ViewMode::Grid && !self.selected.is_empty() {
             let targets: Vec<usize> = self.selected.iter().copied().collect();
+            self.push_undo(&targets); // #78
             for real in targets {
                 if let Some(it) = self.items.get_mut(real) {
                     it.entry.stars = stars;
@@ -793,6 +902,7 @@ impl RawBlowApp {
             return;
         }
         if let Some(real) = self.current_real() {
+            self.push_undo(&[real]); // #78
             if let Some(it) = self.items.get_mut(real) {
                 it.entry.stars = if stars != 0 && it.entry.stars == stars { 0 } else { stars };
                 self.sidecar_dirty = true;
@@ -821,6 +931,7 @@ impl RawBlowApp {
         }
         if self.view == ViewMode::Grid && !self.selected.is_empty() {
             let targets: Vec<usize> = self.selected.iter().copied().collect();
+            self.push_undo(&targets); // #78
             for real in targets {
                 if let Some(it) = self.items.get_mut(real) {
                     it.entry.tag = tag;
@@ -830,6 +941,7 @@ impl RawBlowApp {
             return;
         }
         if let Some(real) = self.current_real() {
+            self.push_undo(&[real]); // #78
             if let Some(it) = self.items.get_mut(real) {
                 it.entry.tag = if it.entry.tag == tag { ColorTag::None } else { tag };
                 self.sidecar_dirty = true;
@@ -1321,6 +1433,11 @@ impl RawBlowApp {
                             self.cfg.show_af = self.show_af;
                             let _ = config::save(&self.cfg);
                         }
+                        // 컬링 되돌리기(#78): Ctrl/⌘Z = 취소, Ctrl/⌘⇧Z·Ctrl/⌘Y = 재실행.
+                        // cmd 가드가 있어 아래 plain Z(확대 토글)와 겹치지 않는다(위가 먼저 매칭).
+                        Key::Z if cmd && modifiers.shift => self.redo(),
+                        Key::Z if cmd => self.undo(),
+                        Key::Y if cmd => self.redo(),
                         Key::Space | Key::Z => {
                             // 창맞춤 ↔ 1:1 토글.
                             if self.fit {

@@ -564,6 +564,13 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "설정 — 키보드 · 일반" => ("Settings — Keyboard & General", "設定 — キーボードと一般"),
         // #75 디코드 실패 고착 회복 — ⚠ 상태에서 수동 재시도 안내.
         "클릭하여 재시도" => ("Click to retry", "クリックで再試行"),
+        // #78 컬링 되돌리기(Undo/Redo) 토스트 피드백.
+        "되돌렸습니다" => ("Undone", "元に戻しました"),
+        "다시 실행했습니다" => ("Redone", "やり直しました"),
+        "되돌릴 작업이 없습니다" => ("Nothing to undo", "元に戻す操作がありません"),
+        "다시 실행할 작업이 없습니다" => ("Nothing to redo", "やり直す操作がありません"),
+        "되돌리기" => ("Undo", "元に戻す"),
+        "다시 실행" => ("Redo", "やり直し"),
         // #69 설정 다듬기 — 기본값 복원·자동 업데이트 확인
         "기본값 복원" => ("Reset to Defaults", "デフォルトに戻す"),
         "모든 설정을 기본값으로 되돌립니다" => ("This resets all settings to their defaults", "すべての設定をデフォルトに戻します"),

@@ -370,6 +370,9 @@ impl RawBlowApp {
                                         .font(mono(9.5))
                                         .color(theme::INK4),
                                 );
+                                // 컬링 되돌리기(#78).
+                                row(ui, &[format!("{}Z", cmd).as_str()], tr(lang, "되돌리기"));
+                                row(ui, &[format!("{}⇧Z", cmd).as_str()], tr(lang, "다시 실행"));
 
                                 head(ui, tr(lang, "별점·태그"));
                                 row(ui, &["1~5"], tr(lang, "별점"));
