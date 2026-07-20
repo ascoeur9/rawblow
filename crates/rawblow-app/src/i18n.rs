@@ -562,6 +562,8 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         // #74 설정 화면 헤더 전용 캡션 — 재사용 키("설정")의 En이 "Settings"라 영어 UI에서
         // 기존 "Settings — Keyboard & General"이 축약됐던 문제. 헤더 전용 키로 전체 제목을 복원한다.
         "설정 — 키보드 · 일반" => ("Settings — Keyboard & General", "設定 — キーボードと一般"),
+        // #75 디코드 실패 고착 회복 — ⚠ 상태에서 수동 재시도 안내.
+        "클릭하여 재시도" => ("Click to retry", "クリックで再試行"),
         // #69 설정 다듬기 — 기본값 복원·자동 업데이트 확인
         "기본값 복원" => ("Reset to Defaults", "デフォルトに戻す"),
         "모든 설정을 기본값으로 되돌립니다" => ("This resets all settings to their defaults", "すべての設定をデフォルトに戻します"),

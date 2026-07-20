@@ -768,14 +768,23 @@ impl RawBlowApp {
             Some(v) => v,
             None => {
                 if self.decode_dead(real) {
-                    // 누적 3회 실패(#64): "디코딩 중…" 무한 반복 대신 에러 상태로 고정 표시하고,
+                    // 누적 실패(#64): "디코딩 중…" 무한 반복 대신 에러 상태(⚠)로 고정 표시하고,
                     // 더 시도할 게 없으므로 재페인트 루프도 걸지 않는다.
-                    let it = &self.items[real];
-                    let name = it.entry.display.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                    // #75: 영역을 클릭하면 수동 재시도(NAS/네트워크 복구 후 폴더 재열기 없이 회복).
+                    let name = self.items[real].entry.display.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
                     let p = ui.painter();
-                    p.text(area.center() + Vec2::new(0.0, -22.0), Align2::CENTER_CENTER, "⚠", mono(28.0), theme::WARN);
-                    p.text(area.center() + Vec2::new(0.0, 6.0), Align2::CENTER_CENTER, tr(lang, "이 파일을 열 수 없습니다"), mono(12.0), theme::INK3);
-                    p.text(area.center() + Vec2::new(0.0, 24.0), Align2::CENTER_CENTER, &name, mono(10.5), theme::INK4);
+                    p.text(area.center() + Vec2::new(0.0, -28.0), Align2::CENTER_CENTER, "⚠", mono(28.0), theme::WARN);
+                    p.text(area.center() + Vec2::new(0.0, 0.0), Align2::CENTER_CENTER, tr(lang, "이 파일을 열 수 없습니다"), mono(12.0), theme::INK3);
+                    p.text(area.center() + Vec2::new(0.0, 18.0), Align2::CENTER_CENTER, &name, mono(10.5), theme::INK4);
+                    p.text(area.center() + Vec2::new(0.0, 40.0), Align2::CENTER_CENTER, tr(lang, "클릭하여 재시도"), mono(10.5), theme::INK3);
+                    let resp = ui.interact(area, ui.id().with(("retry_dead", real)), Sense::click());
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if resp.clicked() {
+                        self.retry_decode(real);
+                        ui.ctx().request_repaint();
+                    }
                 } else {
                     ui.painter()
                         .text(area.center(), Align2::CENTER_CENTER, tr(lang, "디코딩 중…"), mono(12.0), theme::INK3);

@@ -65,6 +65,10 @@ const THUMB_CAP: usize = 1500;
 /// 한 프레임에 GPU로 올리는 썸네일 텍스처 상한. 빠른 스크롤로 결과가 한꺼번에 쏟아져도
 /// 업로드를 분산해 GPU 버스트로 메인 스레드가 멈추는(행) 것을 막는다.
 const THUMB_UPLOADS_PER_FRAME: usize = 32;
+/// 디코드 실패 고착 임계(#64, #75). 이 횟수 이상 **연속** 실패하면 영구 손상으로 보고 재시도를
+/// 멈춘다(성공 시 카운터 리셋). NAS 등 일시적 끊김이 3회 임계에 쉽게 닿아 정상 파일이 고착되던
+/// 문제(#75)로 3→5 상향. ⚠ 클릭 수동 재시도(retry_decode)로 고착 파일도 회복 가능.
+const DECODE_DEAD_THRESHOLD: u8 = 5;
 
 /// 촬영시간순 정렬(#56)용 백그라운드 EXIF 시각 수집 결과. 항목 순서는 수집 시작 시점의
 /// items 순서와 같으며, generation이 다르면(폴더 전환 등) 버린다.
@@ -714,11 +718,23 @@ impl RawBlowApp {
         f.get(self.index.min(f.len().saturating_sub(1))).copied()
     }
 
-    /// 항목(real)의 디코딩이 영구 실패로 판단되는지(#64). 3회 = 일시적 I/O 오류(NAS 끊김 등)와
-    /// 영구 손상을 구분하는 임계 — 미만이면 지금처럼 prio 재시도를 계속하고, 이상이면 멈추고
-    /// 에러 상태를 보여준다.
+    /// 항목(real)의 디코딩이 영구 실패로 판단되는지(#64). 임계 5회 = 일시적 I/O 오류(NAS 끊김 등)와
+    /// 영구 손상을 구분 — 미만이면 prio 재시도를 계속하고, 이상이면 멈추고 에러 상태(⚠)를 보여준다.
+    /// #75: 카운터는 성공 디코드 시 리셋되므로(drain_results) 이 임계는 **연속** 실패 횟수에 가깝다.
+    /// 임계를 넘어 고착된 파일도 ⚠ 클릭(retry_decode)으로 카운터를 지워 회복할 수 있다.
     fn decode_dead(&self, real: usize) -> bool {
-        self.decode_fails.get(&real).is_some_and(|&n| n >= 3)
+        self.decode_fails.get(&real).is_some_and(|&n| n >= DECODE_DEAD_THRESHOLD)
+    }
+
+    /// ⚠(디코드 실패 고착) 상태에서 사용자가 수동으로 재시도한다(#75). 실패 카운터·마킹을 지우고
+    /// 프리뷰·썸네일을 우선 레인으로 다시 요청 — NAS/네트워크 복구 후 폴더를 다시 열지 않고 회복한다.
+    fn retry_decode(&mut self, real: usize) {
+        self.decode_fails.remove(&real);
+        self.failed_preview.remove(&real);
+        self.failed_thumb.remove(&real);
+        let cur_edge = if self.full_raw { Some(ORIG_EDGE) } else { Some(PREVIEW_EDGE) };
+        self.request_preview(real, cur_edge, self.full_raw, true);
+        self.request_thumb(real, true);
     }
 
 

@@ -260,6 +260,12 @@ impl RawBlowApp {
                 continue; // 오래된 결과
             }
             if let Ok(img) = res.image {
+                // 성공 디코드 → 누적 실패 카운터·실패 마킹 리셋(#75). 일시적(NAS 끊김 등) 실패가
+                // 성공 사이에 쌓여 정상 파일이 영구 손상(decode_dead)으로 오판되지 않게, 임계는
+                // "연속" 실패에 가깝게 유지한다(성공하면 0으로).
+                self.decode_fails.remove(&res.id);
+                self.failed_thumb.remove(&res.id);
+                self.failed_preview.remove(&res.id);
                 if res.thumb {
                     // 이미 캐시돼 있으면 중복 결과는 버린다(우선-승격으로 같은 썸네일이
                     // 두 번 디코딩될 수 있는데, 사용 중인 텍스처 핸들을 드롭하면 wgpu가
