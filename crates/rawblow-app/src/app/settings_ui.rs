@@ -3,6 +3,12 @@
 
 use super::*;
 
+// 설정 화면 텍스트 대비 상향: 배경 BG1(#0b0d11) 위에서 기존 INK4(≈2.5:1)·INK3(≈4.5:1)는
+// 특히 작은 설명 문구가 잘 안 보였다. 이 화면에 한해 잉크 톤을 한 단계 올린다
+// — 설명/힌트 INK4→INK3(≈4.5:1, AA 충족), 섹션 헤더 INK3→INK2(≈8.9:1). 전역 theme는 유지.
+use crate::theme::INK2 as INK_HEAD; // 섹션 헤더
+use crate::theme::INK3 as INK_HELP; // 설명·힌트
+
 impl RawBlowApp {
     pub(super) fn ui_settings(&mut self, ctx: &egui::Context) {
         let lang = self.lang;
@@ -27,7 +33,7 @@ impl RawBlowApp {
             .frame(egui::Frame::none().fill(theme::BG1).inner_margin(egui::Margin::same(24.0)))
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.label(egui::RichText::new(tr(lang, "일반")).font(prop(11.0)).color(theme::INK3));
+                    ui.label(egui::RichText::new(tr(lang, "일반")).font(prop(11.0)).color(INK_HEAD));
                     // 모든 설정 컨트롤은 변경 즉시 저장(#69). config::save는 작은 원자적 JSON 쓰기라
                     // 체크박스/드래그/텍스트 입력마다 저장해도 부담이 적다(DragValue·TextEdit의 .changed()는
                     // 드래그 틱·키 입력마다 발생). '돌아가기' 저장은 최종 catch-all로 남긴다.
@@ -109,9 +115,9 @@ impl RawBlowApp {
                     });
                     // ── PHOTO BACKGROUND (#36): 사진 표시 화면 배경색 — 프리셋 + HEX/RGB ──
                     ui.add_space(18.0);
-                    ui.label(egui::RichText::new(tr(lang, "사진 배경")).font(prop(11.0)).color(theme::INK3));
+                    ui.label(egui::RichText::new(tr(lang, "사진 배경")).font(prop(11.0)).color(INK_HEAD));
                     ui.add_space(2.0);
-                    ui.label(egui::RichText::new(tr(lang, "사진 표시 화면 배경색 — 프리셋 또는 HEX/RGB로 지정(Lightroom Develop 기본값은 50% 회색)")).font(mono(10.0)).color(theme::INK4));
+                    ui.label(egui::RichText::new(tr(lang, "사진 표시 화면 배경색 — 프리셋 또는 HEX/RGB로 지정(Lightroom Develop 기본값은 50% 회색)")).font(mono(10.0)).color(INK_HELP));
                     ui.add_space(6.0);
                     // 프리셋: (라벨, Option<rgb>) — None은 앱 기본(near-black void).
                     let presets: [(&str, Option<[u8; 3]>); 6] = [
@@ -140,7 +146,7 @@ impl RawBlowApp {
                                     ui.label(
                                         egui::RichText::new(label)
                                             .font(mono(9.0))
-                                            .color(if selected { theme::INK2 } else { theme::INK4 }),
+                                            .color(if selected { theme::INK2 } else { INK_HELP }),
                                     );
                                     clicked
                                 },
@@ -159,7 +165,7 @@ impl RawBlowApp {
                         let (sr, _) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::hover());
                         ui.painter().rect(sr, Rounding::same(4.0), Color32::from_rgb(cur[0], cur[1], cur[2]), Stroke::new(1.0, theme::LINE3));
                         ui.add_space(4.0);
-                        ui.label(egui::RichText::new("HEX").font(mono(10.0)).color(theme::INK3));
+                        ui.label(egui::RichText::new("HEX").font(mono(10.0)).color(INK_HEAD));
                         let resp = ui.add(egui::TextEdit::singleline(&mut self.bg_hex).font(mono(12.0)).desired_width(84.0).hint_text("#101010"));
                         if resp.changed() {
                             if let Some(rgb) = parse_hex_rgb(&self.bg_hex) {
@@ -174,11 +180,11 @@ impl RawBlowApp {
                         ui.add_space(8.0);
                         let mut rgb = self.photo_bg_rgb();
                         let mut changed = false;
-                        ui.label(egui::RichText::new("R").font(mono(10.0)).color(theme::INK3));
+                        ui.label(egui::RichText::new("R").font(mono(10.0)).color(INK_HEAD));
                         changed |= ui.add(egui::DragValue::new(&mut rgb[0]).range(0..=255)).changed();
-                        ui.label(egui::RichText::new("G").font(mono(10.0)).color(theme::INK3));
+                        ui.label(egui::RichText::new("G").font(mono(10.0)).color(INK_HEAD));
                         changed |= ui.add(egui::DragValue::new(&mut rgb[1]).range(0..=255)).changed();
-                        ui.label(egui::RichText::new("B").font(mono(10.0)).color(theme::INK3));
+                        ui.label(egui::RichText::new("B").font(mono(10.0)).color(INK_HEAD));
                         changed |= ui.add(egui::DragValue::new(&mut rgb[2]).range(0..=255)).changed();
                         if changed {
                             self.cfg.photo_bg = Some(rgb);
@@ -188,7 +194,7 @@ impl RawBlowApp {
                     });
 
                     ui.add_space(16.0);
-                    ui.label(egui::RichText::new(tr(lang, "라벨")).font(prop(11.0)).color(theme::INK3));
+                    ui.label(egui::RichText::new(tr(lang, "라벨")).font(prop(11.0)).color(INK_HEAD));
                     let km = &self.cfg.keymap;
                     for (lbl, key) in [(Label::Pick, &km.pick), (Label::Hold, &km.hold), (Label::Reject, &km.reject), (Label::Unrated, &km.clear)] {
                         ui.horizontal(|ui| {
@@ -199,17 +205,17 @@ impl RawBlowApp {
                         });
                     }
                     ui.add_space(8.0);
-                    ui.label(egui::RichText::new(tr(lang, "단축키 재바인딩 UI는 v1.1 예정 — 현재 기본값 QWER 고정 표시")).font(mono(10.0)).color(theme::INK4));
+                    ui.label(egui::RichText::new(tr(lang, "단축키 재바인딩 UI는 v1.1 예정 — 현재 기본값 QWER 고정 표시")).font(mono(10.0)).color(INK_HELP));
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new(tr(lang, "별점 1~5 지정 · ` (백틱)으로 해제 — 라벨(QWER)과 독립으로 동시에 매겨집니다")).font(mono(10.0)).color(theme::INK4));
+                    ui.label(egui::RichText::new(tr(lang, "별점 1~5 지정 · ` (백틱)으로 해제 — 라벨(QWER)과 독립으로 동시에 매겨집니다")).font(mono(10.0)).color(INK_HELP));
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new(tr(lang, "M = 촬영 위치 미니 지도(GPS 있는 사진) · A = AF 포인트 표시 — 토글 상태는 저장됩니다")).font(mono(10.0)).color(theme::INK4));
+                    ui.label(egui::RichText::new(tr(lang, "M = 촬영 위치 미니 지도(GPS 있는 사진) · A = AF 포인트 표시 — 토글 상태는 저장됩니다")).font(mono(10.0)).color(INK_HELP));
 
                     // ── COLOR TAGS (#27): 색별 커스텀 이름. 비우면 기본 색 이름 표시 ──
                     ui.add_space(18.0);
-                    ui.label(egui::RichText::new(tr(lang, "색 태그 이름")).font(prop(11.0)).color(theme::INK3));
+                    ui.label(egui::RichText::new(tr(lang, "색 태그 이름")).font(prop(11.0)).color(INK_HEAD));
                     ui.add_space(2.0);
-                    ui.label(egui::RichText::new(tr(lang, "색별 이름을 지정해 보정 방식 등 나만의 분류로 — ⇧1~5로 부여")).font(mono(10.0)).color(theme::INK4));
+                    ui.label(egui::RichText::new(tr(lang, "색별 이름을 지정해 보정 방식 등 나만의 분류로 — ⇧1~5로 부여")).font(mono(10.0)).color(INK_HELP));
                     ui.add_space(4.0);
                     for (i, tag) in ColorTag::ALL.iter().enumerate() {
                         ui.horizontal(|ui| {
@@ -231,7 +237,7 @@ impl RawBlowApp {
 
                     // ── CACHE (#22): 썸네일 디스크 캐시 사용량 + 비우기 ──
                     ui.add_space(18.0);
-                    ui.label(egui::RichText::new(tr(lang, "캐시")).font(prop(11.0)).color(theme::INK3));
+                    ui.label(egui::RichText::new(tr(lang, "캐시")).font(prop(11.0)).color(INK_HEAD));
                     if self.cache_size.is_none() {
                         self.cache_size = Some(cache::dir_size(&config::cache_dir()));
                     }
@@ -252,17 +258,17 @@ impl RawBlowApp {
                         if ui.add(egui::DragValue::new(&mut self.cfg.cache_limit_mb).speed(64.0).range(0..=1_048_576).suffix(" MB")).changed() {
                             let _ = config::save(&self.cfg); // 캐시 상한 변경 즉시 저장(#69).
                         }
-                        ui.label(egui::RichText::new(tr(lang, "(0 = 무제한)")).font(mono(10.0)).color(theme::INK4));
+                        ui.label(egui::RichText::new(tr(lang, "(0 = 무제한)")).font(mono(10.0)).color(INK_HELP));
                     });
-                    ui.label(egui::RichText::new(tr(lang, "상한을 넘으면 오래된 썸네일부터 자동 삭제 — 폴더 열 때·설정 변경 시 정리됩니다.")).font(mono(10.0)).color(theme::INK4));
-                    ui.label(egui::RichText::new(tr(lang, "폴더를 다시 열어도 재디코딩 없이 즉시 표시됩니다.")).font(mono(10.0)).color(theme::INK4));
+                    ui.label(egui::RichText::new(tr(lang, "상한을 넘으면 오래된 썸네일부터 자동 삭제 — 폴더 열 때·설정 변경 시 정리됩니다.")).font(mono(10.0)).color(INK_HELP));
+                    ui.label(egui::RichText::new(tr(lang, "폴더를 다시 열어도 재디코딩 없이 즉시 표시됩니다.")).font(mono(10.0)).color(INK_HELP));
                     // 캐시 경로: 클릭하면 OS 파일 관리자에서 캐시 폴더를 연다(#69). hover 시 밝게 + 손가락 커서.
                     let cache_path = config::cache_dir();
                     let cache_path_str = cache_path.to_string_lossy().to_string();
                     let cache_font = mono(9.5);
-                    let galley = ui.painter().layout_no_wrap(cache_path_str.clone(), cache_font.clone(), theme::INK4);
+                    let galley = ui.painter().layout_no_wrap(cache_path_str.clone(), cache_font.clone(), INK_HELP);
                     let (cp_rect, cp_resp) = ui.allocate_exact_size(galley.size(), Sense::click());
-                    let cp_col = if cp_resp.hovered() { theme::INK2 } else { theme::INK4 };
+                    let cp_col = if cp_resp.hovered() { theme::INK2 } else { INK_HELP };
                     ui.painter().text(cp_rect.left_top(), Align2::LEFT_TOP, &cache_path_str, cache_font, cp_col);
                     if cp_resp.hovered() {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -273,7 +279,7 @@ impl RawBlowApp {
 
                     // ── RESET (#69): 모든 설정을 기본값으로 — 2단 인라인 확인(모달 없이) ──
                     ui.add_space(18.0);
-                    ui.label(egui::RichText::new(tr(lang, "초기화")).font(prop(11.0)).color(theme::INK3));
+                    ui.label(egui::RichText::new(tr(lang, "초기화")).font(prop(11.0)).color(INK_HEAD));
                     if !self.settings_reset_armed {
                         if toggle_btn(ui, tr(lang, "기본값 복원"), false).clicked() {
                             self.settings_reset_armed = true;
@@ -299,7 +305,7 @@ impl RawBlowApp {
 
                     // ── ABOUT / LINKS (#18): 버전·릴리즈·이슈·제작자·cosly ──
                     ui.add_space(18.0);
-                    ui.label(egui::RichText::new(tr(lang, "정보")).font(prop(11.0)).color(theme::INK3));
+                    ui.label(egui::RichText::new(tr(lang, "정보")).font(prop(11.0)).color(INK_HEAD));
                     ui.label(egui::RichText::new(format!("RawBlow v{}", env!("CARGO_PKG_VERSION"))).font(mono(11.0)).color(theme::INK2));
                     ui.add_space(6.0);
                     link_label(ui, tr(lang, "최신 버전 받기 · GitHub Releases"), "https://github.com/ascoeur9/rawblow/releases");
@@ -309,12 +315,12 @@ impl RawBlowApp {
                     if toggle_btn(ui, tr(lang, "오픈소스 라이센스"), false).clicked() {
                         self.licenses = Some(crate::licenses::LicensesPage::new());
                     }
-                    ui.label(egui::RichText::new(tr(lang, "이 프로그램이 포함한 오픈소스 구성요소 목록과 라이센스 전문")).font(mono(10.0)).color(theme::INK4));
+                    ui.label(egui::RichText::new(tr(lang, "이 프로그램이 포함한 오픈소스 구성요소 목록과 라이센스 전문")).font(mono(10.0)).color(INK_HELP));
                     ui.add_space(10.0);
                     ui.label(egui::RichText::new(tr(lang, "만든 사람 · 하레 (Hare)")).font(prop(11.5)).color(theme::INK2));
                     ui.horizontal(|ui| {
                         link_label(ui, "X · @ascoeur9", "https://x.com/ascoeur9");
-                        ui.label(egui::RichText::new("·").font(mono(10.0)).color(theme::INK4));
+                        ui.label(egui::RichText::new("·").font(mono(10.0)).color(INK_HELP));
                         link_label(ui, "X · @hare_kig", "https://x.com/hare_kig");
                     });
                     ui.add_space(10.0);
@@ -400,9 +406,9 @@ impl RawBlowApp {
                         close = true;
                     }
                     ui.label(egui::RichText::new(tr(lang, "오픈소스 라이센스")).font(prop(14.0)).color(theme::INK));
-                    ui.label(egui::RichText::new(trf(lang, "{} 구성요소", &[&total.to_string()])).font(mono(10.5)).color(theme::INK3));
+                    ui.label(egui::RichText::new(trf(lang, "{} 구성요소", &[&total.to_string()])).font(mono(10.5)).color(INK_HEAD));
                     if !generated.is_empty() {
-                        ui.label(egui::RichText::new(format!("· {}", generated)).font(mono(10.5)).color(theme::INK4));
+                        ui.label(egui::RichText::new(format!("· {}", generated)).font(mono(10.5)).color(INK_HELP));
                     }
                 });
             });
@@ -437,12 +443,12 @@ impl RawBlowApp {
                 ui.label(
                     egui::RichText::new(tr(lang, "이 프로그램은 아래의 오픈소스 소프트웨어를 포함합니다. LGPL 구성요소(rawloader · imagepipe · multicache)의 소스코드는 각 항목의 저장소 링크에서 구할 수 있습니다."))
                         .font(mono(10.0))
-                        .color(theme::INK4),
+                        .color(INK_HELP),
                 );
                 ui.add_space(12.0);
                 if let Some(c) = page.doc.crates.get(page.selected) {
                     ui.label(egui::RichText::new(format!("{} v{}", c.n, c.v)).font(prop(14.0)).color(theme::INK));
-                    ui.label(egui::RichText::new(c.l.as_str()).font(mono(11.0)).color(theme::INK3));
+                    ui.label(egui::RichText::new(c.l.as_str()).font(mono(11.0)).color(INK_HEAD));
                     if let Some(r) = &c.r {
                         link_label(ui, r, r);
                     }
