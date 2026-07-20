@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  RawBlow MSIX(Microsoft Store) 패키지 매니페스트 — 템플릿.
+  scripts\build-msix-windows.ps1 이 아래 @TOKEN@ 을 치환해 스테이징 루트에 쓴 뒤
+  makeappx 로 .msix 를 만든다. 직접 편집하지 말고 스크립트 파라미터로 넘긴다.
+
+  @IDENTITY_NAME@ / @PUBLISHER@ / @PUBLISHER_DISPLAY@ 는 스토어 제출 시
+  개인 Partner Center 계정이 "앱 이름 예약" 후 배정하는 값으로 바꿔야 한다
+  (Partner Center > 제품 > 제품 관리 > 앱 ID 에서 확인).
+  로컬 테스트 빌드에서는 스크립트 기본값(개인 명의 Hare.RawBlow / CN=Hare)을 쓰며,
+  이때 서명 인증서의 Subject 가 Publisher 와 정확히 일치해야 설치된다.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity
+    Name="@IDENTITY_NAME@"
+    Publisher="@PUBLISHER@"
+    Version="@APPVERSION@"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>RawBlow</DisplayName>
+    <PublisherDisplayName>@PUBLISHER_DISPLAY@</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+    <Resource Language="ko-kr" />
+    <Resource Language="ja-jp" />
+  </Resources>
+
+  <Applications>
+    <Application Id="RawBlow" Executable="RawBlow.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="RawBlow"
+        Description="RAW photo culling — fast viewing, rating, tagging, and transfer."
+        BackgroundColor="#0e1218"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile
+          Square71x71Logo="Assets\Square71x71Logo.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- Win32 풀트러스트 데스크톱 앱(임의 폴더 RAW 사진 접근). runFullTrust 는
+         제한 기능이라 스토어 심사 시 사용 사유 설명이 필요할 수 있다. -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>
