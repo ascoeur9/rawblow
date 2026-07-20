@@ -18,7 +18,9 @@ impl RawBlowApp {
                     if ui.button(format!("← {}", tr(lang, "돌아가기"))).clicked() {
                         go_back = true;
                     }
-                    ui.label(egui::RichText::new(tr(lang, "설정")).font(prop(14.0)).color(theme::INK));
+                    // #74: 헤더 전용 캡션 키로 전체 제목을 표시한다(영어 UI에서 "Settings"로 축약되던
+                    // 문제 복원). 툴바 툴팁 등에서 재사용하는 "설정"(Settings) 키와 별개.
+                    ui.label(egui::RichText::new(tr(lang, "설정 — 키보드 · 일반")).font(prop(14.0)).color(theme::INK));
                 });
             });
         egui::CentralPanel::default()
