@@ -1240,10 +1240,15 @@ impl RawBlowApp {
             });
     }
 
-    /// 우하단 토스트 오버레이(#61). 심각도 점 + 메시지. 어디를 클릭하든 닫힌다(오류는
-    /// 자동 만료가 없어 이 클릭·✕가 유일한 닫기 수단). 상태바를 가리지 않게 STATUS_H+여백
+    /// 우하단 토스트 오버레이(#61). 심각도 점 + 메시지. 상태바를 가리지 않게 STATUS_H+여백
     /// 만큼 띄우고, 모든 모달·배너 위(Foreground)에 그린다. Area/Frame 구성은 전송·컬링
     /// 카드(ui_ai_cull_dialog 등)와 같은 패턴을 그대로 답습해 egui 0.29 API 사용을 맞춘다.
+    ///
+    /// #76: **오류 토스트만** 클릭-투-디스미스(자동 만료가 없어 이 클릭·✕가 유일한 닫기 수단)로
+    /// 상호작용시키고, 정보(3초)·공지(6초)는 `Area::interactable(false)`로 포인터를 통과시킨다.
+    /// 예전엔 모든 토스트가 Foreground Area + Sense::click()이라, 자동소멸 토스트가 떠 있는
+    /// 동안 그 사각형에 겹치는 우하단 위젯(그리드 썸네일 등) 클릭을 삼켰다(닫히기만 하고 선택 안 됨).
+    /// interactable(false)면 그 레이어가 히트테스트 대상에서 빠져 하단 위젯이 클릭을 정상 수신한다.
     pub(super) fn ui_toast(&mut self, ctx: &egui::Context) {
         let Some(t) = &self.toast else { return };
         // 심각도별 상태 점 색(기존 테마 상수 재사용): 오류=REJECT, 알림=ACCENT, 정보=INK3.
@@ -1252,14 +1257,15 @@ impl RawBlowApp {
             ToastKind::Notice => theme::ACCENT,
             ToastKind::Info => theme::INK3,
         };
-        // 오류만 닫기(✕)를 함께 보인다(정보/알림은 자동으로 사라지므로 군더더기 없이).
+        // 오류만 닫기(✕)를 함께 보이고, 오직 오류만 클릭을 받는다(정보/알림은 자동 소멸 + 클릭 통과).
         let is_error = t.kind == ToastKind::Error;
         let text = t.text.clone();
         let resp = egui::Area::new(egui::Id::new("toast_overlay"))
             .order(egui::Order::Foreground)
+            .interactable(is_error)
             .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-16.0, -(STATUS_H + 12.0)))
             .show(ctx, |ui| {
-                egui::Frame::none()
+                let inner = egui::Frame::none()
                     .fill(theme::BG3)
                     .stroke(Stroke::new(1.0, theme::LINE2))
                     .rounding(6.0)
@@ -1277,17 +1283,24 @@ impl RawBlowApp {
                                 ui.add_space(4.0);
                                 ui.label(egui::RichText::new("✕").font(prop(12.0)).color(theme::INK3));
                             }
-                        });
+                        })
                     })
-                    .response
-                    .interact(Sense::click())
+                    .response;
+                // 오류만 클릭 상호작용을 붙인다(정보/알림은 interactable(false)라 어차피 클릭을 안 받음).
+                if is_error {
+                    inner.interact(Sense::click())
+                } else {
+                    inner
+                }
             })
             .inner;
-        if resp.hovered() {
-            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        if resp.clicked() {
-            self.toast = None;
+        if is_error {
+            if resp.hovered() {
+                ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if resp.clicked() {
+                self.toast = None;
+            }
         }
     }
 }
