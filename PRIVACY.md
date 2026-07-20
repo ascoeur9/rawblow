@@ -42,7 +42,7 @@ We may update this policy from time to time; the "Last updated" date above will 
 
 ### Contact
 Questions or requests: please open an issue at https://github.com/ascoeur9/rawblow/issues
-(or email: `[연락처 이메일을 여기에 — 예: your-address@example.com]`).
+(or email: hare.rinko@gmail.com).
 
 ---
 
@@ -80,4 +80,4 @@ RawBlow은 범용 사진 도구이며, 아동을 포함해 누구로부터도 �
 
 ### 문의
 문의·요청: https://github.com/ascoeur9/rawblow/issues 에 이슈를 남겨 주세요
-(또는 이메일: `[연락처 이메일을 여기에 — 예: your-address@example.com]`).
+(또는 이메일: hare.rinko@gmail.com).
