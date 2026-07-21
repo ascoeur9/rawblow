@@ -222,6 +222,14 @@ fn parse_tiff(tiff: &[u8]) -> Option<AfInfo> {
         // 내부 오프셋이 그 TIFF 베이스 기준이라 해당 지점부터 서브슬라이스로 파싱한다.
         return nikon_af(tiff.get(mn_off + 10..)?);
     }
+    if head.starts_with(b"OM SYSTEM\0") || head.starts_with(b"OLYMPUS\0") {
+        // 올림푸스/OM SYSTEM 신형: 내부 오프셋은 MakerNote 시작(mn_off) 기준.
+        return olympus_af(&t, mn_off);
+    }
+    if head.starts_with(b"PENTAX \0") {
+        // Pentax(RICOH): "PENTAX \0"(8) + 바이트오더(II/MM) 뒤 IFD. 오프셋은 mn_off 기준.
+        return pentax_af(&t, mn_off);
+    }
     if make.starts_with("Canon") {
         // Canon MakerNote는 헤더 없이 바로 IFD. 값 오프셋은 TIFF 베이스 기준.
         return canon_af(&t, mn_off, &model);
@@ -377,6 +385,119 @@ fn sony_af(t: &Tiff, ifd: usize) -> Option<AfInfo> {
         source: "sony",
     })
 }
+
+// ── Olympus / OM SYSTEM: CameraSettings(0x2020) → AFPointSelected(0x0305) (#81) ──
+// MakerNote는 "OM SYSTEM\0\0\0"(12) 또는 "OLYMPUS\0"(8) 시그니처 + 내부 TIFF(II/MM +
+// 버전 2바이트) 뒤 IFD가 바로 온다. 내부 값 오프셋은 MakerNote 시작 기준(mn).
+// AF점은 CameraSettings 서브IFD의 AFPointSelected(0x0305, srational64s[5])에 있고,
+// [flag, x0, y0, x1, y1]로 박스 좌표가 **0..1 정규화**되어 저장된다(ExifTool Olympus.pm:
+// "coordinates expressed as a percent"). 선택 AF점 하나를 그 박스로 표시한다.
+// 구형 "OLYMP\0"(E-300 등)은 이 태그가 없어 미지원(잘못 찍느니 미표시).
+fn olympus_af(t: &Tiff, mn: usize) -> Option<AfInfo> {
+    let sig_len = if t.b.get(mn..mn + 8)? == b"OLYMPUS\0" { 8 } else { 12 };
+    // 시그니처 뒤 II/MM(2) + 버전(2), 그다음 MakerNote IFD가 바로.
+    let mn_ifd = mn + sig_len + 4;
+    // CameraSettings(0x2020) 서브IFD(오프셋은 mn 기준).
+    let cs = mn + t.u32(t.find(mn_ifd, 0x2020)?.val_field)? as usize;
+    // AFPointSelected(0x0305): srational64s[5]. 5×8=40바이트라 항상 포인터.
+    let e = t.find(cs, 0x0305)?;
+    if e.typ != 10 || e.count < 5 {
+        return None;
+    }
+    let off = mn + t.u32(e.val_field)? as usize;
+    // srational: 분모 0(="undef")이면 무효. [0]은 항상 undef 플래그, [1..5]가 좌표.
+    let srat = |o: usize| -> Option<f64> {
+        let n = t.u32(o)? as i32 as f64;
+        let d = t.u32(o + 4)? as i32 as f64;
+        (d != 0.0).then(|| n / d)
+    };
+    let (x0, y0, x1, y1) = (srat(off + 8)?, srat(off + 16)?, srat(off + 24)?, srat(off + 32)?);
+    let inside = |v: f64| (0.0..=1.0).contains(&v);
+    if !(inside(x0) && inside(y0) && inside(x1) && inside(y1)) {
+        return None; // 범위 밖(레이아웃 불일치·n/a) → 미표시.
+    }
+    let pt = AfPoint {
+        cx: (x0 + x1) / 2.0,
+        cy: (y0 + y1) / 2.0,
+        w: (x1 - x0).abs(),
+        h: (y1 - y0).abs(),
+        in_focus: true,
+        selected: true,
+    };
+    Some(AfInfo { points: vec![pt], source: "olympus" })
+}
+
+// ── Pentax K-1: AFPointInfo(0x0245) — SAFOX 12 33점 고정 그리드 (#82) ────────────
+// Pentax MakerNote는 "PENTAX \0"(8) + 내부 바이트오더(II/MM, 2) 뒤 IFD가 오고, 값 오프셋은
+// MakerNote 시작(mn) 기준이다(내부 바이트오더는 외부 TIFF와 독립 → 따로 읽는다).
+// K-1의 33개 측거점은 AFPointInfo(0x0245, ExifTool Pentax.pm)에 담긴다:
+//   off 0  version(int16u)=1.   off 2  NumAFPoints(int16u)=33.
+//   off 4  int8u[ceil(num/4)]=int8u[9]: 점당 2비트(4점/바이트, MSB first, 점 1..33).
+//          비트0(0x01)=선택, 비트1(0x02)=합초. (ExifTool DecodeAFPoints)
+// 점 번호(1..33)→프레임 정규화 좌표는 아래 표(Focus-Points 실측, 7360×4912 기준).
+// num≠33(KP/K-70 등 다른 그리드)은 좌표표가 달라 미표시(잘못 찍느니 안 그림).
+fn pentax_af(t: &Tiff, mn: usize) -> Option<AfInfo> {
+    let le = match t.b.get(mn + 8..mn + 10)? {
+        b"II" => true,
+        b"MM" => false,
+        _ => return None,
+    };
+    // 내부 바이트오더로 MakerNote를 읽는 뷰(오프셋은 mn 상대라 data()는 못 쓰고 직접 계산).
+    let p = Tiff { b: t.b, le };
+    let ifd = mn + 10;
+    let n = p.u16(ifd)? as usize;
+    if n > 1024 {
+        return None;
+    }
+    let mut data = None;
+    for i in 0..n {
+        let e = ifd + 2 + i * 12;
+        if p.u16(e)? == 0x0245 {
+            let cnt = p.u32(e + 4)? as usize; // UNDEF(int8u) → 바이트 길이.
+            let off = if cnt <= 4 { e + 8 } else { mn + p.u32(e + 8)? as usize };
+            data = Some((off, cnt));
+            break;
+        }
+    }
+    let (off, len) = data?;
+    let num = p.u16(off + 2)? as usize;
+    if num != 33 {
+        return None; // K-1(33점) 전용 좌표표.
+    }
+    let nbytes = num.div_ceil(4);
+    if len < 4 + nbytes {
+        return None;
+    }
+    let mut points = Vec::new();
+    for (i, &(px, py)) in PENTAX_K1_POINTS.iter().enumerate() {
+        let byte = *p.b.get(off + 4 + i / 4)?;
+        let field = (byte >> (6 - 2 * (i % 4))) & 0x03; // MSB first, 점당 2비트.
+        if field & 0x03 == 0 {
+            continue; // 미선택 점.
+        }
+        points.push(AfPoint {
+            cx: px as f64 / PENTAX_K1_W,
+            cy: py as f64 / PENTAX_K1_H,
+            w: 150.0 / PENTAX_K1_W, // 측거점 마커 실측 150px.
+            h: 150.0 / PENTAX_K1_H,
+            in_focus: field & 0x02 != 0,
+            selected: true,
+        });
+    }
+    (!points.is_empty()).then_some(AfInfo { points, source: "pentax" })
+}
+
+// K-1 33점 측거점 중심 픽셀좌표(풀프레임 7360×4912 기준, Focus-Points 실측). 점 1..33 =
+// 인덱스 0..32. 다이아몬드 배열(5/7/9/7/5행), 중심=점17=(3680,2456)=(0.5,0.5).
+const PENTAX_K1_W: f64 = 7360.0;
+const PENTAX_K1_H: f64 = 4912.0;
+const PENTAX_K1_POINTS: [(u16, u16); 33] = [
+    (2797, 1818), (3238, 1818), (3680, 1818), (4121, 1818), (4563, 1818),
+    (2355, 2137), (2797, 2137), (3238, 2137), (3680, 2137), (4121, 2137), (4563, 2137), (5005, 2137),
+    (1914, 2456), (2350, 2456), (2797, 2456), (3238, 2456), (3680, 2456), (4121, 2456), (4563, 2456), (5005, 2456), (5446, 2456),
+    (2355, 2775), (2797, 2775), (3238, 2775), (3680, 2775), (4121, 2775), (4563, 2775), (5005, 2775),
+    (2797, 3094), (3238, 3094), (3680, 3094), (4121, 3094), (4563, 3094),
+];
 
 // ── Nikon: AFInfo2 V04xx — 미러리스 Z 계열(Expeed 6/7) (#45, #50) ────────────
 // 인자는 Nikon Type3 MakerNote의 임베드 TIFF(오프셋 10부터)다. 레이아웃은 ExifTool
@@ -571,6 +692,43 @@ mod tests {
         assert!(!p1.in_focus && p1.selected);
     }
 
+    /// 합성 TIFF에 OM SYSTEM MakerNote(시그니처+내부 IFD+CameraSettings→0x0305 srational[5])를
+    /// 넣어 좌표 박스 파싱·범위 검증을 확인한다(#81). 값 오프셋은 MakerNote 시작 기준.
+    #[test]
+    fn olympus_synthetic() {
+        // 선택 AF점 박스 (0.30,0.20)-(0.40,0.28) → 중심(0.35,0.24), 크기(0.10,0.08).
+        let info = build_tiff_olympus(0.30, 0.20, 0.40, 0.28);
+        let af = parse_tiff(&info).expect("olympus parse");
+        assert_eq!(af.source, "olympus");
+        assert_eq!(af.points.len(), 1);
+        let p = af.points[0];
+        assert!((p.cx - 0.35).abs() < 1e-6 && (p.cy - 0.24).abs() < 1e-6, "cx={} cy={}", p.cx, p.cy);
+        assert!((p.w - 0.10).abs() < 1e-6 && (p.h - 0.08).abs() < 1e-6);
+        assert!(p.in_focus && p.selected);
+        // 범위 밖(1.5) 좌표 → 미표시.
+        assert!(parse_tiff(&build_tiff_olympus(0.3, 0.2, 1.5, 0.28)).is_none());
+    }
+
+    /// 합성 TIFF에 Pentax MakerNote(AFPointInfo 0x0245: ver+num=33+2비트/점 비트필드)를 넣어
+    /// K-1 33점 디코딩·좌표 매핑·선택/합초 비트를 검증한다(#82).
+    #[test]
+    fn pentax_k1_synthetic() {
+        // 점17(Center, i=16) 필드=3(선택+합초), 점1(Top-left, i=0) 필드=1(선택만).
+        let info = build_tiff_pentax(&[(17, 3), (1, 1)]);
+        let af = parse_tiff(&info).expect("pentax parse");
+        assert_eq!(af.source, "pentax");
+        assert_eq!(af.points.len(), 2);
+        // 점17 = 프레임 정중앙, 합초.
+        let c = af.points.iter().find(|p| p.in_focus).expect("in-focus point");
+        assert!((c.cx - 0.5).abs() < 1e-4 && (c.cy - 0.5).abs() < 1e-4, "cx={} cy={}", c.cx, c.cy);
+        assert!(c.selected);
+        // 점1 = 좌상단(2797/7360, 1818/4912), 선택만(합초 아님).
+        let tl = af.points.iter().find(|p| !p.in_focus).expect("selected-only point");
+        assert!((tl.cx - 2797.0 / 7360.0).abs() < 1e-4 && (tl.cy - 1818.0 / 4912.0).abs() < 1e-4);
+        // 아무 점도 선택 안 됨 → None.
+        assert!(parse_tiff(&build_tiff_pentax(&[])).is_none());
+    }
+
     /// 합성 TIFF에 Panasonic MakerNote(헤더+IFD, rational 값)를 넣어 검증.
     #[test]
     fn panasonic_synthetic() {
@@ -659,6 +817,112 @@ mod tests {
         put32(&mut b, af_data_off as u32);
         put32(&mut b, 0);
         b.extend_from_slice(af_payload);
+        b
+    }
+
+    /// LE TIFF + OM SYSTEM MakerNote. 구조: IFD0[Make,Model,ExifIFD] → ExifIFD[MakerNote]
+    /// → MakerNote["OM SYSTEM\0\0\0"(12)+"II"+ver(4)+IFD(0x2020)] → CameraSettings[0x0305].
+    /// MakerNote 내부 오프셋은 모두 MakerNote 시작(mn_off) 기준.
+    fn build_tiff_olympus(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"II");
+        put16(&mut b, 42);
+        put32(&mut b, 8);
+        let (make, model): (&[u8], &[u8]) = (b"OM SYSTEM", b"OM-1");
+        let make_n = make.len() + 1;
+        let model_n = model.len() + 1;
+        // IFD0: 3엔트리 = 2+36+4 = 42 → 8..50. 문자열 데이터 뒤 ExifIFD.
+        let exif_ifd = 50 + make_n + model_n;
+        let mn_off = exif_ifd + 18; // ExifIFD 1엔트리.
+        // MakerNote 내부(모두 mn_off 상대):
+        let mn_ifd = 16; // 시그니처12 + "II"+ver 4.
+        let cs_ifd = mn_ifd + 18; // MakerNote IFD 1엔트리.
+        let data = cs_ifd + 18; // CameraSettings 1엔트리.
+        let mn_len = data + 40; // srational[5].
+        // IFD0.
+        put16(&mut b, 3);
+        put16(&mut b, 0x010F); put16(&mut b, 2); put32(&mut b, make_n as u32); put32(&mut b, 50);
+        put16(&mut b, 0x0110); put16(&mut b, 2); put32(&mut b, model_n as u32); put32(&mut b, (50 + make_n) as u32);
+        put16(&mut b, 0x8769); put16(&mut b, 4); put32(&mut b, 1); put32(&mut b, exif_ifd as u32);
+        put32(&mut b, 0);
+        b.extend_from_slice(make); b.push(0);
+        b.extend_from_slice(model); b.push(0);
+        // ExifIFD.
+        assert_eq!(b.len(), exif_ifd);
+        put16(&mut b, 1);
+        put16(&mut b, 0x927C); put16(&mut b, 7); put32(&mut b, mn_len as u32); put32(&mut b, mn_off as u32);
+        put32(&mut b, 0);
+        // MakerNote.
+        assert_eq!(b.len(), mn_off);
+        b.extend_from_slice(b"OM SYSTEM\0\0\0");
+        b.extend_from_slice(b"II");
+        put16(&mut b, 4); // 버전.
+        // MakerNote IFD: 0x2020 CameraSettings(LONG, 오프셋 mn 상대).
+        put16(&mut b, 1);
+        put16(&mut b, 0x2020); put16(&mut b, 4); put32(&mut b, 1); put32(&mut b, cs_ifd as u32);
+        put32(&mut b, 0);
+        // CameraSettings IFD: 0x0305 AFPointSelected(SRATIONAL, count5).
+        assert_eq!(b.len(), mn_off + cs_ifd);
+        put16(&mut b, 1);
+        put16(&mut b, 0x0305); put16(&mut b, 10); put32(&mut b, 5); put32(&mut b, data as u32);
+        put32(&mut b, 0);
+        // 데이터: [undef, x0, y0, x1, y1] (srational, 분모 1e6; undef은 0/0).
+        assert_eq!(b.len(), mn_off + data);
+        put32(&mut b, 0); put32(&mut b, 0); // undef 플래그.
+        for v in [x0, y0, x1, y1] {
+            put32(&mut b, (v * 1_000_000.0).round() as i32 as u32);
+            put32(&mut b, 1_000_000);
+        }
+        b
+    }
+
+    /// LE TIFF + Pentax MakerNote. IFD0[Make,Model,ExifIFD] → ExifIFD[MakerNote] →
+    /// MakerNote["PENTAX \0"(8)+"II"(2)+IFD(0x0245)] → AFPointInfo[ver=1,num=33,int8u[9]].
+    /// 내부 오프셋은 MakerNote 시작(mn_off) 기준. `pts`=(점번호1..33, 2비트필드값).
+    fn build_tiff_pentax(pts: &[(usize, u8)]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"II");
+        put16(&mut b, 42);
+        put32(&mut b, 8);
+        let (make, model): (&[u8], &[u8]) = (b"RICOH", b"PENTAX K-1");
+        let make_n = make.len() + 1;
+        let model_n = model.len() + 1;
+        let exif_ifd = 50 + make_n + model_n; // IFD0 3엔트리 = 42 → 8..50.
+        let mn_off = exif_ifd + 18;
+        // MakerNote 내부(mn 상대): "PENTAX \0"(8)+"II"(2)=10, IFD 1엔트리=18 → data@28.
+        let data_rel = 10 + 18;
+        let mn_len = data_rel + 13; // ver2 + num2 + int8u[9].
+        // IFD0.
+        put16(&mut b, 3);
+        put16(&mut b, 0x010F); put16(&mut b, 2); put32(&mut b, make_n as u32); put32(&mut b, 50);
+        put16(&mut b, 0x0110); put16(&mut b, 2); put32(&mut b, model_n as u32); put32(&mut b, (50 + make_n) as u32);
+        put16(&mut b, 0x8769); put16(&mut b, 4); put32(&mut b, 1); put32(&mut b, exif_ifd as u32);
+        put32(&mut b, 0);
+        b.extend_from_slice(make); b.push(0);
+        b.extend_from_slice(model); b.push(0);
+        // ExifIFD.
+        assert_eq!(b.len(), exif_ifd);
+        put16(&mut b, 1);
+        put16(&mut b, 0x927C); put16(&mut b, 7); put32(&mut b, mn_len as u32); put32(&mut b, mn_off as u32);
+        put32(&mut b, 0);
+        // MakerNote.
+        assert_eq!(b.len(), mn_off);
+        b.extend_from_slice(b"PENTAX \0");
+        b.extend_from_slice(b"II");
+        // MakerNote IFD: 0x0245 AFPointInfo(UNDEF, count=13, 오프셋 mn 상대).
+        put16(&mut b, 1);
+        put16(&mut b, 0x0245); put16(&mut b, 7); put32(&mut b, 13); put32(&mut b, data_rel as u32);
+        put32(&mut b, 0);
+        // AFPointInfo 데이터.
+        assert_eq!(b.len(), mn_off + data_rel);
+        put16(&mut b, 1); // version
+        put16(&mut b, 33); // NumAFPoints
+        let mut field = [0u8; 9];
+        for &(pt, f) in pts {
+            let i = pt - 1;
+            field[i / 4] |= (f & 0x03) << (6 - 2 * (i % 4));
+        }
+        b.extend_from_slice(&field);
         b
     }
 
