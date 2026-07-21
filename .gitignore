@@ -27,3 +27,5 @@
 
 # 스토어 제출 자격증명(실값) — 절대 커밋 금지. 예시(.example)만 추적.
 /scripts/store-credentials.ps1
+# 스토어 제출 메모(식별자 값·수동 업로드 절차) — 로컬 전용.
+/STORE_SUBMISSION.md
