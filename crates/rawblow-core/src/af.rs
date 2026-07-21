@@ -222,8 +222,9 @@ fn parse_tiff(tiff: &[u8]) -> Option<AfInfo> {
         // 내부 오프셋이 그 TIFF 베이스 기준이라 해당 지점부터 서브슬라이스로 파싱한다.
         return nikon_af(tiff.get(mn_off + 10..)?);
     }
-    if head.starts_with(b"OM SYSTEM\0") || head.starts_with(b"OLYMPUS\0") {
-        // 올림푸스/OM SYSTEM 신형: 내부 오프셋은 MakerNote 시작(mn_off) 기준.
+    // 올림푸스: 신형("OM SYSTEM\0\0\0"/"OLYMPUS\0")과 구형("OLYMP\0", E-300 등) 모두.
+    // "OLYMPUS\0"[5]='U' vs 구형 "OLYMP\0"[5]=0x00이라 starts_with로 정확히 구분된다.
+    if head.starts_with(b"OM SYSTEM\0") || head.starts_with(b"OLYMPUS\0") || head.starts_with(b"OLYMP\0") {
         return olympus_af(&t, mn_off);
     }
     if head.starts_with(b"PENTAX \0") {
@@ -386,18 +387,47 @@ fn sony_af(t: &Tiff, ifd: usize) -> Option<AfInfo> {
     })
 }
 
-// ── Olympus / OM SYSTEM: CameraSettings(0x2020) → AFPointSelected(0x0305) (#81) ──
-// MakerNote는 "OM SYSTEM\0\0\0"(12) 또는 "OLYMPUS\0"(8) 시그니처 + 내부 TIFF(II/MM +
-// 버전 2바이트) 뒤 IFD가 바로 온다. 내부 값 오프셋은 MakerNote 시작 기준(mn).
-// AF점은 CameraSettings 서브IFD의 AFPointSelected(0x0305, srational64s[5])에 있고,
-// [flag, x0, y0, x1, y1]로 박스 좌표가 **0..1 정규화**되어 저장된다(ExifTool Olympus.pm:
-// "coordinates expressed as a percent"). 선택 AF점 하나를 그 박스로 표시한다.
-// 구형 "OLYMP\0"(E-300 등)은 이 태그가 없어 미지원(잘못 찍느니 미표시).
+// ── Olympus / OM SYSTEM: CameraSettings(0x2020) AF 좌표 (#81) ────────────────────
+// MakerNote 두 세대 모두 CameraSettings 서브IFD(0x2020)에 AF 좌표가 있다.
+//   · 신형("OM SYSTEM\0\0\0"(12)/"OLYMPUS\0"(8)): 시그니처 + 내부 II/MM+버전(4) 뒤 IFD.
+//     값 오프셋은 MakerNote 시작(mn) 기준. AFPointSelected(0x0305, srational64s[5] =
+//     [flag,x0,y0,x1,y1], 0..1 정규화).
+//   · 구형("OLYMP\0"(6)+2, E-300 등): mn+8부터 IFD, 값 오프셋은 파일 TIFF 베이스(0) 기준.
+//     AFAreas(0x0304, int32u[64]): 0이 아닌 각 값의 big-endian 4바이트가 (X0,Y0,X1,Y1)
+//     박스(0..255). ExifTool Olympus.pm PrintAFAreas — 0x36794285/0x79798585/0xBD79C985 는
+//     E-1/E-300 세대 수평 3점 AF의 Left/Center/Right 매직값과 정확히 일치.
 fn olympus_af(t: &Tiff, mn: usize) -> Option<AfInfo> {
+    if t.b.get(mn..mn + 6)? == b"OLYMP\0" {
+        // 구형(E-300 등): "OLYMP\0"는 byte5=0x00이라 신형 "OLYMPUS\0"(byte5='U')와 구분됨.
+        // base=0(파일 TIFF 베이스), IFD @ mn+8. data()가 절대 오프셋을 그대로 쓴다.
+        let mn_ifd = mn + 8;
+        let cs = t.u32(t.find(mn_ifd, 0x2020)?.val_field)? as usize;
+        let e = t.find(cs, 0x0304)?;
+        if e.typ != 4 || e.count == 0 {
+            return None;
+        }
+        let (off, len) = t.data(&e)?;
+        let mut points = Vec::new();
+        for i in 0..(len / 4) {
+            let v = t.u32(off + i * 4)?;
+            if v == 0 {
+                continue; // "none"(0) 스킵.
+            }
+            let [x0, y0, x1, y1] = v.to_be_bytes().map(|b| b as f64); // 0..255.
+            points.push(AfPoint {
+                cx: (x0 + x1) / 2.0 / 255.0,
+                cy: (y0 + y1) / 2.0 / 255.0,
+                w: (x1 - x0).abs() / 255.0,
+                h: (y1 - y0).abs() / 255.0,
+                in_focus: true,
+                selected: true,
+            });
+        }
+        return (!points.is_empty()).then_some(AfInfo { points, source: "olympus" });
+    }
+    // 신형: 시그니처 뒤 II/MM(2)+버전(2), 그다음 MakerNote IFD. 오프셋은 mn 기준.
     let sig_len = if t.b.get(mn..mn + 8)? == b"OLYMPUS\0" { 8 } else { 12 };
-    // 시그니처 뒤 II/MM(2) + 버전(2), 그다음 MakerNote IFD가 바로.
     let mn_ifd = mn + sig_len + 4;
-    // CameraSettings(0x2020) 서브IFD(오프셋은 mn 기준).
     let cs = mn + t.u32(t.find(mn_ifd, 0x2020)?.val_field)? as usize;
     // AFPointSelected(0x0305): srational64s[5]. 5×8=40바이트라 항상 포인터.
     let e = t.find(cs, 0x0305)?;
@@ -709,6 +739,26 @@ mod tests {
         assert!(parse_tiff(&build_tiff_olympus(0.3, 0.2, 1.5, 0.28)).is_none());
     }
 
+    /// 구형 올림푸스("OLYMP\0", E-300 등): AFAreas(0x0304)의 int32u를 0..255 박스로 언패킹.
+    /// ExifTool 매직값 Left/Center/Right를 그대로 넣어 좌표·0스킵을 검증한다(#81).
+    #[test]
+    fn olympus_old_synthetic() {
+        // Left=0x36794285(54,121,66,133), Center=0x79798585, Right=0xBD79C985, 그리고 0(none).
+        let info = build_tiff_olympus_old(&[0x36794285, 0x79798585, 0xBD79C985, 0]);
+        let af = parse_tiff(&info).expect("olympus old parse");
+        assert_eq!(af.source, "olympus");
+        assert_eq!(af.points.len(), 3, "0(none)은 스킵되어야 함");
+        // 세 점 모두 수직 중앙(127/255), 가로는 Left/Center/Right.
+        for p in &af.points {
+            assert!((p.cy - 127.0 / 255.0).abs() < 1e-9, "cy={}", p.cy);
+        }
+        assert!((af.points[0].cx - 60.0 / 255.0).abs() < 1e-9); // Left
+        assert!((af.points[1].cx - 127.0 / 255.0).abs() < 1e-9); // Center
+        assert!((af.points[2].cx - 195.0 / 255.0).abs() < 1e-9); // Right
+        // 전부 0이면 None.
+        assert!(parse_tiff(&build_tiff_olympus_old(&[0, 0])).is_none());
+    }
+
     /// 합성 TIFF에 Pentax MakerNote(AFPointInfo 0x0245: ver+num=33+2비트/점 비트필드)를 넣어
     /// K-1 33점 디코딩·좌표 매핑·선택/합초 비트를 검증한다(#82).
     #[test]
@@ -872,6 +922,54 @@ mod tests {
         for v in [x0, y0, x1, y1] {
             put32(&mut b, (v * 1_000_000.0).round() as i32 as u32);
             put32(&mut b, 1_000_000);
+        }
+        b
+    }
+
+    /// LE TIFF + 구형 올림푸스 MakerNote("OLYMP\0"+버전 2 → IFD, 오프셋은 파일 TIFF 베이스 기준).
+    /// MakerNote IFD[0x2020] → CameraSettings[0x0304 AFAreas(int32u[N])].
+    fn build_tiff_olympus_old(areas: &[u32]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"II");
+        put16(&mut b, 42);
+        put32(&mut b, 8);
+        let make: &[u8] = b"OLYMPUS";
+        let make_n = make.len() + 1; // 8
+        // IFD0: 2엔트리 = 2+24+4 = 30 → 8..38. 문자열 뒤 ExifIFD.
+        let exif_ifd = 38 + make_n;
+        let mn_off = exif_ifd + 18;
+        let mn_ifd = mn_off + 8; // "OLYMP\0"(6)+버전(2).
+        let cs_ifd = mn_ifd + 18;
+        let data_off = cs_ifd + 18;
+        let mn_len = data_off + areas.len() * 4 - mn_off;
+        // IFD0.
+        put16(&mut b, 2);
+        put16(&mut b, 0x010F); put16(&mut b, 2); put32(&mut b, make_n as u32); put32(&mut b, 38);
+        put16(&mut b, 0x8769); put16(&mut b, 4); put32(&mut b, 1); put32(&mut b, exif_ifd as u32);
+        put32(&mut b, 0);
+        b.extend_from_slice(make); b.push(0);
+        // ExifIFD.
+        assert_eq!(b.len(), exif_ifd);
+        put16(&mut b, 1);
+        put16(&mut b, 0x927C); put16(&mut b, 7); put32(&mut b, mn_len as u32); put32(&mut b, mn_off as u32);
+        put32(&mut b, 0);
+        // MakerNote: "OLYMP\0" + 버전(2) 뒤 IFD가 바로. 값 오프셋은 파일 베이스(절대) 기준.
+        assert_eq!(b.len(), mn_off);
+        b.extend_from_slice(b"OLYMP\0");
+        put16(&mut b, 2);
+        assert_eq!(b.len(), mn_ifd);
+        put16(&mut b, 1);
+        put16(&mut b, 0x2020); put16(&mut b, 4); put32(&mut b, 1); put32(&mut b, cs_ifd as u32);
+        put32(&mut b, 0);
+        // CameraSettings IFD: 0x0304 AFAreas(LONG[N]).
+        assert_eq!(b.len(), cs_ifd);
+        put16(&mut b, 1);
+        put16(&mut b, 0x0304); put16(&mut b, 4); put32(&mut b, areas.len() as u32); put32(&mut b, data_off as u32);
+        put32(&mut b, 0);
+        // AFAreas 데이터.
+        assert_eq!(b.len(), data_off);
+        for &v in areas {
+            put32(&mut b, v);
         }
         b
     }
