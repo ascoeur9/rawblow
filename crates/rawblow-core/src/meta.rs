@@ -54,6 +54,13 @@ pub fn read_exif(path: &Path) -> Option<ExifInfo> {
             return Some(info);
         }
     }
+    if kind_of(path) == Some(Kind::Raw) {
+        // 올림푸스/OM SYSTEM ORF 등 "매직만 비표준"인 TIFF 계열 RAW: 버전 필드를
+        // 표준값(42)으로 고쳐 컨테이너를 직접 읽는다(임베디드 JPEG에 EXIF가 없음).
+        if let Some(info) = read_nonstandard_tiff(path) {
+            return Some(info);
+        }
+    }
     // RAW(RW2 등): kamadak가 컨테이너(매직 0x55)를 못 읽으므로 임베디드 JPEG의 EXIF로 폴백.
     // 가장 큰 임베디드(파일 끝의 거대한 프리뷰)에는 EXIF가 없고, 앞쪽 1920급 프리뷰
     // (보통 오프셋 ~6KB)에 APP1 EXIF가 들어있다 → 임베디드 JPEG들을 차례로 시도한다.
@@ -204,6 +211,66 @@ fn read_container(path: &Path) -> Option<ExifInfo> {
 fn read_bytes(bytes: &[u8]) -> Option<ExifInfo> {
     let mut cursor = std::io::Cursor::new(bytes);
     let exif = exif::Reader::new().read_from_container(&mut cursor).ok()?;
+    Some(build(&exif))
+}
+
+/// 올림푸스/OM SYSTEM ORF처럼 표준 TIFF 구조인데 버전 필드만 비표준인 RAW를 읽는다.
+///
+/// ORF는 IFD0/EXIF IFD 레이아웃이 표준 TIFF와 같지만, 헤더의 버전 필드가 42(0x2A)가
+/// 아니라 'RO'(0x4F52) 또는 'RS'(0x5352)라서 kamadak가 "Unknown image format"으로
+/// 거부한다. 버전 필드만 42로 고쳐 read_raw로 넘기면 그대로 파싱된다.
+///
+/// EXIF IFD와 그 값들은 파일 앞쪽(거대한 센서 데이터 앞)에 모여 있어 2MB 프리픽스로
+/// 충분하다. 드물게 값 오프셋이 프리픽스를 넘어가면 전체를 읽어 재시도한다.
+fn read_nonstandard_tiff(path: &Path) -> Option<ExifInfo> {
+    let mut data = read_prefix(path, 2 * 1024 * 1024).ok()?;
+    if !patch_tiff_version(&mut data) {
+        return None;
+    }
+    if let Some(info) = read_raw_exif(data) {
+        if !info.is_empty() {
+            return Some(info);
+        }
+    }
+    let mut all = std::fs::read(path).ok()?;
+    if !patch_tiff_version(&mut all) {
+        return None;
+    }
+    read_raw_exif(all).filter(|i| !i.is_empty())
+}
+
+/// TIFF 헤더(II/MM + 버전)를 검사해, 올림푸스 ORF 계열의 비표준 버전('RO'/'RS')이면
+/// 표준 TIFF 버전(42)으로 바꾼다. 표준 TIFF나 다른 포맷이면 건드리지 않고 false.
+fn patch_tiff_version(data: &mut [u8]) -> bool {
+    if data.len() < 4 {
+        return false;
+    }
+    let le = match &data[0..2] {
+        b"II" => true,
+        b"MM" => false,
+        _ => return false,
+    };
+    let ver = if le {
+        u16::from_le_bytes([data[2], data[3]])
+    } else {
+        u16::from_be_bytes([data[2], data[3]])
+    };
+    // ORF 시그니처: IIRO/MMOR = 0x4F52('RO'), IIRS = 0x5352('RS'). 이것만 표준화한다.
+    if ver != 0x4F52 && ver != 0x5352 {
+        return false;
+    }
+    if le {
+        data[2] = 0x2A;
+        data[3] = 0x00;
+    } else {
+        data[2] = 0x00;
+        data[3] = 0x2A;
+    }
+    true
+}
+
+fn read_raw_exif(data: Vec<u8>) -> Option<ExifInfo> {
+    let exif = exif::Reader::new().read_raw(data).ok()?;
     Some(build(&exif))
 }
 

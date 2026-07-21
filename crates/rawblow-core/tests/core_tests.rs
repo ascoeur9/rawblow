@@ -1316,6 +1316,32 @@ fn gps_extraction_from_synthetic_tiff() {
     assert_eq!(gps.alt, Some(-12.5));
 }
 
+/// 올림푸스/OM SYSTEM ORF의 EXIF 표시(#81) — 컨테이너 매직이 비표준('RO')이라
+/// kamadak가 거부하지만, 버전 필드를 42로 정규화해 IFD를 직접 읽어야 한다.
+/// sample/omsystem sample/(gitignore, 로컬 전용)이 없으면 조용히 건너뛴다.
+#[test]
+fn exif_from_olympus_orf() {
+    let Some(dir) = sample_file("omsystem sample") else {
+        eprintln!("skip: sample/omsystem sample/ 없음");
+        return;
+    };
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("read_dir") {
+        let p = entry.unwrap().path();
+        if p.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("orf")) != Some(true) {
+            continue;
+        }
+        let info = rawblow_core::meta::read_exif(&p)
+            .unwrap_or_else(|| panic!("ORF EXIF 읽기 실패: {}", p.display()));
+        assert!(!info.is_empty(), "ORF EXIF 비어 있음: {}", p.display());
+        assert!(info.camera.is_some(), "ORF 카메라 모델 없음: {}", p.display());
+        assert!(info.aperture.is_some() && info.shutter.is_some() && info.iso.is_some(),
+            "ORF 노출 정보 누락: {}", p.display());
+        checked += 1;
+    }
+    assert!(checked > 0, "omsystem sample/에 .orf 파일이 없음");
+}
+
 /// 미리보기 디코딩 속도 측정 — RW2/CR2 각 1920px, release 빌드 권장(debug는 5~6× 느림).
 /// `cargo test --release -p rawblow-core -- preview_decode_timing --nocapture`
 #[test]
