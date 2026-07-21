@@ -1280,6 +1280,14 @@ impl eframe::App for RawBlowApp {
     }
 
     /// 종료 시 동기 플러시(#62). 마지막 라벨링 후 300ms 디바운스 창 안에서 앱을 닫으면
+    /// 프레임버퍼 클리어 색(#83). eframe 기본값은 반투명 회색(12,12,12)이라 앱의 near-black
+    /// 패널·photo void(BG0=6,7,10)보다 밝다. 분수 DPI(예: 175%)에서 패널 경계가 물리 픽셀에
+    /// 딱 안 맞아 1px 서브픽셀 틈이 생기면 그 틈으로 더 밝은 기본 클리어색이 새어 "요소 사이
+    /// 흰 줄"로 보인다. 가장 어두운 BG0로 덮어 어느 경계에서도 틈이 주변보다 밝지 않게 한다.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        theme::BG0.to_normalized_gamma_f32()
+    }
+
     /// 그 변경이 저장되지 않은 채 사라지던 갭을 막는다. 시그니처 주의: eframe 0.29의
     /// on_exit는 "glow" 피처가 켜져 있으면 `on_exit(&mut self, Option<&glow::Context>)`인데,
     /// 이 앱은 default-features=false + wgpu 빌드(glow 미포함)라 인자 없는 형태다.
