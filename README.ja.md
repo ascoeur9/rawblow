@@ -3,6 +3,7 @@
 [한국어](README.md) · [English](README.en.md) · **日本語**
 
 [![Windows: Microsoft Store](https://img.shields.io/badge/Windows-Microsoft%20Store-0078D4)](https://apps.microsoft.com/store/detail/9PC2FKGPQPD1)
+[![ダウンロード](https://img.shields.io/github/downloads/ascoeur9/rawblow/total?label=%E3%83%80%E3%82%A6%E3%83%B3%E3%83%AD%E3%83%BC%E3%83%89&color=brightgreen)](https://github.com/ascoeur9/rawblow/releases)
 [![最新リリース](https://img.shields.io/github/v/release/ascoeur9/rawblow?sort=semver&label=%E6%9C%80%E6%96%B0%E3%83%90%E3%83%BC%E3%82%B8%E3%83%A7%E3%83%B3)](https://github.com/ascoeur9/rawblow/releases/latest)
 
 **高速 RAW 写真カリング（セレクト）ビューア** — Rust + egui/wgpu ネイティブ · Windows / macOS / Linux

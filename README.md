@@ -3,6 +3,7 @@
 **한국어** · [English](README.en.md) · [日本語](README.ja.md)
 
 [![Windows: Microsoft Store](https://img.shields.io/badge/Windows-Microsoft%20Store-0078D4)](https://apps.microsoft.com/store/detail/9PC2FKGPQPD1)
+[![다운로드](https://img.shields.io/github/downloads/ascoeur9/rawblow/total?label=%EB%8B%A4%EC%9A%B4%EB%A1%9C%EB%93%9C&color=brightgreen)](https://github.com/ascoeur9/rawblow/releases)
 [![최신 릴리즈](https://img.shields.io/github/v/release/ascoeur9/rawblow?sort=semver&label=%EC%B5%9C%EC%8B%A0%20%EB%B2%84%EC%A0%84)](https://github.com/ascoeur9/rawblow/releases/latest)
 
 **빠른 RAW 사진 컬링(셀렉) 뷰어** — Rust + egui/wgpu 네이티브 · Windows / macOS / Linux

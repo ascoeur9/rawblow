@@ -3,6 +3,7 @@
 [한국어](README.md) · **English** · [日本語](README.ja.md)
 
 [![Windows: Microsoft Store](https://img.shields.io/badge/Windows-Microsoft%20Store-0078D4)](https://apps.microsoft.com/store/detail/9PC2FKGPQPD1)
+[![Downloads](https://img.shields.io/github/downloads/ascoeur9/rawblow/total?label=downloads&color=brightgreen)](https://github.com/ascoeur9/rawblow/releases)
 [![Latest release](https://img.shields.io/github/v/release/ascoeur9/rawblow?sort=semver&label=latest)](https://github.com/ascoeur9/rawblow/releases/latest)
 
 **Fast RAW photo culling (selection) viewer** — Rust + egui/wgpu native · Windows / macOS / Linux
