@@ -2,7 +2,7 @@
 
 [한국어](README.md) · [English](README.en.md) · **日本語**
 
-[![ダウンロード](https://img.shields.io/github/downloads/ascoeur9/rawblow/total?label=%E3%83%80%E3%82%A6%E3%83%B3%E3%83%AD%E3%83%BC%E3%83%89&color=brightgreen)](https://github.com/ascoeur9/rawblow/releases)
+[![Windows: Microsoft Store](https://img.shields.io/badge/Windows-Microsoft%20Store-0078D4)](https://apps.microsoft.com/store/detail/9PC2FKGPQPD1)
 [![最新リリース](https://img.shields.io/github/v/release/ascoeur9/rawblow?sort=semver&label=%E6%9C%80%E6%96%B0%E3%83%90%E3%83%BC%E3%82%B8%E3%83%A7%E3%83%B3)](https://github.com/ascoeur9/rawblow/releases/latest)
 
 **高速 RAW 写真カリング（セレクト）ビューア** — Rust + egui/wgpu ネイティブ · Windows / macOS / Linux
@@ -39,13 +39,15 @@
 
 ## インストール / 実行
 
-### ダウンロードしてすぐ実行
-[**Releases**](https://github.com/ascoeur9/rawblow/releases/latest) から OS に合ったファイルをダウンロードしてください。
+### Windows — Microsoft Store（推奨）
+[**Microsoft Store で入手**](https://apps.microsoft.com/store/detail/9PC2FKGPQPD1) — ストアからインストールすると自動的に更新され、セキュリティ警告なしにすぐ実行できます。
 
-- **Windows x64** — `RawBlow-Setup-vX.Y.Z.exe` を実行してインストール（必要なランタイムをすべて同梱）。署名がないため、初回起動時に SmartScreen の「Windows によって PC が保護されました」警告が出たら **詳細情報 → 実行** をクリック。
-- **macOS (Apple Silicon)** — `RawBlow-vX.Y.Z-macos-arm64.zip`（解凍すると `RawBlow.app`）
-  - 初回起動時に「開発元を確認できません」という警告が表示されたら（公証なし）：ダイアログで **完了** を押し、**システム設定 → プライバシーとセキュリティ → セキュリティ** セクション下部の **このまま開く** を押してください。（macOS 15 Sequoia 以降、従来の **右クリック → 開く** による回避は動作しません。）
-  - または、ターミナルで `xattr -dr com.apple.quarantine /Applications/RawBlow.app`
+> **Microsoft Store を利用できない場合のみ**、[**Releases**](https://github.com/ascoeur9/rawblow/releases/latest) から `RawBlow-Setup-vX.Y.Z.exe` インストーラーをダウンロードしてください（必要なランタイムをすべて同梱）。署名がないため、初回起動時に SmartScreen の「Windows によって PC が保護されました」警告が出たら **詳細情報 → 実行** をクリック。
+
+### macOS (Apple Silicon)
+[**Releases**](https://github.com/ascoeur9/rawblow/releases/latest) から `RawBlow-vX.Y.Z-macos-arm64.zip` をダウンロードしてください（解凍すると `RawBlow.app`）。
+- 初回起動時に「開発元を確認できません」という警告が表示されたら（公証なし）：ダイアログで **完了** を押し、**システム設定 → プライバシーとセキュリティ → セキュリティ** セクション下部の **このまま開く** を押してください。（macOS 15 Sequoia 以降、従来の **右クリック → 開く** による回避は動作しません。）
+- または、ターミナルで `xattr -dr com.apple.quarantine /Applications/RawBlow.app`
 
 ### ソースからビルド（Linux、その他）
 ```bash

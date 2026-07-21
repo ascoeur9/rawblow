@@ -2,7 +2,7 @@
 
 [한국어](README.md) · **English** · [日本語](README.ja.md)
 
-[![Downloads](https://img.shields.io/github/downloads/ascoeur9/rawblow/total?label=downloads&color=brightgreen)](https://github.com/ascoeur9/rawblow/releases)
+[![Windows: Microsoft Store](https://img.shields.io/badge/Windows-Microsoft%20Store-0078D4)](https://apps.microsoft.com/store/detail/9PC2FKGPQPD1)
 [![Latest release](https://img.shields.io/github/v/release/ascoeur9/rawblow?sort=semver&label=latest)](https://github.com/ascoeur9/rawblow/releases/latest)
 
 **Fast RAW photo culling (selection) viewer** — Rust + egui/wgpu native · Windows / macOS / Linux
@@ -39,13 +39,15 @@ A lightweight culling tool that lets you flip quickly through thousands of RAWs,
 
 ## Install / Run
 
-### Download and run right away
-Grab the file for your OS from [**Releases**](https://github.com/ascoeur9/rawblow/releases/latest).
+### Windows — Microsoft Store (recommended)
+[**Get it on the Microsoft Store**](https://apps.microsoft.com/store/detail/9PC2FKGPQPD1) — installing from the Store keeps it up to date automatically and runs without security warnings.
 
-- **Windows x64** — Run `RawBlow-Setup-vX.Y.Z.exe` to install (all required runtimes bundled). It is unsigned, so if SmartScreen shows a "Windows protected your PC" warning, click **More info → Run anyway**.
-- **macOS (Apple Silicon)** — `RawBlow-vX.Y.Z-macos-arm64.zip` (unzip to get `RawBlow.app`)
-  - On first launch, if you get an "unidentified developer" warning (not notarized): click **Done** in the dialog, then open **System Settings → Privacy & Security → Security** and click **Open Anyway** near the bottom. (Since macOS 15 Sequoia, the old **right-click → Open** bypass no longer works.)
-  - Or, in a terminal, `xattr -dr com.apple.quarantine /Applications/RawBlow.app`
+> **Only if you can't use the Microsoft Store**, grab the `RawBlow-Setup-vX.Y.Z.exe` installer from [**Releases**](https://github.com/ascoeur9/rawblow/releases/latest) (all required runtimes bundled). It is unsigned, so if SmartScreen shows a "Windows protected your PC" warning, click **More info → Run anyway**.
+
+### macOS (Apple Silicon)
+Grab `RawBlow-vX.Y.Z-macos-arm64.zip` from [**Releases**](https://github.com/ascoeur9/rawblow/releases/latest) (unzip to get `RawBlow.app`).
+- On first launch, if you get an "unidentified developer" warning (not notarized): click **Done** in the dialog, then open **System Settings → Privacy & Security → Security** and click **Open Anyway** near the bottom. (Since macOS 15 Sequoia, the old **right-click → Open** bypass no longer works.)
+- Or, in a terminal, `xattr -dr com.apple.quarantine /Applications/RawBlow.app`
 
 ### Build from source (Linux, others)
 ```bash

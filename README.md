@@ -2,7 +2,7 @@
 
 **한국어** · [English](README.en.md) · [日本語](README.ja.md)
 
-[![다운로드](https://img.shields.io/github/downloads/ascoeur9/rawblow/total?label=%EB%8B%A4%EC%9A%B4%EB%A1%9C%EB%93%9C&color=brightgreen)](https://github.com/ascoeur9/rawblow/releases)
+[![Windows: Microsoft Store](https://img.shields.io/badge/Windows-Microsoft%20Store-0078D4)](https://apps.microsoft.com/store/detail/9PC2FKGPQPD1)
 [![최신 릴리즈](https://img.shields.io/github/v/release/ascoeur9/rawblow?sort=semver&label=%EC%B5%9C%EC%8B%A0%20%EB%B2%84%EC%A0%84)](https://github.com/ascoeur9/rawblow/releases/latest)
 
 **빠른 RAW 사진 컬링(셀렉) 뷰어** — Rust + egui/wgpu 네이티브 · Windows / macOS / Linux
@@ -43,13 +43,15 @@
 
 ## 설치 / 실행
 
-### 받아서 바로 실행
-[**Releases**](https://github.com/ascoeur9/rawblow/releases/latest)에서 OS에 맞는 파일을 받으세요.
+### Windows — Microsoft Store (권장)
+[**Microsoft Store에서 받기**](https://apps.microsoft.com/store/detail/9PC2FKGPQPD1) — 스토어에서 설치하면 자동으로 업데이트되고, 보안 경고 없이 바로 실행됩니다.
 
-- **Windows x64** — `RawBlow-Setup-vX.Y.Z.exe`를 실행해 설치(필요한 런타임 모두 포함, 별도 설치 불필요). 코드 서명이 없어 첫 실행 시 SmartScreen "Windows의 PC 보호" 경고가 뜨면 **추가 정보 → 실행**.
-- **macOS (Apple Silicon)** — `RawBlow-vX.Y.Z-macos-arm64.zip` (압축 풀면 `RawBlow.app`)
-  - 처음 실행 시 "확인되지 않은 개발자" 경고가 뜨면(공증 미적용): 경고창에서 **완료**를 누른 뒤 **시스템 설정 → 개인정보 보호 및 보안 → 보안** 섹션 맨 아래의 **그래도 열기**를 누르세요. (macOS 15 Sequoia부터는 예전의 **우클릭 → 열기** 우회가 더 이상 동작하지 않습니다.)
-  - 또는 터미널에서 `xattr -dr com.apple.quarantine /Applications/RawBlow.app`
+> **Microsoft Store를 이용할 수 없는 경우에만** [**Releases**](https://github.com/ascoeur9/rawblow/releases/latest)에서 `RawBlow-Setup-vX.Y.Z.exe` 설치 파일을 받으세요(필요한 런타임 모두 포함, 별도 설치 불필요). 코드 서명이 없어 첫 실행 시 SmartScreen "Windows의 PC 보호" 경고가 뜨면 **추가 정보 → 실행**.
+
+### macOS (Apple Silicon)
+[**Releases**](https://github.com/ascoeur9/rawblow/releases/latest)에서 `RawBlow-vX.Y.Z-macos-arm64.zip`를 받으세요(압축 풀면 `RawBlow.app`).
+- 처음 실행 시 "확인되지 않은 개발자" 경고가 뜨면(공증 미적용): 경고창에서 **완료**를 누른 뒤 **시스템 설정 → 개인정보 보호 및 보안 → 보안** 섹션 맨 아래의 **그래도 열기**를 누르세요. (macOS 15 Sequoia부터는 예전의 **우클릭 → 열기** 우회가 더 이상 동작하지 않습니다.)
+- 또는 터미널에서 `xattr -dr com.apple.quarantine /Applications/RawBlow.app`
 
 ### 소스에서 빌드 (Linux, 그 외)
 ```bash
