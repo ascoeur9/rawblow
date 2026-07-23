@@ -65,5 +65,12 @@ pub fn apply(ctx: &egui::Context) {
     widgets.active.bg_stroke = egui::Stroke::new(1.0, LINE3);
     widgets.active.fg_stroke = egui::Stroke::new(1.0, INK);
 
-    ctx.set_visuals(v);
+    // 이 앱은 전용 다크 테마다. egui는 기본적으로 OS 테마를 따르므로(ThemePreference::System),
+    // OS가 "라이트 모드"인 PC에서는 egui가 light 슬롯의 기본값을 써서 패널 구분선(SidePanel/
+    // TopBottomPanel separator)이 밝은 회색(from_gray(190))으로 그려진다 → "요소 사이 흰 줄"(#83).
+    // 다크 모드 PC에서는 from_gray(60)이라 near-black 패널에 묻혀 보이지 않아 "특정 PC에서만" 재현됐다.
+    // 테마를 다크로 고정하고, 라이트 슬롯에도 동일 비주얼을 넣어 OS 모드와 무관하게 동일 렌더링을 보장한다.
+    ctx.set_theme(egui::ThemePreference::Dark);
+    ctx.set_visuals_of(egui::Theme::Dark, v.clone());
+    ctx.set_visuals_of(egui::Theme::Light, v);
 }
