@@ -1468,3 +1468,105 @@ fn sidecar_save_leaves_no_tmp_files() {
         .collect();
     assert!(leftovers.is_empty(), "임시 파일 잔존: {leftovers:?}");
 }
+
+/// 캐논 CR3(ISO BMFF)의 Orientation이 썸네일·프리뷰·ORIG 모든 경로에 적용되는지(#세로 사진
+/// 가로 표시 제보, EOS R6 Mark III). CR3는 TIFF가 아니라 `ftyp`/`moov` 컨테이너라 기존
+/// IFD0 직독·kamadak가 모두 실패해 Orientation이 늘 1로 떨어졌다 — 임베디드 프리뷰는
+/// **미회전**으로 저장되므로 CMT1의 값을 여기서 적용해야 한다(imagepipe 경로와 달리
+/// 이중회전 위험 없음).
+#[test]
+fn cr3_bmff_orientation_applies_on_every_decode_path() {
+    use image::{ImageBuffer, Rgb};
+    fn make_jpeg(w: u32, h: u32) -> Vec<u8> {
+        let buf = ImageBuffer::from_fn(w, h, |x, y| {
+            Rgb([(x * 255 / (w - 1)) as u8, (y * 255 / (h - 1)) as u8, 64u8])
+        });
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(buf)
+            .write_to(&mut out, image::ImageFormat::Jpeg)
+            .unwrap();
+        out.into_inner()
+    }
+    /// 최소 TIFF 블록(CMTn 모사): IFD0에 SHORT 엔트리들만.
+    fn cmt(entries: &[(u16, u16)]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"II");
+        b.extend_from_slice(&0x002au16.to_le_bytes());
+        b.extend_from_slice(&8u32.to_le_bytes());
+        b.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        for (tag, val) in entries {
+            b.extend_from_slice(&tag.to_le_bytes());
+            b.extend_from_slice(&3u16.to_le_bytes()); // SHORT
+            b.extend_from_slice(&1u32.to_le_bytes());
+            b.extend_from_slice(&(*val as u32).to_le_bytes());
+        }
+        b.extend_from_slice(&0u32.to_le_bytes()); // next-IFD
+        b
+    }
+    fn bx(typ: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut v = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+        v.extend_from_slice(typ);
+        v.extend_from_slice(body);
+        v
+    }
+    /// CR3와 같은 배치: ftyp → moov[uuid(캐논)[CMT1]] → mdat(프리뷰 JPEG).
+    fn build_cr3(jpeg: &[u8], orient: u16) -> Vec<u8> {
+        const CANON_UUID: [u8; 16] = [
+            0x85, 0xc0, 0xb6, 0x87, 0x82, 0x0f, 0x11, 0xe0, 0x81, 0x11, 0xf4, 0xce, 0x46, 0x2b,
+            0x6a, 0x48,
+        ];
+        let mut uuid_body = CANON_UUID.to_vec();
+        uuid_body.extend(bx(b"CNCV", b"CanonCR3_001/00.09.00/00.00.00"));
+        // ImageWidth/ImageLength는 센서 기준(미회전), Orientation이 표시 방향을 정한다.
+        uuid_body.extend(bx(b"CMT1", &cmt(&[(0x0100, 3200), (0x0101, 2000), (0x0112, orient)])));
+        let mut f = bx(b"ftyp", b"crx isom");
+        f.extend(bx(b"moov", &bx(b"uuid", &uuid_body)));
+        f.extend(bx(b"mdat", jpeg));
+        f
+    }
+
+    let dir = std::env::temp_dir().join("rb_cr3_decode_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let jpeg = make_jpeg(3200, 2000); // 카메라가 저장하는 **가로** 프리뷰
+    let dec = |p: &Path, full: bool, edge: u32| {
+        decode::decode_file(p, decode::DecodeOptions { full_raw: full, max_edge: Some(edge) })
+            .map(|d| (d.width, d.height))
+    };
+
+    // Orientation=6(시계 90°): 가로 3200×2000 → 세로로 뒤집혀 나와야 한다.
+    let p = dir.join("rot.cr3");
+    std::fs::write(&p, build_cr3(&jpeg, 6)).unwrap();
+    assert_eq!(rawblow_core::meta::orientation(&p), 6, "CMT1 Orientation 검출");
+    let (w, h) = dec(&p, true, 8192).expect("ORIG decode");
+    assert_eq!((w, h), (2000, 3200), "ORIG에 회전 적용(이중회전 아님)");
+    let (w, h) = dec(&p, false, 1600).expect("preview decode");
+    assert!(h > w, "프리뷰도 세로여야 한다: {w}x{h}");
+    let (w, h) = dec(&p, false, 320).expect("thumb decode");
+    assert!(h > w, "썸네일도 세로여야 한다: {w}x{h}");
+
+    // Orientation=1: 그대로 가로.
+    let p = dir.join("flat.cr3");
+    std::fs::write(&p, build_cr3(&jpeg, 1)).unwrap();
+    assert_eq!(rawblow_core::meta::orientation(&p), 1);
+    assert_eq!(dec(&p, true, 8192).expect("ORIG decode"), (3200, 2000), "회전 없음");
+
+    // Orientation 태그 자체가 없어도 1로 폴백(패닉·오검출 금지).
+    let mut no_orient = Vec::new();
+    no_orient.extend(bx(b"ftyp", b"crx isom"));
+    no_orient.extend(bx(b"moov", &bx(b"uuid", &{
+        const CANON_UUID: [u8; 16] = [
+            0x85, 0xc0, 0xb6, 0x87, 0x82, 0x0f, 0x11, 0xe0, 0x81, 0x11, 0xf4, 0xce, 0x46, 0x2b,
+            0x6a, 0x48,
+        ];
+        let mut v = CANON_UUID.to_vec();
+        v.extend(bx(b"CMT1", &cmt(&[(0x0100, 3200)])));
+        v
+    })));
+    no_orient.extend(bx(b"mdat", &jpeg));
+    let p = dir.join("none.cr3");
+    std::fs::write(&p, &no_orient).unwrap();
+    assert_eq!(rawblow_core::meta::orientation(&p), 1);
+    assert_eq!(dec(&p, true, 8192).expect("ORIG decode"), (3200, 2000));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

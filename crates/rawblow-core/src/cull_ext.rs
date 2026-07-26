@@ -89,6 +89,8 @@ pub struct PhotoMeta {
     pub shutter_secs: Option<f32>,
     pub focal_mm: Option<f32>,
     pub datetime_secs: Option<i64>,
+    /// **화면에 보이는 방향의** 가로·세로 픽셀. `from_exif`가 EXIF Orientation을 적용해
+    /// 채우므로(센서 기준 값이 아니다) `is_portrait`가 실제 표시와 일치한다.
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub camera: Option<String>,
@@ -98,14 +100,20 @@ pub struct PhotoMeta {
 impl PhotoMeta {
     /// 표시용 ExifInfo 문자열을 수치로 파싱해 채운다.
     pub fn from_exif(e: &crate::meta::ExifInfo) -> Self {
+        // EXIF의 width/height는 센서 기준(미회전)이라 세로 컷도 가로 숫자로 들어온다.
+        // 그대로 쓰면 "세로만" 필터가 세로 사진을 전부 걸러낸다 — 표시 방향으로 바꿔 담는다.
+        let (w, h) = match e.display_size() {
+            Some((w, h)) => (Some(w), Some(h)),
+            None => (e.width, e.height),
+        };
         PhotoMeta {
             iso: e.iso.as_deref().and_then(parse_iso),
             aperture_f: e.aperture.as_deref().and_then(parse_aperture),
             shutter_secs: e.shutter.as_deref().and_then(parse_shutter_secs),
             focal_mm: e.focal_length.as_deref().and_then(parse_focal_mm),
             datetime_secs: e.datetime.as_deref().and_then(parse_exif_datetime),
-            width: e.width,
-            height: e.height,
+            width: w,
+            height: h,
             camera: e.camera.clone(),
             lens: e.lens.clone(),
         }
@@ -481,6 +489,24 @@ mod tests {
         let only_portrait = MetaFilter { orientation: Some(Orientation::Portrait), ..Default::default() };
         assert!(only_portrait.passes(&portrait));
         assert!(!only_portrait.passes(&landscape));
+
+        // EXIF는 세로 컷도 센서 기준(가로) 숫자로 기록한다 — Orientation 6/8이면
+        // from_exif가 맞바꿔 담아야 "세로만" 필터가 세로 사진을 통과시킨다.
+        let rotated = crate::meta::ExifInfo {
+            width: Some(6960),
+            height: Some(4640),
+            orientation: 8,
+            ..Default::default()
+        };
+        let m = PhotoMeta::from_exif(&rotated);
+        assert_eq!((m.width, m.height), (Some(4640), Some(6960)));
+        assert_eq!(m.is_portrait(), Some(true));
+        assert!(only_portrait.passes(&m));
+        // Orientation 1은 그대로.
+        let upright = crate::meta::ExifInfo { orientation: 1, ..rotated.clone() };
+        let m = PhotoMeta::from_exif(&upright);
+        assert_eq!((m.width, m.height), (Some(6960), Some(4640)));
+        assert_eq!(m.is_portrait(), Some(false));
 
         // ISO 상한 6400: 고감도 컷 제외
         let hi = PhotoMeta { iso: Some(12800), ..Default::default() };

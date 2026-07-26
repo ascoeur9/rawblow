@@ -1,13 +1,14 @@
-//! EXIF 추출 (F8 오버레이용). kamadak-exif 사용.
+//! EXIF 추출 (F8 오버레이·촬영시간순 정렬·Orientation). kamadak-exif 사용.
 //!
-//! RW2 등 TIFF 기반 RAW는 컨테이너에서 직접 읽고, 실패하면 임베디드 JPEG의
-//! EXIF로 폴백한다.
+//! RW2 등 TIFF 기반 RAW는 컨테이너에서 직접 읽고, 캐논 CR3(ISO BMFF)는
+//! [`crate::bmff`]로 `moov` 안의 CMT 블록을 표준 TIFF로 합성해 읽으며,
+//! 그래도 안 되면 임베디드 JPEG의 EXIF로 폴백한다.
 
 use crate::model::{kind_of, Kind};
 use exif::{Exif, In, Tag, Value};
 use std::path::Path;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ExifInfo {
     pub camera: Option<String>,
     pub lens: Option<String>,
@@ -18,8 +19,12 @@ pub struct ExifInfo {
     pub exposure_bias: Option<String>,
     pub datetime: Option<String>,
     pub white_balance: Option<String>,
+    /// EXIF에 기록된 **미회전(센서 기준)** 픽셀 크기. 세로 컷도 가로 숫자로 들어온다.
+    /// 화면에 보이는 방향으로 판단하려면 `orientation`과 함께 봐야 한다(`display_size`).
     pub width: Option<u32>,
     pub height: Option<u32>,
+    /// EXIF Orientation(1..8). 읽지 못하면 1.
+    pub orientation: u16,
     /// 촬영 위치(#38). 표준 EXIF GPS IFD에서 추출. 없으면 None(대부분의 RAW).
     pub gps: Option<GpsCoord>,
 }
@@ -31,6 +36,28 @@ pub struct GpsCoord {
     pub lon: f64,
     /// 고도(m). GPSAltitudeRef=1(해수면 아래)이면 음수.
     pub alt: Option<f64>,
+}
+
+/// `orientation`만 1(정상)로, 나머지는 비어 있는 기본값. 파생 Default는 0을 주는데
+/// 0은 유효한 Orientation이 아니다.
+impl Default for ExifInfo {
+    fn default() -> Self {
+        ExifInfo {
+            camera: None,
+            lens: None,
+            focal_length: None,
+            aperture: None,
+            shutter: None,
+            iso: None,
+            exposure_bias: None,
+            datetime: None,
+            white_balance: None,
+            width: None,
+            height: None,
+            orientation: 1,
+            gps: None,
+        }
+    }
 }
 
 impl ExifInfo {
@@ -45,16 +72,43 @@ impl ExifInfo {
             && self.width.is_none()
             && self.gps.is_none()
     }
+
+    /// 화면에 보이는 방향의 (가로, 세로). EXIF의 width/height는 센서 기준(미회전)이라
+    /// 세로 컷도 가로 숫자로 들어온다 — Orientation 5..8이면 맞바꾼다.
+    /// 디코딩 결과(`decode::finish` → `apply_orientation`)와 같은 방향을 가리킨다.
+    pub fn display_size(&self) -> Option<(u32, u32)> {
+        let (w, h) = (self.width?, self.height?);
+        Some(if (5..=8).contains(&self.orientation) { (h, w) } else { (w, h) })
+    }
 }
 
 /// 경로에서 EXIF를 읽는다.
+///
+/// 렌즈명은 표준 태그(`LensModel` 0xA434)가 없는 바디가 많아, 비면 MakerNote에서
+/// 한 번 더 찾는다([`crate::af::parse_lens`] — 캐논 0x0095 / 올림푸스 Equipment 0x0203).
 pub fn read_exif(path: &Path) -> Option<ExifInfo> {
+    let mut info = read_exif_inner(path)?;
+    if info.lens.is_none() {
+        info.lens = crate::af::parse_lens(path);
+    }
+    Some(info)
+}
+
+fn read_exif_inner(path: &Path) -> Option<ExifInfo> {
     if let Some(info) = read_container(path) {
         if !info.is_empty() {
             return Some(info);
         }
     }
     if kind_of(path) == Some(Kind::Raw) {
+        // 캐논 CR3: TIFF가 아니라 ISO BMFF라 kamadak도 IFD0 직독도 못 쓴다. `moov` 안의
+        // CMT1(IFD0)·CMT2(Exif IFD)·CMT4(GPS)를 표준 EXIF TIFF로 합성해 읽는다.
+        // (이게 없으면 CR3는 EXIF가 통째로 비어 F8 오버레이·촬영시간순 정렬이 죽는다.)
+        if let Some(info) = read_bmff_exif(path) {
+            if !info.is_empty() {
+                return Some(info);
+            }
+        }
         // 올림푸스/OM SYSTEM ORF 등 "매직만 비표준"인 TIFF 계열 RAW: 버전 필드를
         // 표준값(42)으로 고쳐 컨테이너를 직접 읽는다(임베디드 JPEG에 EXIF가 없음).
         if let Some(info) = read_nonstandard_tiff(path) {
@@ -110,10 +164,27 @@ fn scan_embedded_exif(bytes: &[u8]) -> Option<ExifInfo> {
     None
 }
 
+/// Orientation 검출에 쓰는 헤더 프리픽스(IFD0는 항상 파일 선두 근처에 있다).
+const ORIENT_HEADER: usize = 64 * 1024;
+/// 임베디드 JPEG EXIF 폴백 스캔 범위. read_exif와 같은 값 — EXIF를 품은 프리뷰는
+/// 파일 앞쪽(보통 수십 KB)에 있다.
+const ORIENT_SCAN_PREFIX: usize = 2 * 1024 * 1024;
+
 /// EXIF Orientation(1..8)을 읽는다. 없으면 1(정상).
 ///
-/// 일반 이미지·TIFF 기반 RAW(RW2 등)는 컨테이너 IFD0에서 직접 읽고,
-/// 실패하면 RAW의 임베디드 JPEG EXIF로 폴백한다.
+/// **디코딩마다(썸네일·프리뷰·원본) 호출되는 핫패스**라 읽는 양을 유계로 묶는다.
+/// 순서가 곧 비용 순서다:
+/// 1. TIFF 계열 헤더(II/MM) IFD0 직독 — 앞 64KB. CR2·ARW·NEF·DNG·PEF·SRW·TIF는
+///    물론 매직만 다른 RW2(0x55)·ORF('RO'/'RS')까지 여기서 끝난다. kamadak의
+///    `read_from_container`는 TIFF로 판정되면 **파일 전체**를 메모리로 읽어버려
+///    (kamadak-exif reader.rs: `if tiff::is_tiff(..) { reader.read_to_end(..) }`)
+///    85MB ARW 한 장에 24ms가 든다 — 그래서 kamadak보다 **앞에** 둔다.
+/// 2. ISO BMFF(캐논 CR3) — `moov` 안 CMT1. TIFF도 kamadak도 못 읽던 구멍이라
+///    세로 사진이 가로로 표시됐다(EOS R6 Mark III 제보).
+/// 3. kamadak 컨테이너 — JPEG(APP1만 읽음)·PNG·WebP·HEIC/HEIF, 그리고 IFD0에
+///    태그가 없던 TIFF 계열의 보험.
+/// 4. 마지막 폴백: 앞 2MB 안의 임베디드 JPEG APP1(EXIF). 완전한 SOI..EOI가
+///    아니어도 APP1만 있으면 읽히므로 잘린 프리뷰에도 강하다(RAF 등).
 pub fn orientation(path: &Path) -> u16 {
     fn from_exif(exif: &Exif) -> Option<u16> {
         let v = exif
@@ -121,7 +192,18 @@ pub fn orientation(path: &Path) -> u16 {
             .and_then(|f| f.value.get_uint(0))? as u16;
         (1..=8).contains(&v).then_some(v)
     }
-    // 1) 표준 컨테이너(JPG/TIFF/표준 DNG): kamadak.
+    let head = read_prefix(path, ORIENT_HEADER).unwrap_or_default();
+    // 1) TIFF 계열(표준 0x2A + RW2 0x55 + ORF 'RO'/'RS') IFD0 직독.
+    if let Some(o) = tiff_ifd0_orientation(&head) {
+        return o;
+    }
+    // 2) ISO BMFF(CR3).
+    if crate::bmff::is_bmff(&head) {
+        if let Some(o) = crate::bmff::cr3_orientation(path) {
+            return o;
+        }
+    }
+    // 3) 표준 컨테이너: kamadak.
     if let Ok(file) = std::fs::File::open(path) {
         let mut reader = std::io::BufReader::new(file);
         if let Ok(exif) = exif::Reader::new().read_from_container(&mut reader) {
@@ -130,34 +212,48 @@ pub fn orientation(path: &Path) -> u16 {
             }
         }
     }
+    // 4) RAW의 임베디드 JPEG EXIF(앞 2MB).
     if kind_of(path) == Some(Kind::Raw) {
-        // 2) RW2(파나소닉 매직 0x55) 등은 kamadak이 못 읽으므로 IFD0를 직접 파싱.
-        if let Some(o) = read_tiff_ifd0_orientation(path) {
+        let prefix = if head.len() >= ORIENT_SCAN_PREFIX {
+            head
+        } else {
+            read_prefix(path, ORIENT_SCAN_PREFIX).unwrap_or(head)
+        };
+        if let Some(o) = scan_embedded_orientation(&prefix) {
             return o;
-        }
-        // 3) 마지막 폴백: 임베디드 JPEG의 EXIF.
-        if let Ok(bytes) = std::fs::read(path) {
-            if let Some(jpeg) = crate::decode::extract_embedded_jpeg(&bytes) {
-                let mut cursor = std::io::Cursor::new(jpeg);
-                if let Ok(exif) = exif::Reader::new().read_from_container(&mut cursor) {
-                    if let Some(o) = from_exif(&exif) {
-                        return o;
-                    }
-                }
-            }
         }
     }
     1
 }
 
-/// TIFF 계열 헤더의 IFD0에서 Orientation(0x0112)을 직접 읽는다.
-/// 표준 TIFF(매직 0x2A)와 파나소닉 RW2(매직 0x55) 모두 처리(매직 검사 생략).
-fn read_tiff_ifd0_orientation(path: &Path) -> Option<u16> {
-    use std::io::Read;
-    let mut file = std::fs::File::open(path).ok()?;
-    let mut buf = vec![0u8; 64 * 1024];
-    let n = file.read(&mut buf).ok()?;
-    buf.truncate(n);
+/// 프리픽스 안의 임베디드 JPEG(SOI)들을 차례로 시도해 첫 Orientation을 찾는다.
+/// kamadak의 JPEG 경로는 APP1까지만 읽으므로 뒤가 잘려 있어도 동작한다.
+fn scan_embedded_orientation(bytes: &[u8]) -> Option<u16> {
+    let mut i = 0usize;
+    while i + 3 < bytes.len() {
+        if bytes[i] == 0xFF && bytes[i + 1] == 0xD8 && bytes[i + 2] == 0xFF {
+            let mut c = std::io::Cursor::new(&bytes[i..]);
+            if let Ok(exif) = exif::Reader::new().read_from_container(&mut c) {
+                let v = exif
+                    .get_field(Tag::Orientation, In::PRIMARY)
+                    .and_then(|f| f.value.get_uint(0))
+                    .map(|v| v as u16);
+                if let Some(v) = v.filter(|v| (1..=8).contains(v)) {
+                    return Some(v);
+                }
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// TIFF 계열 헤더 바이트의 IFD0에서 Orientation(0x0112)을 직접 읽는다.
+/// 표준 TIFF(매직 0x2A)·파나소닉 RW2(0x55)·올림푸스 ORF('RO'/'RS')를 모두 처리한다
+/// (매직 검사는 생략하고 II/MM + IFD 구조 유효성으로만 판단).
+fn tiff_ifd0_orientation(buf: &[u8]) -> Option<u16> {
     if buf.len() < 8 {
         return None;
     }
@@ -184,7 +280,7 @@ fn read_tiff_ifd0_orientation(path: &Path) -> Option<u16> {
     };
     let ifd0 = r32(4)? as usize;
     let count = r16(ifd0)? as usize;
-    for i in 0..count {
+    for i in 0..count.min(512) {
         let e = ifd0 + 2 + i * 12;
         let tag = match r16(e) {
             Some(t) => t,
@@ -212,6 +308,12 @@ fn read_bytes(bytes: &[u8]) -> Option<ExifInfo> {
     let mut cursor = std::io::Cursor::new(bytes);
     let exif = exif::Reader::new().read_from_container(&mut cursor).ok()?;
     Some(build(&exif))
+}
+
+/// ISO BMFF(캐논 CR3)의 EXIF. 합성된 표준 TIFF를 kamadak로 파싱한다.
+fn read_bmff_exif(path: &Path) -> Option<ExifInfo> {
+    let raw = crate::bmff::cr3_exif_tiff(path)?;
+    read_raw_exif(raw)
 }
 
 /// 올림푸스/OM SYSTEM ORF처럼 표준 TIFF 구조인데 버전 필드만 비표준인 RAW를 읽는다.
@@ -319,6 +421,12 @@ fn build(exif: &Exif) -> ExifInfo {
         white_balance: disp(exif, Tag::WhiteBalance),
         width: uint(exif, Tag::PixelXDimension).or_else(|| uint(exif, Tag::ImageWidth)),
         height: uint(exif, Tag::PixelYDimension).or_else(|| uint(exif, Tag::ImageLength)),
+        // width/height가 센서 기준(미회전)이라, 이걸로 가로/세로를 판정하려면 필수다.
+        // 표시 방향(`decode`의 apply_orientation)과 같은 태그를 본다.
+        orientation: uint(exif, Tag::Orientation)
+            .map(|v| v as u16)
+            .filter(|v| (1..=8).contains(v))
+            .unwrap_or(1),
         gps: gps_coord(exif),
     }
 }

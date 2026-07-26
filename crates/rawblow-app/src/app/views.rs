@@ -167,7 +167,7 @@ impl RawBlowApp {
                     let rect = resp.rect;
                     let p = ui.painter();
                     if active {
-                        p.rect(rect, Rounding::same(5.0), theme::BG2, Stroke::new(1.0, widgets::with_alpha(theme::label_color(label), 64)));
+                        p.rect(rect, Rounding::same(5.0), theme::BG2, Stroke::new(1.0_f32, widgets::with_alpha(theme::label_color(label), 64)));
                     }
                     p.circle_filled(Pos2::new(rect.left() + 12.0, rect.center().y), 4.0, theme::label_color(label));
                     p.text(Pos2::new(rect.left() + 26.0, rect.center().y), Align2::LEFT_CENTER, label.name(lang).to_uppercase(), prop(11.5), theme::INK2);
@@ -252,7 +252,7 @@ impl RawBlowApp {
                         let (r, resp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
                         ui.painter().circle_filled(r.center(), if active { 9.0 } else { 6.5 }, col);
                         if active {
-                            ui.painter().circle_stroke(r.center(), 10.0, Stroke::new(1.5, theme::INK));
+                            ui.painter().circle_stroke(r.center(), 10.0, Stroke::new(1.5_f32, theme::INK));
                         }
                         if resp.clicked() {
                             clicked_tag = Some(*tag);
@@ -447,7 +447,7 @@ impl RawBlowApp {
                         let p = ui.painter();
                         let txt_col = if org_enabled { theme::INK } else { theme::INK4 };
                         let fill = if org_enabled && org_resp.hovered() { theme::BG4 } else { theme::BG3 };
-                        p.rect(org_rect, Rounding::same(6.0), fill, Stroke::new(1.0, theme::LINE2));
+                        p.rect(org_rect, Rounding::same(6.0), fill, Stroke::new(1.0_f32, theme::LINE2));
                         // 아이콘 + 글자 묶음을 셀 가운데에 배치(총 너비 계산 후 시작 x 산출).
                         let icon = 16.0;
                         let gap = 7.0;
@@ -543,7 +543,7 @@ impl RawBlowApp {
                             let p = ui.painter();
                             let dark = Color32::from_rgb(0x0a, 0x14, 0x20);
                             let fill = if resp.hovered() { Color32::from_rgb(0x8e, 0xc9, 0xff) } else { theme::ACCENT };
-                            p.rect(rect, Rounding::same(8.0), fill, Stroke::new(1.0, theme::ACCENT));
+                            p.rect(rect, Rounding::same(8.0), fill, Stroke::new(1.0_f32, theme::ACCENT));
                             // 1줄: 컬러 스파클 아이콘(가운데 상단).
                             let icon = 22.0;
                             let icon_rect = Rect::from_center_size(
@@ -751,13 +751,22 @@ impl RawBlowApp {
     /// 프리뷰가 있으면 그것을, 없으면 썸네일을 열화 표시, 둘 다 없으면 "디코딩 중".
     pub(super) fn photo_view(&mut self, ui: &mut egui::Ui, area: Rect, real: usize) {
         let lang = self.lang;
-        // 표시할 항목이 바뀌면 줌 상태 리셋(fit).
+        // 표시할 항목이 바뀌면: 확대 중이었으면 그 배율을 새 사진에 이어받고(#85),
+        // 창맞춤이었으면 그대로 창맞춤.
         if self.zoom_for != Some(real) {
-            self.fit = true;
-            self.pan = Vec2::ZERO;
             self.zoom_for = Some(real);
             self.last_view_size = None; // 항목이 바뀜 → 해상도 추적 리셋(#48)
             self.af_zoom_pending = false;
+            match self.keep_zoom {
+                Some(_) => {
+                    self.fit = false;
+                    self.zoom_restore = true; // 텍스처 크기를 안 뒤에 아래에서 복원.
+                }
+                None => {
+                    self.fit = true;
+                    self.pan = Vec2::ZERO;
+                }
+            }
         }
         let texsize = self
             .cache
@@ -808,13 +817,40 @@ impl RawBlowApp {
         let min_zoom = fit_scale.min(1.0);
         let max_zoom = 8.0_f32.max(fit_scale); // 최소 8x(작은 이미지도 확대 가능)
 
+        // #85: 넘어온 확대 상태를 이 사진에 복원한다. `mag`는 긴 변이 차지하는 화면 px이라
+        // 해상도·방향에 불변이다 — 가로(1920x1280) → 세로(1280x1920)로 넘어가도 긴 변은 그대로
+        // 1920이라 픽셀 확인 배율이 똑같이 유지된다. pan은 표시 크기 대비 비율로 되돌린다.
+        // 새 사진의 창맞춤 배율이 더 크면(작은 이미지) 조용히 창맞춤으로 내려앉는다.
+        let restored = self.zoom_restore;
+        if restored {
+            if let Some((mag, pan_norm)) = self.keep_zoom {
+                let z = (mag / size.max_elem().max(1.0)).clamp(min_zoom, max_zoom);
+                if z <= fit_scale * 1.001 {
+                    self.fit = true;
+                    self.pan = Vec2::ZERO;
+                } else {
+                    self.zoom = z;
+                    self.pan = Vec2::new(pan_norm.x * size.x * z, pan_norm.y * size.y * z);
+                }
+            }
+            // 프리뷰(정식 해상도)가 도착했으면 복원 확정. 그 전까지는 썸네일 크기에 맞춘
+            // 임시 값이라 매 프레임 다시 맞춘다.
+            if self.fit || self.cache.contains(real) {
+                self.zoom_restore = false;
+            }
+        }
+
         // #48: 같은 항목에서 표시 해상도가 바뀌면(ORIG 로드/언로드) 화면상 배율·보던 위치를 유지한다.
         // zoom은 화면픽셀/이미지픽셀이라 해상도가 K배면 같은 zoom이 K배 확대로 보인다 → zoom을 1/K로
         // 맞춰 scaled(=size*zoom, 화면상 크기)를 보존하면 pan(화면픽셀)도 그대로 들어맞는다.
-        if !self.fit {
+        // 긴 변 기준으로 비교해야 가로↔세로가 바뀌어도(같은 항목이라도 캐시된 옛 방향 →
+        // 새로 회전된 프리뷰) 종횡비만큼 배율이 튀지 않는다.
+        // 복원 프레임에서는 zoom을 절대값으로 방금 정했으므로 건너뛴다.
+        if !self.fit && !restored {
             if let Some(prev) = self.last_view_size {
-                if prev.x > 0.0 && (prev.x - size.x).abs() > 0.5 {
-                    self.zoom = (self.zoom * prev.x / size.x).clamp(min_zoom, max_zoom);
+                let (pl, sl) = (prev.max_elem(), size.max_elem());
+                if pl > 0.0 && sl > 0.0 && (pl - sl).abs() > 0.5 {
+                    self.zoom = (self.zoom * pl / sl).clamp(min_zoom, max_zoom);
                 }
             }
         }
@@ -846,6 +882,7 @@ impl RawBlowApp {
                 }
                 self.zoom = nz;
                 self.fit = nz <= fit_scale * 1.001;
+                self.zoom_restore = false; // 사용자가 직접 조작 → 복원 대기 취소(#85)
             }
         }
 
@@ -858,10 +895,12 @@ impl RawBlowApp {
             } else {
                 self.fit = true;
             }
+            self.zoom_restore = false;
         }
         // 드래그: 이동.
         if resp.dragged() {
             self.pan += resp.drag_delta();
+            self.zoom_restore = false;
         }
 
         // pan 클램프(이미지가 영역보다 클 때만 이동 허용 — 화면 밖으로 날아가지 않게).
@@ -884,6 +923,18 @@ impl RawBlowApp {
         let max_py = ((scaled.y - area.height()) * 0.5).max(0.0);
         self.pan.x = self.pan.x.clamp(-max_px, max_px);
         self.pan.y = self.pan.y.clamp(-max_py, max_py);
+
+        // #85: 다음 사진으로 넘어가도 이어받을 확대 상태를 기록한다. 창맞춤이면 None(넘겨도 창맞춤).
+        // 복원이 아직 확정되지 않은 프레임(썸네일 임시 표시)에서는 덮어쓰지 않는다 — 320px에
+        // 맞춰 클램프된 값이 원래 배율을 영구히 깎아버리기 때문.
+        if !self.zoom_restore {
+            self.keep_zoom = (!self.fit).then(|| {
+                (
+                    size.max_elem() * self.zoom,
+                    Vec2::new(self.pan.x / scaled.x.max(1.0), self.pan.y / scaled.y.max(1.0)),
+                )
+            });
+        }
 
         // 그리기(영역으로 클립).
         let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
@@ -910,12 +961,14 @@ impl RawBlowApp {
                         let bh = if h > 0.0 { h as f32 * target.height() } else { bw };
                         let r = Rect::from_center_size(center, Vec2::new(bw.max(8.0), bh.max(8.0)));
                         // 합초점은 초록 굵게, 선택만 된 점은 밝게, 나머지는 흐리게(DPP 스타일).
+                        // `width`는 `Stroke::new(impl Into<f32>)`로 흘러가므로 접미사로 f32를
+                        // 못박는다(#84: 접미사 없는 리터럴의 f32 폴백은 향후 hard error).
                         let (color, width) = if pt.in_focus {
-                            (theme::OK, 2.0)
+                            (theme::OK, 2.0_f32)
                         } else if pt.selected {
-                            (theme::INK2, 1.2)
+                            (theme::INK2, 1.2_f32)
                         } else {
-                            (theme::INK4, 1.0)
+                            (theme::INK4, 1.0_f32)
                         };
                         p.rect_stroke(r, Rounding::same(2.0), Stroke::new(width, color));
                     }
@@ -1182,7 +1235,7 @@ impl RawBlowApp {
             // 위치 마커(패널 정중앙 = 촬영 좌표).
             let c = panel.center();
             p.circle_filled(c, 5.0, theme::REJECT);
-            p.circle_stroke(c, 5.0, Stroke::new(1.5, Color32::WHITE));
+            p.circle_stroke(c, 5.0, Stroke::new(1.5_f32, Color32::WHITE));
             // OSM attribution(타일 정책 필수). 지도 위 가독성용 어두운 띠.
             let att = panel.with_min_y(panel.bottom() - 13.0);
             p.rect_filled(att, Rounding::ZERO, Color32::from_black_alpha(120));
@@ -1267,7 +1320,7 @@ impl RawBlowApp {
             .show(ctx, |ui| {
                 let inner = egui::Frame::none()
                     .fill(theme::BG3)
-                    .stroke(Stroke::new(1.0, theme::LINE2))
+                    .stroke(Stroke::new(1.0_f32, theme::LINE2))
                     .rounding(6.0)
                     .inner_margin(egui::Margin::symmetric(12.0, 8.0))
                     .show(ui, |ui| {

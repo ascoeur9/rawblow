@@ -12,7 +12,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// 캐시 포맷 버전. 썸네일 생성 방식이 바뀌면 올려서 기존 캐시를 무효화한다.
-const CACHE_VERSION: u32 = 1;
+///
+/// 2: CR3(ISO BMFF) Orientation 검출 추가. 캐시에는 **회전이 적용된 픽셀**이 들어가는데
+///    (decode.rs `finish()`가 저장 전에 회전) 키는 경로·크기·mtime만 쓴다 — 원본 파일은
+///    그대로이므로 버전을 올리지 않으면 이미 캐시된 CR3 썸네일·프리뷰가 영영 눕혀진 채로
+///    남고 ORIG만 바로 서는 불일치가 생긴다.
+const CACHE_VERSION: u32 = 2;
 /// 저장 JPEG 품질(썸네일이라 85면 충분히 작고 깨끗하다). env `RB_CACHE_Q`로 스윕 가능.
 fn jpeg_quality() -> u8 {
     static C: std::sync::OnceLock<u8> = std::sync::OnceLock::new();

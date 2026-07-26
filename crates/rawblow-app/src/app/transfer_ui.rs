@@ -275,7 +275,7 @@ impl RawBlowApp {
             .show(ctx, |ui| {
                 egui::Frame::none()
                     .fill(theme::BG2)
-                    .stroke(Stroke::new(1.0, theme::LINE2))
+                    .stroke(Stroke::new(1.0_f32, theme::LINE2))
                     .rounding(10.0)
                     .show(ui, |ui| {
                         ui.set_min_width(660.0);
@@ -297,8 +297,8 @@ impl RawBlowApp {
                                         let (xr, xresp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
                                         let c = xr.center();
                                         let col = if xresp.hovered() { theme::INK } else { theme::INK3 };
-                                        ui.painter().line_segment([c + Vec2::new(-4.0, -4.0), c + Vec2::new(4.0, 4.0)], Stroke::new(1.5, col));
-                                        ui.painter().line_segment([c + Vec2::new(4.0, -4.0), c + Vec2::new(-4.0, 4.0)], Stroke::new(1.5, col));
+                                        ui.painter().line_segment([c + Vec2::new(-4.0, -4.0), c + Vec2::new(4.0, 4.0)], Stroke::new(1.5_f32, col));
+                                        ui.painter().line_segment([c + Vec2::new(4.0, -4.0), c + Vec2::new(-4.0, 4.0)], Stroke::new(1.5_f32, col));
                                         if xresp.clicked() { do_cancel = true; }
                                         if xresp.hovered() { ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); }
                                     });
@@ -827,7 +827,7 @@ impl RawBlowApp {
                 ui.add_space(14.0);
                 let r = ui.max_rect();
                 let y = ui.cursor().top();
-                ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0, theme::LINE));
+                ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0_f32, theme::LINE));
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -911,7 +911,7 @@ impl RawBlowApp {
                 ui.add_space(14.0);
                 let r = ui.max_rect();
                 let y = ui.cursor().top();
-                ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0, theme::LINE));
+                ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0_f32, theme::LINE));
                 ui.add_space(12.0);
                 let has_dest = self.last_dest.as_ref().map(|d| d.is_dir()).unwrap_or(false);
                 ui.horizontal(|ui| {
@@ -1065,7 +1065,7 @@ impl RawBlowApp {
                 ui.add_space(14.0);
                 let r = ui.max_rect();
                 let y = ui.cursor().top();
-                ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0, theme::LINE));
+                ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0_f32, theme::LINE));
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(tr(lang, "정리 대상")).font(prop(10.0)).color(theme::INK3));

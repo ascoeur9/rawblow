@@ -3,6 +3,13 @@
 
 use super::*;
 
+/// 컬링 캐시 서명의 세대. **디코딩 결과 픽셀의 의미가 바뀌면** 올려서 디스크에 남은
+/// cull-cache.json을 무효화한다(파일 mtime·설정은 그대로라 그것만으로는 안 걸러진다).
+/// 2: CR3(ISO BMFF) Orientation 검출 — 세로 컷이 이제 바로 선 채로 채점된다. dhash는
+///    회전 불변이 아니고(cull_ext.rs `dhash`), 얼굴·미적·CLIP 모델 입력도 정사각 리사이즈라
+///    회전 전후 점수가 달라진다 → 한 폴더에 옛 점수와 새 점수가 섞이는 것을 막는다.
+const CULL_SIG_EPOCH: u32 = 2;
+
 /// AI 컬링(#50) 백그라운드 채점 완료 메시지. 진행률은 공유 원자 카운터(`AiCullJob::progress`)로
 /// 전달하므로(워커가 여러 개라 메시지 순서가 뒤섞이지 않게), 채널은 최종 결과만 보낸다.
 pub(super) enum AiCullMsg {
@@ -545,7 +552,7 @@ impl RawBlowApp {
             .show(ctx, |ui| {
                 egui::Frame::none()
                     .fill(theme::BG2)
-                    .stroke(Stroke::new(1.0, theme::LINE2))
+                    .stroke(Stroke::new(1.0_f32, theme::LINE2))
                     .rounding(10.0)
                     .show(ui, |ui| {
                         ui.set_min_width(card_w);
@@ -565,8 +572,8 @@ impl RawBlowApp {
                                         let (xr, xresp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
                                         let cc = xr.center();
                                         let col = if xresp.hovered() { theme::INK } else { theme::INK3 };
-                                        ui.painter().line_segment([cc + Vec2::new(-4.0, -4.0), cc + Vec2::new(4.0, 4.0)], Stroke::new(1.5, col));
-                                        ui.painter().line_segment([cc + Vec2::new(4.0, -4.0), cc + Vec2::new(-4.0, 4.0)], Stroke::new(1.5, col));
+                                        ui.painter().line_segment([cc + Vec2::new(-4.0, -4.0), cc + Vec2::new(4.0, 4.0)], Stroke::new(1.5_f32, col));
+                                        ui.painter().line_segment([cc + Vec2::new(4.0, -4.0), cc + Vec2::new(-4.0, 4.0)], Stroke::new(1.5_f32, col));
                                         if xresp.clicked() { do_cancel = true; }
                                         if xresp.hovered() { ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); }
                                     });
@@ -649,7 +656,7 @@ impl RawBlowApp {
                 // cfg.ai_cull에 저장돼 다음에 열 때 유지된다.
                 let fold = egui::Frame::none()
                     .fill(theme::BG1)
-                    .stroke(Stroke::new(1.0, theme::LINE2))
+                    .stroke(Stroke::new(1.0_f32, theme::LINE2))
                     .rounding(6.0)
                     .inner_margin(egui::Margin::symmetric(10.0, 7.0))
                     .show(ui, |ui| {
@@ -1386,6 +1393,7 @@ impl RawBlowApp {
         let sig: u64 = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
+            CULL_SIG_EPOCH.hash(&mut h);
             (criteria.use_focus, criteria.use_exposure, criteria.use_tilt, use_af, cull_edge).hash(&mut h);
             model_id.hash(&mut h);
             // 얼굴·sharp·객체 검사 여부는 보고서를 바꾸므로 캐시 네임스페이스를 분리한다.
