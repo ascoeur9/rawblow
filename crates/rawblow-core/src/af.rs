@@ -33,15 +33,232 @@ pub struct AfInfo {
 
 /// 파일에서 AF 정보를 추출한다. 앞 2MB만 읽는다(EXIF/MakerNote는 파일 선두에 있음 —
 /// meta.rs의 EXIF 폴백과 동일한 가정). 못 찾으면 None.
+///
+/// 캐논 CR3만 예외로 먼저 갈라진다: ISO BMFF라 MakerNote가 EXIF 안이 아니라 `moov`
+/// 하위 CMT3 박스에 있고, 임베디드 프리뷰 JPEG에는 APP1 EXIF 자체가 없어 바이트
+/// 스캔으로는 영영 못 찾는다. 이 경로는 `moov` 구간(≈40KB)만 읽는다.
 pub fn parse_af(path: &Path) -> Option<AfInfo> {
     use std::io::Read;
-    let mut buf = Vec::new();
-    std::fs::File::open(path)
-        .ok()?
-        .take(2 * 1024 * 1024)
-        .read_to_end(&mut buf)
-        .ok()?;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut head = [0u8; 16];
+    let n = f.read(&mut head).ok()?;
+    if crate::bmff::is_bmff(&head[..n]) {
+        return cr3_af(path);
+    }
+    let mut buf = head[..n].to_vec();
+    f.take(2 * 1024 * 1024 - n as u64).read_to_end(&mut buf).ok()?;
     parse_af_bytes(&buf)
+}
+
+/// 캐논 CR3: CMT3가 **헤더 없는 캐논 MakerNote IFD를 담은 통짜 TIFF 블록**이라,
+/// 블록을 그대로 캐논 파서에 넘기면 된다(값 오프셋도 블록 기준). Model은 CMT1에서.
+fn cr3_af(path: &Path) -> Option<AfInfo> {
+    let (cmt3, model) = crate::bmff::cr3_makernote(path)?;
+    let t = Tiff::new(&cmt3)?;
+    let ifd = t.u32(4)? as usize;
+    canon_af(&t, ifd, &model)
+}
+
+/// MakerNote에서 **렌즈명**을 읽는다(#렌즈 표시). 표준 Exif `LensModel`(0xA434)이 있는
+/// 바디는 `meta.rs`가 이미 채우므로 여기는 그게 없는 바디용 폴백이다.
+///
+/// **파일에 실제로 들어 있는 값만** 쓴다 — 숫자 LensType ID를 제품명으로 바꾸는 벤더
+/// 대조표(ExifTool의 `%canonLensTypes` 등)는 쓰지 않는다. 그 표들은 GPL/Artistic이라
+/// 상용 배포와 맞지 않고, 단순 사실 나열이 아니라 저자의 표기·보정 알고리즘이 섞여 있다.
+///
+/// - 캐논: MakerNote `0x0095` LensModel(ASCII). **2005년 EOS 5D까지 거슬러 확인**했고
+///   보유 샘플 33장(5D·5D Mark II·R6 Mark III) 전부에 있다. 모델명으로 게이트하지 말 것.
+/// - 올림푸스/OM SYSTEM: Equipment 서브IFD(`0x2010`)의 `0x0203` LensModel(ASCII).
+///   그게 없는 구형(E-300 등 `OLYMP\0` 세대)은 같은 Equipment의 초점거리·최대개방
+///   숫자로 스펙 문자열을 **합성**한다 → [`olympus_lens_spec`].
+/// - 펜탁스: 파일 어디에도 렌즈명이 없다(K-1 실측: 45MB 전수 스캔에서 ASCII는 바디
+///   시리얼 하나뿐, 초점거리 범위 필드도 없음). 대조표 없이는 불가능하므로 `None`.
+///
+/// 주의: 반환 문자열은 표시뿐 아니라 **컬링 렌즈 필터**와 **정리 시 폴더명**(`organize.rs`)에
+/// 쓰인다. 이미 뿌려진 폴더가 갈라지므로 포맷을 나중에 바꾸지 말 것.
+pub fn parse_lens(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut head = [0u8; 16];
+    let n = f.read(&mut head).ok()?;
+    if crate::bmff::is_bmff(&head[..n]) {
+        // CR3: CMT3가 곧 캐논 MakerNote IFD.
+        let (cmt3, _) = crate::bmff::cr3_makernote(path)?;
+        let t = Tiff::new(&cmt3)?;
+        let ifd = t.u32(4)? as usize;
+        return canon_lens(&t, ifd);
+    }
+    let mut buf = head[..n].to_vec();
+    f.take(2 * 1024 * 1024 - n as u64).read_to_end(&mut buf).ok()?;
+    parse_lens_bytes(&buf)
+}
+
+/// 바이트(파일 prefix)에서 렌즈명을 읽는다. [`parse_af_bytes`]와 같은 컨테이너 탐색 규칙이되,
+/// **MakerNote까지 도달했으면 거기서 끝낸다** — 벤더가 ASCII 렌즈명을 안 쓰는 경우(펜탁스 등)
+/// 임베디드 JPEG를 다시 2MB 훑어봐야 같은 MakerNote를 볼 뿐이라 시간만 버린다.
+pub fn parse_lens_bytes(bytes: &[u8]) -> Option<String> {
+    if bytes.len() >= 4 {
+        if bytes[0] == 0xFF && bytes[1] == 0xD8 {
+            return jpeg_exif_tiff(bytes).and_then(lens_from_tiff).flatten();
+        }
+        if &bytes[0..2] == b"II" || &bytes[0..2] == b"MM" {
+            if let Some(found) = lens_from_tiff(bytes) {
+                return found;
+            }
+        }
+    }
+    // 컨테이너를 직접 못 읽는 포맷(RW2 등)만 임베디드 JPEG EXIF로 폴백.
+    let mut i = 1usize;
+    while i + 3 < bytes.len() {
+        if bytes[i] == 0xFF && bytes[i + 1] == 0xD8 && bytes[i + 2] == 0xFF {
+            if let Some(found) = jpeg_exif_tiff(&bytes[i..]).and_then(lens_from_tiff) {
+                return found;
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// EXIF TIFF 블록에서 IFD0 → ExifIFD → MakerNote를 걷고 제조사별 렌즈명 태그를 읽는다.
+///
+/// 반환이 이중 Option인 이유: 바깥 `None`은 "MakerNote까지 못 갔다(다른 블록을 더 찾아봐라)",
+/// `Some(None)`은 "갔는데 이 벤더는 파일에 렌즈명이 없다(더 찾아봐야 소용없다)"를 구분한다.
+fn lens_from_tiff(tiff: &[u8]) -> Option<Option<String>> {
+    let t = Tiff::new(tiff)?;
+    let ifd0 = t.u32(4)? as usize;
+    let exif_ifd = t.u32(t.find(ifd0, 0x8769)?.val_field)? as usize;
+    // 표준 태그가 있으면 그걸 먼저(비표준 컨테이너라 kamadak가 못 읽은 경우 대비).
+    if let Some(s) = t.find(exif_ifd, 0xA434).and_then(|e| t.ascii(&e)) {
+        if !s.is_empty() {
+            return Some(Some(s));
+        }
+    }
+    let make = t.find(ifd0, 0x010F).and_then(|e| t.ascii(&e)).unwrap_or_default();
+    let mn = t.find(exif_ifd, 0x927C)?;
+    // MakerNote는 **IFD 테이블만** 있으면 되므로 선언된 전체 길이가 버퍼 안에 있을 것을
+    // 요구하지 않는다(캐논은 7만 바이트가 넘는다 — prefix가 짧아도 렌즈명은 앞쪽에 있다).
+    let mn_off = if (mn.count as usize) <= 4 { mn.val_field } else { t.u32(mn.val_field)? as usize };
+    let avail = t.b.len().checked_sub(mn_off)?;
+    if avail < 14 {
+        return None;
+    }
+    let head = t.b.get(mn_off..mn_off + 12.min(avail))?;
+    if head.starts_with(b"OM SYSTEM\0") || head.starts_with(b"OLYMPUS\0") {
+        // 시그니처 뒤 II/MM(2)+버전(2), 그다음 MakerNote IFD. 값 오프셋은 mn 기준.
+        let sig = if head.starts_with(b"OLYMPUS\0") { 8 } else { 12 };
+        return Some(olympus_lens(&t, mn_off + sig + 4, mn_off));
+    }
+    if head.starts_with(b"OLYMP\0") {
+        // 구형(E-300 등): mn+8부터 IFD, 값 오프셋은 파일 TIFF 베이스(0) 기준.
+        return Some(olympus_lens(&t, mn_off + 8, 0));
+    }
+    if head.starts_with(b"PENTAX \0") {
+        return Some(pentax_lens(&t, mn_off));
+    }
+    if make.starts_with("Canon") {
+        // 캐논 MakerNote는 헤더 없이 바로 IFD. 값 오프셋은 TIFF 베이스 기준.
+        return Some(canon_lens(&t, mn_off));
+    }
+    // MakerNote는 찾았지만 이 벤더에서 읽을 렌즈명 태그를 모른다 → 더 찾아봐야 소용없다.
+    Some(None)
+}
+
+/// 캐논: MakerNote `0x0095` LensModel(ASCII). 구형 바디(0x0095 이전)는 숫자 LensType만
+/// 있어 대조표 없이는 이름을 못 만든다 → `None`.
+fn canon_lens(t: &Tiff, ifd: usize) -> Option<String> {
+    let e = t.find(ifd, 0x0095)?;
+    let s = t.ascii(&e)?;
+    (!s.is_empty()).then_some(s)
+}
+
+/// 올림푸스/OM SYSTEM: Equipment 서브IFD(`0x2010`)에서 렌즈명을 얻는다.
+///
+/// `base`는 MakerNote 내부 값 오프셋의 기준점 — 신형(`OLYMPUS\0`/`OM SYSTEM\0`)은
+/// MakerNote 시작, 구형(`OLYMP\0`)은 파일 TIFF 베이스(0)다. Equipment를 가리키는
+/// 방식도 세대별로 다르다(신형=LONG 값, 구형=UNDEFINED 블록의 오프셋).
+fn olympus_lens(t: &Tiff, mn_ifd: usize, base: usize) -> Option<String> {
+    let eq = t.find(mn_ifd, 0x2010)?;
+    let sub = if eq.typ == 4 && eq.count == 1 {
+        base.checked_add(t.u32(eq.val_field)? as usize)?
+    } else {
+        t.data_based(&eq, base)?.0
+    };
+    // 1) ASCII LensModel(OM-1·OM-3 등). 값 오프셋도 같은 base 기준.
+    if let Some(e) = t.find(sub, 0x0203) {
+        if let Some((off, len)) = t.data_based(&e, base) {
+            let s = String::from_utf8_lossy(t.b.get(off..off + len)?)
+                .split('\0')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !s.is_empty() {
+                return Some(s);
+            }
+        }
+    }
+    // 2) 이름이 없는 구형: 같은 Equipment의 숫자만으로 스펙을 합성한다.
+    olympus_lens_spec(t, sub)
+}
+
+/// 펜탁스: **파싱은 되지만 대부분의 바디에 이름이 없다.** MakerNote는 정상적으로 걸어가고
+/// `0x003F` LensType(예 K-1 = `[8, 62]`)도 읽히지만, 그건 숫자 ID라 이름으로 바꾸려면
+/// 벤더 대조표가 필요하다(ExifTool `%pentaxLensTypes`는 GPL/Artistic이라 상용 배포 불가 —
+/// 모듈 상단 [`parse_lens`] 주석 참고). K-1은 45MB 전수 스캔에서 ASCII가 바디 시리얼
+/// 하나뿐이고 초점거리 범위 필드도 없어 올림푸스식 스펙 합성도 불가능하다.
+///
+/// 다만 일부 후기 펜탁스/리코 바디는 `0x0239`(LensModel)·`0x023A`(LensInfo)에 ASCII를
+/// 쓴다 — 있으면 공짜로 얻을 수 있으므로 기회적으로 먼저 본다. 없으면 `None`(빈칸).
+/// 숫자 ID를 그대로 내보내지 않는 이유: `lens`는 컬링 필터 키이자 정리 폴더명이라
+/// `"8 62"` 같은 폴더가 생긴다.
+fn pentax_lens(t: &Tiff, mn: usize) -> Option<String> {
+    // 내부 바이트오더는 바깥 TIFF와 독립("PENTAX \0"(8) 뒤 2바이트). 값 오프셋은 mn 기준.
+    let le = match t.b.get(mn + 8..mn + 10)? {
+        b"II" => true,
+        b"MM" => false,
+        _ => return None,
+    };
+    let p = Tiff { b: t.b, le };
+    let ifd = mn + 10;
+    for tag in [0x0239u16, 0x023A] {
+        let Some(e) = p.find(ifd, tag) else { continue };
+        if e.typ != 2 {
+            continue; // ASCII가 아니면 이름이 아니다(바이너리 LensInfo 블롭 등).
+        }
+        let Some((off, len)) = p.data_based(&e, mn) else { continue };
+        let Some(raw) = p.b.get(off..off + len) else { continue };
+        let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+        let s = String::from_utf8_lossy(&raw[..end]).trim().to_string();
+        if !s.is_empty() {
+            return Some(s);
+        }
+    }
+    None
+}
+
+/// Equipment의 초점거리·최대개방으로 `"14-45mm F3.5-5.6"` 같은 스펙 문자열을 만든다.
+/// 대조표가 필요 없는 유일한 벤더 — 최대개방은 `2^(v/512)`(올림푸스 정의)로 푼다.
+/// OM-1/OM-3에 적용하면 그 바디들이 스스로 적어 둔 `0x0203` 문자열과 정확히 일치한다
+/// (`40-150mm F4.0`, `12-40mm F2.8`)는 점으로 디코딩을 검증했다.
+fn olympus_lens_spec(t: &Tiff, eq_ifd: usize) -> Option<String> {
+    let sh = |tag: u16| t.find(eq_ifd, tag).and_then(|e| t.u16(e.val_field)).filter(|&v| v > 0);
+    let (fmin, fmax) = (sh(0x0207)?, sh(0x0208)?);
+    let focal = if fmin == fmax { format!("{fmin}mm") } else { format!("{fmin}-{fmax}mm") };
+    let ap = |v: u16| 2f64.powf(v as f64 / 512.0);
+    match (sh(0x0205), sh(0x0206)) {
+        (Some(a), Some(b)) => {
+            let (a, b) = (ap(a), ap(b));
+            if (a - b).abs() < 0.05 {
+                Some(format!("{focal} F{a:.1}"))
+            } else {
+                Some(format!("{focal} F{a:.1}-{b:.1}"))
+            }
+        }
+        _ => Some(focal),
+    }
 }
 
 /// 바이트(파일 prefix)에서 AF 정보를 추출한다. JPEG이면 APP1의 EXIF TIFF를,
@@ -176,6 +393,20 @@ impl<'a> Tiff<'a> {
         let off = if len <= 4 { e.val_field } else { self.u32(e.val_field)? as usize };
         (off.checked_add(len)? <= self.b.len()).then_some((off, len))
     }
+    /// [`Tiff::data`]와 같되 값 오프셋의 기준점을 지정한다. 올림푸스처럼 값 오프셋이
+    /// **MakerNote 시작** 기준인 벤더용(TIFF 베이스=0이면 `data`와 동일).
+    fn data_based(&self, e: &Entry, base: usize) -> Option<(usize, usize)> {
+        let unit = match e.typ {
+            1 | 2 | 6 | 7 => 1,
+            3 | 8 => 2,
+            4 | 9 | 11 => 4,
+            5 | 10 | 12 => 8,
+            _ => return None,
+        };
+        let len = (e.count as usize).checked_mul(unit)?;
+        let off = if len <= 4 { e.val_field } else { base.checked_add(self.u32(e.val_field)? as usize)? };
+        (off.checked_add(len)? <= self.b.len()).then_some((off, len))
+    }
     /// SHORT 배열을 읽는다(부호는 호출부에서 캐스팅).
     fn shorts(&self, off: usize, n: usize) -> Option<Vec<u16>> {
         (0..n).map(|i| self.u16(off + i * 2)).collect()
@@ -262,27 +493,39 @@ fn canon_af(t: &Tiff, ifd: usize, model: &str) -> Option<AfInfo> {
     None
 }
 
+/// 측거 **그리드** 크기 상한. 최신 미러리스는 NumAFPoints가 크다(EOS R6 Mark III=1053,
+/// 실제 사용 측거점 ValidAFPoints는 1). 손상 파일 방어용 여유값.
+const CANON_MAX_AF_GRID: usize = 8192;
+/// 실제로 그리는 측거점 상한. ValidAFPoints가 비정상적으로 커도 화면·비용을 지킨다.
+const CANON_MAX_AF_DRAWN: usize = 256;
+
 /// AFInfo2: [size, mode, num, valid, cw, ch, afw, afh, W[num], H[num], X[num], Y[num],
 /// InFocus[ceil], Selected[ceil]] (모두 16비트).
+///
+/// 헤더 8워드를 먼저 읽어 필요한 길이를 계산한 뒤 그만큼만 읽는다. 고정 상한으로 잘라
+/// 읽으면 NumAFPoints가 큰 최신 바디에서 배열이 잘려 **통째로 실패**한다(R6 Mark III는
+/// 4352워드가 필요한데 옛 상한은 4096이었다). Selected 마스크는 없을 수도 있어 선택 처리.
 fn canon_af_info2(t: &Tiff, off: usize, words: usize, y_up: bool) -> Option<AfInfo> {
-    let v = t.shorts(off, words.min(4096))?;
-    let num = *v.get(2)? as usize;
-    let valid = (*v.get(3)? as usize).min(num);
-    let (afw, afh) = (*v.get(6)? as f64, *v.get(7)? as f64);
-    if num == 0 || num > 128 || afw < 1.0 || afh < 1.0 {
+    let head = t.shorts(off, 8.min(words))?;
+    let num = *head.get(2)? as usize;
+    let valid = (*head.get(3)? as usize).min(num).min(CANON_MAX_AF_DRAWN);
+    let (afw, afh) = (*head.get(6)? as f64, *head.get(7)? as f64);
+    if num == 0 || num > CANON_MAX_AF_GRID || afw < 1.0 || afh < 1.0 {
         return None;
     }
     let mask_words = num.div_ceil(16);
-    // 배열 시작: 8.
-    if v.len() < 8 + 4 * num + 2 * mask_words {
+    let need_focus = 8 + 4 * num + mask_words; // InFocus 마스크까지(필수)
+    let need_full = need_focus + mask_words; // Selected 마스크까지(선택)
+    if words < need_focus {
         return None;
     }
+    let v = t.shorts(off, need_full.min(words))?;
     let w = &v[8..8 + num];
     let h = &v[8 + num..8 + 2 * num];
     let x = &v[8 + 2 * num..8 + 3 * num];
     let y = &v[8 + 3 * num..8 + 4 * num];
-    let focus_bits = &v[8 + 4 * num..8 + 4 * num + mask_words];
-    let sel_bits = v.get(8 + 4 * num + mask_words..8 + 4 * num + 2 * mask_words);
+    let focus_bits = &v[8 + 4 * num..need_focus];
+    let sel_bits = v.get(need_focus..need_full);
     let bit = |bits: &[u16], i: usize| (bits[i / 16] >> (i % 16)) & 1 == 1;
     let points = (0..valid)
         .map(|i| {
@@ -693,6 +936,391 @@ fn nikon_af_dslr153(nikon_tiff: &[u8], off: usize, len: usize) -> Option<AfInfo>
 mod tests {
     use super::*;
 
+    /// 캐논 CR3(ISO BMFF): MakerNote가 `moov > uuid > CMT3`에 통짜 TIFF 블록으로 들어 있다.
+    /// EOS R6 Mark III 실파일 형태를 그대로 모사한다 — **NumAFPoints=1053(측거 그리드 전체)
+    /// 인데 ValidAFPoints=1**이라, 옛 상한(num>128 거부 / 4096워드 컷)에 걸려 통째로
+    /// 실패하던 회귀를 막는다.
+    #[test]
+    fn canon_cr3_bmff_afinfo2() {
+        const NUM: usize = 1053;
+        const AFW: u16 = 6960;
+        const AFH: u16 = 4640;
+        let mask = NUM.div_ceil(16);
+        let mut v = vec![0u16; 8 + 4 * NUM + 2 * mask];
+        v[0] = (v.len() * 2) as u16; // size(bytes)
+        v[1] = 8; // mode
+        v[2] = NUM as u16;
+        v[3] = 1; // ValidAFPoints
+        v[4] = AFW;
+        v[5] = AFH;
+        v[6] = AFW;
+        v[7] = AFH;
+        v[8] = 528; // W[0]
+        v[8 + NUM] = 528; // H[0]
+        v[8 + 2 * NUM] = (-54i16) as u16; // X[0]
+        v[8 + 3 * NUM] = 34; // Y[0]
+        v[8 + 4 * NUM] = 0b1; // InFocus bit 0
+        v[8 + 4 * NUM + mask] = 0b1; // Selected bit 0
+        let mut blob = Vec::with_capacity(v.len() * 2);
+        for x in &v {
+            blob.extend_from_slice(&x.to_le_bytes());
+        }
+
+        let cmt3 = tiff_one_entry(0x0026, 3, v.len() as u32, &blob);
+        let cmt1 = tiff_one_entry(0x0110, 2, 22, b"Canon EOS R6 Mark III\0");
+        let p = std::env::temp_dir().join("rb_af_cr3.CR3");
+        std::fs::write(&p, cr3_container(&cmt1, &cmt3)).unwrap();
+
+        let af = parse_af(&p).expect("CR3 AF 파싱");
+        assert_eq!(af.source, "canon-afinfo2");
+        assert_eq!(af.points.len(), 1, "ValidAFPoints=1 → 1점만");
+        let q = af.points[0];
+        // x=-54/6960 → cx≈0.4922, y=+34/4640(Y 위로 양수) → cy≈0.4927.
+        assert!((q.cx - (0.5 - 54.0 / 6960.0)).abs() < 1e-9, "cx={}", q.cx);
+        assert!((q.cy - (0.5 - 34.0 / 4640.0)).abs() < 1e-9, "cy={}", q.cy);
+        // 센서에서 정사각(528×528)이면 정규화 w/h는 종횡비만큼 다르다.
+        assert!((q.w - 528.0 / 6960.0).abs() < 1e-9);
+        assert!((q.h - 528.0 / 4640.0).abs() < 1e-9);
+        assert!(q.in_focus && q.selected);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// 렌즈명(#렌즈 표시): 캐논은 MakerNote `0x0095`가 평문 ASCII다(EOS 5D/5D Mark II에서
+    /// 실측). 표준 `LensModel`이 없는 바디에서 이 폴백이 동작해야 한다.
+    #[test]
+    fn canon_makernote_lens_model() {
+        let name = b"EF24-85mm f/3.5-4.5 USM\0";
+        let tiff = build_tiff_with_makernote_typed(
+            b"Canon",
+            b"Canon EOS 5D Mark II",
+            name,
+            0x0095,
+            2, // ASCII
+            name.len() as u32,
+        );
+        assert_eq!(
+            parse_lens_bytes(&tiff).as_deref(),
+            Some("EF24-85mm f/3.5-4.5 USM")
+        );
+    }
+
+    /// 올림푸스/OM SYSTEM: Equipment 서브IFD(0x2010)의 0x0203이 ASCII 렌즈명(OM-1 실측).
+    /// Equipment 안의 값 오프셋은 **MakerNote 시작 기준**이라, TIFF 베이스로 잘못 재면 깨진다.
+    #[test]
+    fn olympus_equipment_lens_model() {
+        let tiff = build_tiff_olympus_equipment(false, Some("OM 40-150mm F4.0"), &[]);
+        assert_eq!(parse_lens_bytes(&tiff).as_deref(), Some("OM 40-150mm F4.0"));
+    }
+
+    /// 이름(0x0203)이 없는 구형(E-300 등 `OLYMP\0`)은 Equipment의 숫자로 스펙을 합성한다.
+    /// 값 오프셋 기준이 신형(MakerNote 시작)과 달리 **파일 TIFF 베이스(0)**라 세대 판별이
+    /// 틀리면 통째로 깨진다. 최대개방 디코딩은 `2^(v/512)`.
+    #[test]
+    fn olympus_old_generation_lens_spec_synthesized() {
+        // E-300 실측값: MinFocal=14, MaxFocal=45, MaxAperture@min=925, @max=1273.
+        let spec = &[(0x0205u16, 925u16), (0x0206, 1273), (0x0207, 14), (0x0208, 45)];
+        let tiff = build_tiff_olympus_equipment(true, None, spec);
+        assert_eq!(parse_lens_bytes(&tiff).as_deref(), Some("14-45mm F3.5-5.6"));
+
+        // 고정 조리개 줌(OM-1 실측 1024 → f/4.0)은 한쪽만 표기.
+        let zoom = &[(0x0205u16, 1024u16), (0x0206, 1024), (0x0207, 40), (0x0208, 150)];
+        let tiff = build_tiff_olympus_equipment(true, None, zoom);
+        assert_eq!(parse_lens_bytes(&tiff).as_deref(), Some("40-150mm F4.0"));
+
+        // 단렌즈는 초점거리 하나만.
+        let prime = &[(0x0205u16, 512u16), (0x0206, 512), (0x0207, 50), (0x0208, 50)];
+        let tiff = build_tiff_olympus_equipment(true, None, prime);
+        assert_eq!(parse_lens_bytes(&tiff).as_deref(), Some("50mm F2.0"));
+
+        // 이름이 있으면 이름이 이긴다(신형 경로에서도 합성으로 새지 않아야 한다).
+        let tiff = build_tiff_olympus_equipment(false, Some("OM 40-150mm F4.0"), zoom);
+        assert_eq!(parse_lens_bytes(&tiff).as_deref(), Some("OM 40-150mm F4.0"));
+    }
+
+    /// 표준 LensModel(0xA434)이 있으면 MakerNote를 보지 않고 그걸 쓴다.
+    #[test]
+    fn standard_lensmodel_wins() {
+        let tiff = build_tiff_with_std_lens(b"RF28-70mm F2.8 IS STM\0");
+        assert_eq!(parse_lens_bytes(&tiff).as_deref(), Some("RF28-70mm F2.8 IS STM"));
+    }
+
+    /// 렌즈명 태그를 모르는 벤더는 조용히 None — 임베디드 JPEG를 다시 훑는 폴백으로
+    /// 새지 않아야 한다(`lens_from_tiff`가 `Some(None)`을 반환).
+    #[test]
+    fn vendor_without_ascii_lens_returns_none() {
+        let mut mn = b"NIKON\0\x02\x10\0\0".to_vec();
+        mn.extend_from_slice(&[0u8; 8]);
+        let tiff = build_tiff_with_makernote_typed(b"NIKON CORPORATION", b"NIKON Z 8", &mn, 0x0001, 1, mn.len() as u32);
+        assert_eq!(parse_lens_bytes(&tiff), None);
+        assert_eq!(lens_from_tiff(&tiff), Some(None), "MakerNote까지 도달했음을 표시해야 한다");
+    }
+
+    /// 펜탁스: **파싱은 되지만 이름이 없는 것**이라는 점을 고정한다.
+    /// - K-1처럼 숫자 LensType(0x003F)만 있으면 `None`(숫자 ID를 폴더명으로 흘리지 않는다).
+    /// - 일부 후기 바디처럼 0x0239에 ASCII가 있으면 대조표 없이 그대로 쓴다.
+    #[test]
+    fn pentax_lens_ascii_when_present_else_none() {
+        // 이름 없음(K-1 형태): LensType 숫자만.
+        let tiff = build_tiff_pentax_lens(None);
+        assert_eq!(parse_lens_bytes(&tiff), None);
+        assert_eq!(lens_from_tiff(&tiff), Some(None));
+
+        // 이름 있음: 0x0239 ASCII.
+        let tiff = build_tiff_pentax_lens(Some("HD PENTAX-D FA 24-70mm F2.8"));
+        assert_eq!(parse_lens_bytes(&tiff).as_deref(), Some("HD PENTAX-D FA 24-70mm F2.8"));
+    }
+
+    /// LE TIFF + Pentax MakerNote["PENTAX \0"(8)+"II"(2)+IFD].
+    /// 항상 0x003F LensType(BYTE[4], 인라인)을 넣고, `lens`가 있으면 0x0239 ASCII도 넣는다.
+    /// MakerNote 내부 값 오프셋은 MakerNote 시작 기준.
+    fn build_tiff_pentax_lens(lens: Option<&str>) -> Vec<u8> {
+        let lens_z: Vec<u8> = lens
+            .map(|s| {
+                let mut v = s.as_bytes().to_vec();
+                v.push(0);
+                v
+            })
+            .unwrap_or_default();
+        let n = 1 + usize::from(lens.is_some());
+        let mut b = Vec::new();
+        b.extend_from_slice(b"II");
+        put16(&mut b, 42);
+        put32(&mut b, 8);
+        let (make, model): (&[u8], &[u8]) = (b"RICOH IMAGING COMPANY, LTD.", b"PENTAX K-1");
+        let (make_n, model_n) = (make.len() + 1, model.len() + 1);
+        let exif_ifd = 50 + make_n + model_n;
+        let mn_off = exif_ifd + 18;
+        let ifd_rel = 10; // "PENTAX \0"(8) + "II"(2)
+        let lens_rel = ifd_rel + 2 + n * 12 + 4;
+        let mn_len = lens_rel + lens_z.len();
+        put16(&mut b, 3);
+        put16(&mut b, 0x010F);
+        put16(&mut b, 2);
+        put32(&mut b, make_n as u32);
+        put32(&mut b, 50);
+        put16(&mut b, 0x0110);
+        put16(&mut b, 2);
+        put32(&mut b, model_n as u32);
+        put32(&mut b, (50 + make_n) as u32);
+        put16(&mut b, 0x8769);
+        put16(&mut b, 4);
+        put32(&mut b, 1);
+        put32(&mut b, exif_ifd as u32);
+        put32(&mut b, 0);
+        b.extend_from_slice(make);
+        b.push(0);
+        b.extend_from_slice(model);
+        b.push(0);
+        assert_eq!(b.len(), exif_ifd);
+        put16(&mut b, 1);
+        put16(&mut b, 0x927C);
+        put16(&mut b, 7);
+        put32(&mut b, mn_len as u32);
+        put32(&mut b, mn_off as u32);
+        put32(&mut b, 0);
+        assert_eq!(b.len(), mn_off);
+        b.extend_from_slice(b"PENTAX \0");
+        b.extend_from_slice(b"II");
+        put16(&mut b, n as u16);
+        // 0x003F LensType = [8, 62, 0, 0] (K-1 실측값) — BYTE[4]라 인라인.
+        put16(&mut b, 0x003F);
+        put16(&mut b, 1);
+        put32(&mut b, 4);
+        b.extend_from_slice(&[8, 62, 0, 0]);
+        if lens.is_some() {
+            put16(&mut b, 0x0239);
+            put16(&mut b, 2);
+            put32(&mut b, lens_z.len() as u32);
+            put32(&mut b, lens_rel as u32); // mn 기준
+        }
+        put32(&mut b, 0);
+        assert_eq!(b.len(), mn_off + lens_rel);
+        b.extend_from_slice(&lens_z);
+        b
+    }
+
+    /// IFD0[Make,Model,ExifIFD] → ExifIFD[LensModel(0xA434)] 만 있는 최소 TIFF.
+    fn build_tiff_with_std_lens(lens: &[u8]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"II");
+        put16(&mut b, 42);
+        put32(&mut b, 8);
+        let (make, model): (&[u8], &[u8]) = (b"Canon", b"Canon EOS R6 Mark III");
+        let (make_n, model_n) = (make.len() + 1, model.len() + 1);
+        let exif_ifd = 50 + make_n + model_n;
+        let lens_off = exif_ifd + 18;
+        put16(&mut b, 3);
+        put16(&mut b, 0x010F);
+        put16(&mut b, 2);
+        put32(&mut b, make_n as u32);
+        put32(&mut b, 50);
+        put16(&mut b, 0x0110);
+        put16(&mut b, 2);
+        put32(&mut b, model_n as u32);
+        put32(&mut b, (50 + make_n) as u32);
+        put16(&mut b, 0x8769);
+        put16(&mut b, 4);
+        put32(&mut b, 1);
+        put32(&mut b, exif_ifd as u32);
+        put32(&mut b, 0);
+        b.extend_from_slice(make);
+        b.push(0);
+        b.extend_from_slice(model);
+        b.push(0);
+        assert_eq!(b.len(), exif_ifd);
+        put16(&mut b, 1);
+        put16(&mut b, 0xA434);
+        put16(&mut b, 2);
+        put32(&mut b, lens.len() as u32);
+        put32(&mut b, lens_off as u32);
+        put32(&mut b, 0);
+        assert_eq!(b.len(), lens_off);
+        b.extend_from_slice(lens);
+        b
+    }
+
+    /// LE TIFF + 올림푸스 MakerNote[Equipment(0x2010) → 0x0203 이름 / 0x0205~0x0208 스펙].
+    ///
+    /// `old=true`면 구형 `OLYMP\0` 세대를 만든다: IFD가 mn+8부터 시작하고 내부 값 오프셋은
+    /// **파일 TIFF 베이스(0)** 기준이며 Equipment 포인터도 UNDEFINED 블록이다.
+    /// `old=false`면 신형 `OM SYSTEM\0` 세대(값 오프셋 = MakerNote 시작, Equipment = LONG).
+    fn build_tiff_olympus_equipment(old: bool, lens: Option<&str>, spec: &[(u16, u16)]) -> Vec<u8> {
+        let lens_z: Vec<u8> = lens.map(|s| {
+            let mut v = s.as_bytes().to_vec();
+            v.push(0);
+            v
+        }).unwrap_or_default();
+        let n_eq = spec.len() + usize::from(lens.is_some());
+
+        let mut b = Vec::new();
+        b.extend_from_slice(b"II");
+        put16(&mut b, 42);
+        put32(&mut b, 8);
+        let (make, model): (&[u8], &[u8]) = if old {
+            (b"OLYMPUS IMAGING CORP.", b"E-300")
+        } else {
+            (b"OM Digital Solutions", b"OM-1")
+        };
+        let (make_n, model_n) = (make.len() + 1, model.len() + 1);
+        let exif_ifd = 50 + make_n + model_n;
+        let mn_off = exif_ifd + 18;
+        // MakerNote 레이아웃(시작 기준 상대 오프셋).
+        let hdr = if old { 8 } else { 12 + 4 };
+        let mn_ifd_rel = hdr;
+        let eq_rel = mn_ifd_rel + 2 + 12 + 4;
+        let lens_rel = eq_rel + 2 + n_eq * 12 + 4;
+        let mn_len = lens_rel + lens_z.len();
+        // 값 오프셋 기준: 구형=절대(0), 신형=MakerNote 시작.
+        let vbase = if old { mn_off } else { 0 };
+
+        put16(&mut b, 3);
+        put16(&mut b, 0x010F);
+        put16(&mut b, 2);
+        put32(&mut b, make_n as u32);
+        put32(&mut b, 50);
+        put16(&mut b, 0x0110);
+        put16(&mut b, 2);
+        put32(&mut b, model_n as u32);
+        put32(&mut b, (50 + make_n) as u32);
+        put16(&mut b, 0x8769);
+        put16(&mut b, 4);
+        put32(&mut b, 1);
+        put32(&mut b, exif_ifd as u32);
+        put32(&mut b, 0);
+        b.extend_from_slice(make);
+        b.push(0);
+        b.extend_from_slice(model);
+        b.push(0);
+        assert_eq!(b.len(), exif_ifd);
+        put16(&mut b, 1);
+        put16(&mut b, 0x927C);
+        put16(&mut b, 7);
+        put32(&mut b, mn_len as u32);
+        put32(&mut b, mn_off as u32);
+        put32(&mut b, 0);
+        assert_eq!(b.len(), mn_off);
+        if old {
+            b.extend_from_slice(b"OLYMP\0");
+            put16(&mut b, 1); // 버전
+        } else {
+            b.extend_from_slice(b"OM SYSTEM\0\0\0");
+            b.extend_from_slice(b"II");
+            put16(&mut b, 3);
+        }
+        // MakerNote IFD: Equipment 포인터.
+        assert_eq!(b.len(), mn_off + mn_ifd_rel);
+        put16(&mut b, 1);
+        put16(&mut b, 0x2010);
+        if old {
+            put16(&mut b, 7); // UNDEFINED 블록 → 오프셋 저장
+            put32(&mut b, (2 + n_eq * 12 + 4) as u32);
+            put32(&mut b, (vbase + eq_rel) as u32);
+        } else {
+            put16(&mut b, 4); // LONG 값이 곧 오프셋
+            put32(&mut b, 1);
+            put32(&mut b, eq_rel as u32);
+        }
+        put32(&mut b, 0);
+        // Equipment IFD.
+        assert_eq!(b.len(), mn_off + eq_rel);
+        put16(&mut b, n_eq as u16);
+        if lens.is_some() {
+            put16(&mut b, 0x0203);
+            put16(&mut b, 2);
+            put32(&mut b, lens_z.len() as u32);
+            put32(&mut b, (vbase + lens_rel) as u32);
+        }
+        for (tag, val) in spec {
+            put16(&mut b, *tag);
+            put16(&mut b, 3); // SHORT — 인라인
+            put32(&mut b, 1);
+            put16(&mut b, *val);
+            put16(&mut b, 0);
+        }
+        put32(&mut b, 0);
+        assert_eq!(b.len(), mn_off + lens_rel);
+        b.extend_from_slice(&lens_z);
+        b
+    }
+
+    /// 엔트리 하나짜리 최소 LE TIFF 블록(CMTn 모사). 값은 항상 오프셋 저장.
+    fn tiff_one_entry(tag: u16, typ: u16, count: u32, blob: &[u8]) -> Vec<u8> {
+        let value_off = 8 + 2 + 12 + 4; // 헤더 + count + 엔트리 1개 + next-IFD
+        let mut b = Vec::new();
+        b.extend_from_slice(b"II");
+        b.extend_from_slice(&0x002au16.to_le_bytes());
+        b.extend_from_slice(&8u32.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&tag.to_le_bytes());
+        b.extend_from_slice(&typ.to_le_bytes());
+        b.extend_from_slice(&count.to_le_bytes());
+        b.extend_from_slice(&(value_off as u32).to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(b.len(), value_off);
+        b.extend_from_slice(blob);
+        b
+    }
+
+    /// CR3와 같은 박스 배치: ftyp → moov[uuid(캐논)[CMT1, CMT3]].
+    fn cr3_container(cmt1: &[u8], cmt3: &[u8]) -> Vec<u8> {
+        fn bx(typ: &[u8; 4], body: &[u8]) -> Vec<u8> {
+            let mut v = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+            v.extend_from_slice(typ);
+            v.extend_from_slice(body);
+            v
+        }
+        const CANON_UUID: [u8; 16] = [
+            0x85, 0xc0, 0xb6, 0x87, 0x82, 0x0f, 0x11, 0xe0, 0x81, 0x11, 0xf4, 0xce, 0x46, 0x2b,
+            0x6a, 0x48,
+        ];
+        let mut u = CANON_UUID.to_vec();
+        u.extend(bx(b"CMT1", cmt1));
+        u.extend(bx(b"CMT3", cmt3));
+        let mut f = bx(b"ftyp", b"crx isom");
+        f.extend(bx(b"moov", &bx(b"uuid", &u)));
+        f
+    }
+
     /// 합성 TIFF(LE): IFD0(Make/Model/ExifIFD) → ExifIFD(MakerNote=Canon AFInfo2)로
     /// 파서의 워킹·비트마스크·좌표 변환을 결정적으로 검증한다(샘플 불필요).
     #[test]
@@ -808,6 +1436,19 @@ mod tests {
     /// MakerNote 페이로드는 그대로 박고, Canon식(헤더 없는 IFD)을 흉내내기 위해
     /// 페이로드 앞에 엔트리 1개짜리 IFD(태그 `af_tag`, 데이터는 페이로드 뒤)를 합성한다.
     fn build_tiff_with_makernote(make: &[u8], model: &[u8], af_payload: &[u8], af_tag: u16) -> Vec<u8> {
+        // 기본은 SHORT 배열(AF 스트림).
+        build_tiff_with_makernote_typed(make, model, af_payload, af_tag, 3, (af_payload.len() / 2) as u32)
+    }
+
+    /// 위와 같되 MakerNote 엔트리의 **타입·개수**를 지정한다(ASCII 렌즈명 태그 검증용).
+    fn build_tiff_with_makernote_typed(
+        make: &[u8],
+        model: &[u8],
+        af_payload: &[u8],
+        af_tag: u16,
+        af_typ: u16,
+        af_count: u32,
+    ) -> Vec<u8> {
         let mut b = Vec::new();
         b.extend_from_slice(b"II");
         put16(&mut b, 42);
@@ -862,8 +1503,8 @@ mod tests {
         assert_eq!(b.len(), mn_off);
         put16(&mut b, 1);
         put16(&mut b, af_tag);
-        put16(&mut b, 3); // SHORT
-        put32(&mut b, (af_payload.len() / 2) as u32);
+        put16(&mut b, af_typ);
+        put32(&mut b, af_count);
         put32(&mut b, af_data_off as u32);
         put32(&mut b, 0);
         b.extend_from_slice(af_payload);

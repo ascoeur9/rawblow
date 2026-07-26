@@ -6,6 +6,7 @@
 
 pub mod af;
 pub mod axes;
+pub mod bmff;
 pub mod cache;
 pub mod color;
 pub mod config;

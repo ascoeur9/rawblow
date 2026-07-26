@@ -163,7 +163,7 @@ impl RawBlowApp {
                         // 현재 색 미리보기.
                         let cur = self.photo_bg_rgb();
                         let (sr, _) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::hover());
-                        ui.painter().rect(sr, Rounding::same(4.0), Color32::from_rgb(cur[0], cur[1], cur[2]), Stroke::new(1.0, theme::LINE3));
+                        ui.painter().rect(sr, Rounding::same(4.0), Color32::from_rgb(cur[0], cur[1], cur[2]), Stroke::new(1.0_f32, theme::LINE3));
                         ui.add_space(4.0);
                         ui.label(egui::RichText::new("HEX").font(mono(10.0)).color(INK_HEAD));
                         let resp = ui.add(egui::TextEdit::singleline(&mut self.bg_hex).font(mono(12.0)).desired_width(84.0).hint_text("#101010"));
@@ -175,7 +175,7 @@ impl RawBlowApp {
                         }
                         // HEX 무효 입력 빨간 테두리(#69): 버퍼가 비지 않았는데 파싱 실패면 필드에 REJECT 테두리.
                         if !self.bg_hex.is_empty() && parse_hex_rgb(&self.bg_hex).is_none() {
-                            ui.painter().rect_stroke(resp.rect, Rounding::same(2.0), Stroke::new(1.0, theme::REJECT));
+                            ui.painter().rect_stroke(resp.rect, Rounding::same(2.0), Stroke::new(1.0_f32, theme::REJECT));
                         }
                         ui.add_space(8.0);
                         let mut rgb = self.photo_bg_rgb();
@@ -292,7 +292,7 @@ impl RawBlowApp {
                             let restore = ui.add(
                                 egui::Button::new(egui::RichText::new(tr(lang, "복원")).font(prop(12.0)).color(theme::WARN))
                                     .fill(Color32::TRANSPARENT)
-                                    .stroke(Stroke::new(1.0, theme::WARN)),
+                                    .stroke(Stroke::new(1.0_f32, theme::WARN)),
                             );
                             if restore.clicked() {
                                 do_reset = true;

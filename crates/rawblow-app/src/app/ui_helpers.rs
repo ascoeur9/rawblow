@@ -7,7 +7,7 @@ use super::*;
 pub(super) fn toggle_btn(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
     let btn = egui::Button::new(egui::RichText::new(label).font(prop(12.0)).color(if active { theme::INK } else { theme::INK2 }))
         .fill(if active { theme::BG3 } else { Color32::TRANSPARENT })
-        .stroke(Stroke::new(1.0, if active { theme::LINE2 } else { Color32::TRANSPARENT }));
+        .stroke(Stroke::new(1.0_f32, if active { theme::LINE2 } else { Color32::TRANSPARENT }));
     ui.add(btn)
 }
 
@@ -22,9 +22,9 @@ pub(super) fn vsep(ui: &mut egui::Ui) {
 pub(super) fn bg_swatch(ui: &mut egui::Ui, rgb: [u8; 3], selected: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::click());
     let col = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
-    ui.painter().rect(rect, Rounding::same(5.0), col, Stroke::new(1.0, theme::LINE3));
+    ui.painter().rect(rect, Rounding::same(5.0), col, Stroke::new(1.0_f32, theme::LINE3));
     if selected {
-        ui.painter().rect_stroke(rect.expand(2.0), Rounding::same(7.0), Stroke::new(2.0, theme::ACCENT));
+        ui.painter().rect_stroke(rect.expand(2.0), Rounding::same(7.0), Stroke::new(2.0_f32, theme::ACCENT));
     }
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -100,7 +100,7 @@ pub(super) fn hex_str(rgb: [u8; 3]) -> String {
 pub(super) fn modal_frame() -> egui::Frame {
     egui::Frame::none()
         .fill(theme::BG2)
-        .stroke(Stroke::new(1.0, theme::LINE2))
+        .stroke(Stroke::new(1.0_f32, theme::LINE2))
         .rounding(12.0)
         .inner_margin(egui::Margin::same(22.0))
 }
@@ -115,7 +115,7 @@ pub(super) fn modal_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
     ui.add_space(12.0);
     let r = ui.max_rect();
     let y = ui.cursor().top();
-    ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0, theme::LINE));
+    ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0_f32, theme::LINE));
     ui.add_space(14.0);
 }
 
@@ -130,7 +130,7 @@ pub(super) fn section_label(ui: &mut egui::Ui, text: &str) {
 pub(super) fn hline_full(ui: &mut egui::Ui) {
     let r = ui.max_rect();
     let y = ui.cursor().top();
-    ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0, theme::LINE));
+    ui.painter().hline(r.left()..=r.right(), y, Stroke::new(1.0_f32, theme::LINE));
 }
 
 /// CheckChip: 라벨색 배경(체크 시 18%)+테두리 알약. 클릭되면 true.
@@ -142,7 +142,7 @@ pub(super) fn check_chip(ui: &mut egui::Ui, label: &str, count: Option<usize>, c
 /// 기존 check_chip 호출부는 그대로 두고, 툴팁이 필요한 곳만 이걸 쓴다.
 pub(super) fn check_chip_resp(ui: &mut egui::Ui, label: &str, count: Option<usize>, color: Color32, checked: bool) -> egui::Response {
     let fill = if checked { color.linear_multiply(0.18) } else { theme::BG1 };
-    let stroke = Stroke::new(1.0, if checked { color.linear_multiply(0.6) } else { theme::LINE2 });
+    let stroke = Stroke::new(1.0_f32, if checked { color.linear_multiply(0.6) } else { theme::LINE2 });
     let inner = egui::Frame::none()
         .fill(fill)
         .stroke(stroke)
@@ -155,7 +155,7 @@ pub(super) fn check_chip_resp(ui: &mut egui::Ui, label: &str, count: Option<usiz
                     r,
                     Rounding::same(3.0),
                     if checked { color } else { Color32::TRANSPARENT },
-                    Stroke::new(1.5, if checked { color } else { theme::LINE3 }),
+                    Stroke::new(1.5_f32, if checked { color } else { theme::LINE3 }),
                 );
                 if checked {
                     let p = ui.painter();
@@ -166,7 +166,7 @@ pub(super) fn check_chip_resp(ui: &mut egui::Ui, label: &str, count: Option<usiz
                             Pos2::new(r.center().x - 0.5, r.bottom() - 3.5),
                             Pos2::new(r.right() - 2.5, r.top() + 3.5),
                         ],
-                        Stroke::new(1.7, dark),
+                        Stroke::new(1.7_f32, dark),
                     ));
                 }
                 ui.add_space(3.0);
@@ -188,7 +188,7 @@ pub(super) fn segmented(ui: &mut egui::Ui, options: &[(&str, &str)], selected: u
     let mut clicked = None;
     egui::Frame::none()
         .fill(theme::BG1)
-        .stroke(Stroke::new(1.0, theme::LINE2))
+        .stroke(Stroke::new(1.0_f32, theme::LINE2))
         .rounding(6.0)
         .inner_margin(egui::Margin::same(3.0))
         .show(ui, |ui| {
@@ -198,7 +198,7 @@ pub(super) fn segmented(ui: &mut egui::Ui, options: &[(&str, &str)], selected: u
                     let active = i == selected;
                     let cell = egui::Frame::none()
                         .fill(if active { theme::BG4 } else { Color32::TRANSPARENT })
-                        .stroke(Stroke::new(1.0, if active { theme::LINE3 } else { Color32::TRANSPARENT }))
+                        .stroke(Stroke::new(1.0_f32, if active { theme::LINE3 } else { Color32::TRANSPARENT }))
                         .rounding(4.0)
                         .inner_margin(egui::Margin::symmetric(12.0, 5.0))
                         .show(ui, |ui| {

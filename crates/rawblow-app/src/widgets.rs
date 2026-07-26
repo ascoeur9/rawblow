@@ -33,14 +33,14 @@ pub fn kbd(ui: &mut Ui, key: &str) {
     let w = galley.size().x.max(8.0) + 10.0;
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w, 18.0), egui::Sense::hover());
     let p = ui.painter();
-    p.rect(rect, Rounding::same(3.0), theme::BG3, Stroke::new(1.0, theme::LINE2));
+    p.rect(rect, Rounding::same(3.0), theme::BG3, Stroke::new(1.0_f32, theme::LINE2));
     // 키캡 느낌의 아래쪽 2px 강조선.
     p.line_segment(
         [
             Pos2::new(rect.left() + 1.0, rect.bottom() - 1.0),
             Pos2::new(rect.right() - 1.0, rect.bottom() - 1.0),
         ],
-        Stroke::new(1.5, theme::LINE3),
+        Stroke::new(1.5_f32, theme::LINE3),
     );
     p.text(rect.center(), Align2::CENTER_CENTER, key, font, theme::INK2);
 }
@@ -65,11 +65,11 @@ pub fn label_chip(ui: &mut Ui, label: Label, big: bool) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), egui::Sense::hover());
     let p = ui.painter();
     if matches!(label, Label::Unrated) {
-        p.rect(rect, Rounding::same(3.0), Color32::TRANSPARENT, Stroke::new(1.0, theme::LINE2));
+        p.rect(rect, Rounding::same(3.0), Color32::TRANSPARENT, Stroke::new(1.0_f32, theme::LINE2));
         p.text(rect.center(), Align2::CENTER_CENTER, name, font, theme::INK3);
     } else {
         let fill = color.linear_multiply(0.18).to_opaque(); // 근사 18% 틴트
-        p.rect(rect, Rounding::same(3.0), with_alpha(color, 46), Stroke::new(1.0, with_alpha(color, 64)));
+        p.rect(rect, Rounding::same(3.0), with_alpha(color, 46), Stroke::new(1.0_f32, with_alpha(color, 64)));
         let _ = fill;
         let cy = rect.center().y;
         p.circle_filled(Pos2::new(rect.left() + pad + 3.0, cy), dot / 2.0, color);
@@ -210,9 +210,9 @@ pub fn draw_thumb(ui: &Ui, rect: Rect, tex: Option<egui::TextureId>, size: Vec2,
     let stroke = if info.active || info.selected {
         Stroke::new(2.0 * scale, theme::ACCENT)
     } else if info.focused {
-        Stroke::new(1.5, theme::LINE3)
+        Stroke::new(1.5_f32, theme::LINE3)
     } else {
-        Stroke::new(1.0, theme::LINE)
+        Stroke::new(1.0_f32, theme::LINE)
     };
     // 스트로크는 경로 중심 기준이라 절반이 rect 밖으로 나간다 — 그리드 좌/우 끝 셀에서는
     // 스크롤 영역 클립 경계에 걸려 그 절반이 잘려 보인다. 절반폭만큼 안쪽으로 들여 그려
@@ -262,7 +262,7 @@ pub fn draw_thumb(ui: &Ui, rect: Rect, tex: Option<egui::TextureId>, size: Vec2,
     if let Some(rgb) = info.tag.color_rgb() {
         let c = Pos2::new(rect.right() - 8.0 * scale, rect.bottom() - 8.0 * scale);
         p.circle_filled(c, 4.0 * scale, Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
-        p.circle_stroke(c, 4.0 * scale, Stroke::new(1.0, Color32::from_black_alpha(120)));
+        p.circle_stroke(c, 4.0 * scale, Stroke::new(1.0_f32, Color32::from_black_alpha(120)));
     }
 }
 

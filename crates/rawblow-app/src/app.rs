@@ -153,9 +153,19 @@ pub struct RawBlowApp {
     fit: bool,          // true = 창에 맞춤(zoom 자동), false = 명시적 배율
     zoom: f32,          // 절대 배율(화면픽셀/이미지픽셀). 1.0 = 1:1
     pan: Vec2,          // 중앙 기준 이동(화면 px)
-    zoom_for: Option<usize>, // 줌 상태가 적용된 항목(real). 바뀌면 fit으로 리셋
+    zoom_for: Option<usize>, // 줌 상태가 적용된 항목(real). 바뀌면 keep_zoom을 복원하거나 fit으로 리셋
     last_view_size: Option<Vec2>, // #48: 마지막으로 표시한 텍스처 크기(px). 같은 항목에서 해상도가 바뀌면(ORIG 토글) 화면상 배율을 유지.
     af_zoom_pending: bool,   // #49: 다음 1:1 확대를 AF 측거점 중심에 맞추라는 요청.
+    /// #85: 사진을 넘겨도 이어받을 확대 상태. `zoom`/`pan`을 그대로 물려주면 안 된다 —
+    /// `zoom`은 화면px/**텍스처**px이고 텍스처는 이미 회전·다운스케일된 것이라, 해상도나
+    /// 가로/세로가 다른 다음 사진에서 배율이 튄다. 그래서 해상도·방향에 불변인 두 값으로
+    /// 정규화해 둔다: `mag` = 이미지 **긴 변**이 차지하는 화면 px, `pan_norm` = 표시 크기
+    /// 대비 이동 비율. 창맞춤(fit) 상태면 None(= 다음 사진도 창맞춤).
+    keep_zoom: Option<(f32, Vec2)>,
+    /// #85: 새 항목에 keep_zoom을 아직 확정 복원하지 못했다. 프리뷰 텍스처가 도착하기 전
+    /// 프레임에서는 320px 썸네일이 대신 뜨는데, 거기에 맞춰 클램프하면 배율이 깎이므로
+    /// 프리뷰가 올 때까지 매 프레임 다시 맞춘다.
+    zoom_restore: bool,
     grid_cols: usize,
     sort: SortOrder,
     // 촬영시간순 정렬(#56): 백그라운드 EXIF 시각 수집 상태. gen이 현재와 같으면 수집 완료/진행 중.
@@ -351,6 +361,8 @@ impl RawBlowApp {
             zoom_for: None,
             last_view_size: None,
             af_zoom_pending: false,
+            keep_zoom: None,
+            zoom_restore: false,
             grid_cols: cfg.grid_cols.clamp(4, 12),
             sort: cfg.sort,
             sort_scan_gen: None,
@@ -524,6 +536,15 @@ impl RawBlowApp {
         self.sel_anchor = None;
         self.grid_scroll_to = None;
         self.grid_visible_rows = 0..0;
+        // 확대 상태 유지(#85)는 **같은 폴더 안 이동**에만 적용한다 — 새 폴더는 창맞춤에서 시작.
+        // (zoom_for를 비워 두지 않으면 새 폴더의 0번이 직전 폴더의 0번과 같은 real로 보여
+        //  넘김 감지가 안 걸린다.)
+        self.zoom_for = None;
+        self.keep_zoom = None;
+        self.zoom_restore = false;
+        self.fit = true;
+        self.pan = Vec2::ZERO;
+        self.full_raw = false;
         // 저장 실패 상태는 폴더 단위(#62) — 새 폴더는 깨끗한 상태·기본 재시도 간격으로 시작.
         self.save_error = None;
         self.save_fail_count = 0;
@@ -816,7 +837,7 @@ impl RawBlowApp {
             .and_then(|r| f.iter().position(|&x| x == r))
             .unwrap_or_else(|| fallback.min(f.len() - 1));
         self.index = pos;
-        self.full_raw = false;
+        self.keep_view_mode_on_move(); // 창맞춤이면 프리뷰로, 확대 중이면 ORIG 유지(#85)
         if self.view == ViewMode::Grid {
             self.selected.clear();
             self.sel_anchor = Some(self.index);
@@ -971,8 +992,15 @@ impl RawBlowApp {
         });
         if let Some(next) = index_after_rate(self.index, still_visible, self.filtered().len()) {
             self.index = next;
-            self.full_raw = false; // 이동 시 프리뷰로 복귀(advance와 동일)
+            self.keep_view_mode_on_move(); // advance와 동일(#85)
         }
+    }
+
+    /// 사진을 넘길 때의 표시 모드 정리(#85). 창맞춤 상태였으면 빠른 프리뷰(1920px)로 돌아가
+    /// 넘김을 가볍게 유지하고, **확대 중이었으면 ORIG(원본 보기)를 유지**한다 — 확대 배율은
+    /// 이어받는데 해상도만 프리뷰로 떨어지면 화면이 뿌예져 새 버그처럼 보이기 때문.
+    fn keep_view_mode_on_move(&mut self) {
+        self.full_raw = self.full_raw && !self.fit;
     }
 
     fn advance(&mut self, delta: i64) {
@@ -989,7 +1017,7 @@ impl RawBlowApp {
             self.toast_info(trf(self.lang, "마지막 사진 · 미분류 {}장", &[&unrated.to_string()]));
         }
         self.index = cur.clamp(0, len as i64 - 1) as usize;
-        self.full_raw = false; // 이동 시 프리뷰로 복귀
+        self.keep_view_mode_on_move(); // 창맞춤이면 프리뷰로 복귀, 확대 중이면 ORIG 유지(#85)
     }
 
     /// 그리드에서 ↑/↓ 한 번에 이동할 칸 수(= 열 수). 단일뷰는 1.
@@ -1279,15 +1307,21 @@ impl eframe::App for RawBlowApp {
         self.ui_toast(ctx);
     }
 
-    /// 종료 시 동기 플러시(#62). 마지막 라벨링 후 300ms 디바운스 창 안에서 앱을 닫으면
-    /// 프레임버퍼 클리어 색(#83). eframe 기본값은 반투명 회색(12,12,12)이라 앱의 near-black
-    /// 패널·photo void(BG0=6,7,10)보다 밝다. 분수 DPI(예: 175%)에서 패널 경계가 물리 픽셀에
-    /// 딱 안 맞아 1px 서브픽셀 틈이 생기면 그 틈으로 더 밝은 기본 클리어색이 새어 "요소 사이
-    /// 흰 줄"로 보인다. 가장 어두운 BG0로 덮어 어느 경계에서도 틈이 주변보다 밝지 않게 한다.
+    /// 프레임버퍼 클리어 색(#83). 화면의 대부분을 차지하는 photo void와 **같은 색**으로 맞춘다.
+    ///
+    /// 분수 DPI(예: 175%)에서는 패널 경계가 물리 픽셀에 딱 떨어지지 않아 경계 픽셀이 양쪽
+    /// 패널 모두에게서 부분 커버리지만 받고, 남은 몫으로 클리어색이 비친다. 그 색이 주변과
+    /// 다르면 그게 곧 "요소 사이의 줄"이다 → 가장 넓은 면과 같은 색으로 두면 비쳐도 안 보인다.
+    /// photo void는 설정에서 바꿀 수 있으므로(#36) 하드코딩된 BG0가 아니라 현재 값을 쓴다.
+    ///
+    /// 주의: #83의 실제 원인은 이게 아니라 **OS 라이트 모드에서 egui light 슬롯의 기본
+    /// 구분선 색(gray 190)이 새던 것**이었고 `theme::apply`가 두 슬롯을 모두 덮어 고쳤다.
+    /// 이 오버라이드는 그 위의 방어선이다(밝은 photo_bg를 고른 경우 어두운 실선을 막는다).
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        theme::BG0.to_normalized_gamma_f32()
+        self.photo_bg().to_normalized_gamma_f32()
     }
 
+    /// 종료 시 동기 플러시(#62). 마지막 라벨링 후 300ms 디바운스 창 안에서 앱을 닫으면
     /// 그 변경이 저장되지 않은 채 사라지던 갭을 막는다. 시그니처 주의: eframe 0.29의
     /// on_exit는 "glow" 피처가 켜져 있으면 `on_exit(&mut self, Option<&glow::Context>)`인데,
     /// 이 앱은 default-features=false + wgpu 빌드(glow 미포함)라 인자 없는 형태다.
