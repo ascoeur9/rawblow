@@ -1004,10 +1004,11 @@ impl RawBlowApp {
                 );
 
                 section_label(ui, tr(lang, "기준"));
-                let keys: [(OrganizeKey, &str); 4] = [
+                let keys: [(OrganizeKey, &str); 5] = [
                     (OrganizeKey::Date, tr(lang, "촬영일")),
                     (OrganizeKey::Camera, tr(lang, "카메라")),
                     (OrganizeKey::Lens, tr(lang, "렌즈")),
+                    (OrganizeKey::Focal, tr(lang, "초점거리")),
                     (OrganizeKey::Extension, tr(lang, "확장자")),
                 ];
                 ui.horizontal_wrapped(|ui| {
@@ -1059,7 +1060,11 @@ impl RawBlowApp {
                         ui.label(egui::RichText::new(format!("… +{}", ext_breakdown.len() - 6)).font(mono(10.0)).color(theme::INK4));
                     }
                 } else if st.key != OrganizeKey::Extension {
-                    ui.label(egui::RichText::new(tr(lang, "촬영일·카메라·렌즈 기준은 실행하며 EXIF를 읽어 분류합니다. RAW+JPG 페어는 같은 폴더로 유지됩니다.")).font(mono(10.0)).color(theme::INK4));
+                    ui.label(egui::RichText::new(tr(lang, "촬영일·카메라·렌즈·초점거리 기준은 실행하며 EXIF를 읽어 분류합니다. RAW+JPG 페어는 같은 폴더로 유지됩니다.")).font(mono(10.0)).color(theme::INK4));
+                    // 초점거리는 폴더가 mm 단위로 잘게 쪼개지므로 결과 형태를 미리 알린다(#92).
+                    if st.key == OrganizeKey::Focal {
+                        ui.label(egui::RichText::new(tr(lang, "초점거리는 1mm 단위(35mm)로 폴더를 만들고, EXIF가 없으면 unknown-focal로 모읍니다.")).font(mono(10.0)).color(theme::INK4));
+                    }
                 }
 
                 ui.add_space(14.0);

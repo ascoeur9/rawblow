@@ -7,7 +7,7 @@ use crate::worker::{DecodeRequest, Worker};
 use eframe::egui;
 use egui::{Align, Align2, Color32, Layout, Pos2, Rect, Rounding, Sense, Stroke, Vec2};
 use rawblow_core::cache;
-use rawblow_core::config::{self, AiCullTarget, ClipIqaBackbone, Config, Lang};
+use rawblow_core::config::{self, AiCullTarget, ClipIqaBackbone, Config, Lang, ViewCarry};
 use rawblow_core::quality::Verdict;
 use rawblow_core::meta::{read_exif, ExifInfo};
 use rawblow_core::organize::{self, OrganizeKey, OrganizeRequest};
@@ -19,7 +19,7 @@ use rawblow_core::{
     scan, sidecar, ColorTag, Entry, Filter, Label, MatchMode, SortOrder, StarFilter, TagFilter,
     ViewMode,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -467,6 +467,9 @@ impl RawBlowApp {
     }
 
     fn open_folder(&mut self, folder: PathBuf) {
+        // 폴더를 떠나기 전 지금 보던 사진을 재개 위치로 남긴다(#86). 아래 config::save가
+        // 디스크까지 확정하므로 여기서 따로 저장하지 않는다.
+        self.remember_folder_position();
         // 폴더를 바꾸기 전, 디바운스 대기 중인 분류/별점 변경을 현재 폴더 사이드카에 먼저 확정한다.
         // (Move 후 재스캔(#24)이나 폴더 전환 시 미저장 변경이 옛 사이드카로 롤백·유실되지 않게.)
         // 이 플러시가 실패해도 전환은 계속한다(#62): items가 곧 새 폴더 것으로 바뀌어 재시도할
@@ -513,7 +516,8 @@ impl RawBlowApp {
         }
 
         self.items = items;
-        self.index = 0;
+        // 마지막으로 보던 사진에서 재개(#86). 기록이 없는 새 폴더는 종전대로 0번에서 시작한다.
+        self.index = self.resume_index(&folder);
         self.generation += 1;
         // 워커가 이전 폴더의 프리페치 큐(수천 건)를 헛디코딩하지 않도록 세대를 먼저 올린다.
         self.worker.set_generation(self.generation);
@@ -712,6 +716,39 @@ impl RawBlowApp {
                 f.iter().position(|&r| self.items[r].entry.display == p)
             })
             .unwrap_or(0);
+    }
+
+    /// 지금 보고 있는 사진을 폴더별 재개 위치로 기록한다(#86).
+    ///
+    /// `Config`에만 반영하고 디스크 저장은 호출부에 맡긴다 — 호출 지점(폴더 전환·앱 종료)이
+    /// 모두 직후에 `config::save`를 하므로 이중 쓰기를 피한다. 사진을 넘길 때마다 저장하지
+    /// 않는 이유도 같다: 셀렉 중 화살표 한 번마다 설정 파일을 쓰는 비용이 아깝고, 재개 위치는
+    /// 폴더를 떠나는 순간의 값만 있으면 충분하다.
+    fn remember_folder_position(&mut self) {
+        let Some(folder) = self.folder.clone() else { return };
+        let Some(real) = self.current_real() else { return };
+        let Some(item) = self.items.get(real) else { return };
+        let file = item.entry.display.to_string_lossy().into_owned();
+        self.cfg.set_folder_resume(&folder.to_string_lossy(), &file);
+    }
+
+    /// 폴더를 열 때 시작할 필터 기준 인덱스(#86). 기록된 사진을 현재 `items`에서 찾아
+    /// 필터 목록 상의 위치로 환산한다. 기록이 없거나, 그 파일이 사라졌거나, 현재 필터에
+    /// 걸러졌으면 0(첫 사진)으로 폴백한다 — 어느 경우에도 오류 없이 열린다.
+    ///
+    /// `self.items`가 새 폴더 것으로 교체된 **뒤에** 불러야 한다.
+    fn resume_index(&self, folder: &Path) -> usize {
+        let Some(saved) = self.cfg.folder_resume_file(&folder.to_string_lossy()) else {
+            return 0;
+        };
+        let Some(real) = self
+            .items
+            .iter()
+            .position(|it| it.entry.display.to_string_lossy() == saved)
+        else {
+            return 0;
+        };
+        self.filtered().iter().position(|&r| r == real).unwrap_or(0)
     }
 
     /// 현재 필터를 통과하는 항목 인덱스(원본 items 기준).
@@ -996,11 +1033,22 @@ impl RawBlowApp {
         }
     }
 
-    /// 사진을 넘길 때의 표시 모드 정리(#85). 창맞춤 상태였으면 빠른 프리뷰(1920px)로 돌아가
-    /// 넘김을 가볍게 유지하고, **확대 중이었으면 ORIG(원본 보기)를 유지**한다 — 확대 배율은
-    /// 이어받는데 해상도만 프리뷰로 떨어지면 화면이 뿌예져 새 버그처럼 보이기 때문.
+    /// 사진을 넘길 때의 표시 모드 정리(#85/#87). 인덱스가 바뀌는 모든 경로(화살표·휠·
+    /// 필름스트립 클릭·평가 후 자동 전진)에서 공통으로 불린다.
+    ///
+    /// - `ZoomOnly`(기본, #85 규칙): 창맞춤 상태였으면 빠른 프리뷰(1920px)로 돌아가 넘김을
+    ///   가볍게 유지하고, **확대 중이었으면 ORIG(원본 보기)를 유지**한다 — 확대 배율은
+    ///   이어받는데 해상도만 프리뷰로 떨어지면 화면이 뿌예져 새 버그처럼 보이기 때문.
+    /// - `Keep`(#87): 보고 있던 상태를 그대로 들고 간다. ORIG면 창맞춤이어도 계속 ORIG,
+    ///   프리뷰면 계속 프리뷰 — `full_raw`를 건드리지 않는 것이 곧 그 동작이다.
+    ///
+    /// 새 폴더를 열 때는 `open_folder`가 `full_raw=false`로 되돌리므로 두 옵션 모두
+    /// 프리뷰에서 시작한다(ORIG 연속 디코딩이 새 폴더 첫 로드를 늦추지 않게).
     fn keep_view_mode_on_move(&mut self) {
-        self.full_raw = self.full_raw && !self.fit;
+        match self.cfg.view_carry {
+            ViewCarry::ZoomOnly => self.full_raw = self.full_raw && !self.fit,
+            ViewCarry::Keep => {}
+        }
     }
 
     fn advance(&mut self, delta: i64) {
@@ -1334,6 +1382,8 @@ impl eframe::App for RawBlowApp {
                 let _ = sidecar::save(folder, &entries);
             }
         }
+        // 다음 실행에서 이어볼 수 있게 지금 보던 사진을 기록(#86). 바로 아래 저장에 실려 나간다.
+        self.remember_folder_position();
         // 설정도 확정: 기존엔 설정 '돌아가기'·폴더 열기 때만 저장돼, 그 뒤 바뀐 설정
         // (정렬·오버레이 토글 등)이 종료 시점에 따라 유실될 수 있었다(#62).
         let _ = config::save(&self.cfg);
