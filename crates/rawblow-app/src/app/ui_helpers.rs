@@ -93,6 +93,15 @@ pub(super) struct ViewMag {
     pub pin: Option<f32>,
 }
 
+/// 사용자에게 보여줄 배율(#48). 1.0 = 실측 1:1(원본 1픽셀 = 화면 1픽셀).
+///
+/// `zoom`은 화면px/**텍스처**px이라 같은 화면 크기라도 프리뷰(1920)와 ORIG(8192)에서 4배 넘게
+/// 다른 값이 된다 — 그대로 보여주면 D를 눌러 사진 크기가 그대로인데도 숫자만 100%↔23%로 튄다.
+/// 화면상 크기(`cur_long * zoom`)를 원본 긴 변으로 나눠 해상도에 불변인 값으로 만든다.
+pub(super) fn display_zoom_ratio(zoom: f32, cur_long: f32, ref_long: f32) -> Option<f32> {
+    (ref_long > 0.0).then(|| cur_long * zoom / ref_long)
+}
+
 /// 이번 프레임에 쓸 `zoom`을 돌려주고 `st`를 다음 프레임 기준으로 옮긴다(#48).
 ///
 /// - 표시 해상도가 바뀐 프레임이면 `mag`를 재현한다 — 이때 경계에 잘려도 **`mag`는 덮지 않고**
@@ -429,7 +438,8 @@ pub(super) fn reveal_in_file_manager(path: &std::path::Path) {
 mod tests {
     use super::{
         af_display_coords, af_focus_center, compute_histo, exif_lines, fmt_bytes,
-        format_capture_datetime, hex_str, parse_hex_rgb, sync_view_mag, ExifInfo, ViewMag,
+        display_zoom_ratio, format_capture_datetime, hex_str, parse_hex_rgb, sync_view_mag,
+        ExifInfo, ViewMag,
     };
     use rawblow_core::af::{AfInfo, AfPoint};
 
@@ -479,6 +489,21 @@ mod tests {
             } else {
                 self.fit = true;
             }
+        }
+
+        /// 실측 1:1 요청(#48): 원본 긴 변(`ref_long`)이 화면 긴 변 px가 되도록 맞춘다.
+        /// 아직 프리뷰뿐이라 상한에 걸려도 기준에는 잘리기 전 목표를 남긴다.
+        fn one_to_one(&mut self, ref_long: f32, size: (f32, f32)) {
+            let avail = ((self.area.0 - 32.0).max(1.0), (self.area.1 - 32.0).max(1.0));
+            let fit_scale = (avail.0 / size.0).min(avail.1 / size.1);
+            let cur_long = size.0.max(size.1).max(1.0);
+            let one = self.ref_long.max(cur_long) / cur_long;
+            let want = ref_long / cur_long;
+            let z = want.clamp(fit_scale.min(1.0), (8.0 * one).max(fit_scale));
+            self.fit = false;
+            self.zoom = z;
+            self.st.mag = Some(ref_long);
+            self.st.pin = ((z - want).abs() > 1e-4).then_some(z);
         }
 
         /// Ctrl+휠/핀치로 `target` 배율까지(경계 클램프 + 창맞춤 재판정까지 동일).
@@ -571,6 +596,43 @@ mod tests {
         s.click();
         let base = s.frame((1280.0, 1920.0));
         approx(s.frame((1920.0, 1280.0)), base, "세로 → 가로 텍스처");
+    }
+
+    /// D850 EXIF 실측 긴 변. 표시 배율(원본 픽셀 대비)의 기준값.
+    const ORIG_LONG: f32 = 8256.0;
+
+    #[test]
+    fn display_zoom_is_stable_across_orig_toggle() {
+        // #48 신고의 실제 정체: 사진 크기는 그대로인데 상태바 숫자만 100%→23%로 튀었다.
+        // 표시 배율은 `화면상 긴 변 / 원본 긴 변`이라 텍스처가 바뀌어도 값이 같아야 한다.
+        let mut s = Sim::new(AREA);
+        s.frame(PREV);
+        s.click();
+        s.frame(PREV);
+        let (zoom_prev, base) = (s.zoom, display_zoom_ratio(s.zoom, PREV.0, ORIG_LONG).unwrap());
+        s.frame(ORIG);
+        approx(display_zoom_ratio(s.zoom, ORIG.0, ORIG_LONG).unwrap(), base, "D → ORIG 표시 배율");
+        // 옛 표시식(zoom을 그대로 %로)이 왜 안 되는지 못박는다: 같은 화면 크기인데 4배 넘게 튄다.
+        let jump = (zoom_prev / s.zoom).max(s.zoom / zoom_prev);
+        assert!(
+            jump > 3.0,
+            "텍스처 기준 zoom은 해상도가 바뀌면 크게 달라진다(그래서 표시에 쓰면 안 된다): {zoom_prev} → {} ({jump:.2}배)",
+            s.zoom
+        );
+        s.frame(PREV);
+        approx(display_zoom_ratio(s.zoom, PREV.0, ORIG_LONG).unwrap(), base, "D → 프리뷰 표시 배율");
+    }
+
+    #[test]
+    fn one_to_one_reaches_true_hundred_percent_on_orig() {
+        // 실측 1:1을 요청하면 ORIG가 도착했을 때 원본 1픽셀 = 화면 1픽셀(=100%)이어야 한다.
+        // 프리뷰(1920)뿐인 동안은 상한에 걸릴 수 있지만 기준은 남아 ORIG에서 제 배율이 나온다.
+        let mut s = Sim::new(AREA);
+        s.frame(PREV);
+        s.one_to_one(ORIG_LONG, PREV);
+        s.frame(PREV);
+        approx(s.frame(ORIG), ORIG_LONG, "ORIG 도착 후 실측 1:1");
+        approx(s.frame(PREV) / ORIG_LONG * 100.0, 100.0, "프리뷰로 돌아와도 표시 100% 유지");
     }
 
     #[test]

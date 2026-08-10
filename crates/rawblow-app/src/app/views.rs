@@ -86,9 +86,15 @@ impl RawBlowApp {
                         self.fit = true;
                         self.pan = Vec2::ZERO;
                     }
-                    if toggle_btn(ui, "1:1 (Space)", !self.fit && (self.zoom - 1.0).abs() < 0.01).clicked() {
-                        self.fit = false;
-                        self.zoom = 1.0;
+                    // 1:1은 **실측** 기준이다(#48) — 표시 배율(원본 픽셀 대비)이 100%일 때 켜진다.
+                    // zoom을 그대로 보면 프리뷰/ORIG에서 같은 화면 크기가 다른 값이라 칩이 깜빡인다.
+                    let at_one_to_one = !self.fit
+                        && self
+                            .current_real()
+                            .and_then(|r| self.display_zoom(r))
+                            .is_some_and(|z| (z - 1.0).abs() < 0.01);
+                    if toggle_btn(ui, "1:1 (Space)", at_one_to_one).clicked() {
+                        self.request_one_to_one();
                         self.pan = Vec2::ZERO;
                     }
                     if toggle_btn(ui, "ORIG (D)", self.full_raw).clicked() {
@@ -595,6 +601,9 @@ impl RawBlowApp {
         let (pick, hold, reject, unrated) = self.counts();
         let f_len = self.filtered().len();
         let fps = if self.frame_ms > 0.0 { 1000.0 / self.frame_ms } else { 0.0 };
+        // 원본 픽셀 대비 배율(#48). 100%가 실측 1:1이며, D로 프리뷰↔ORIG를 오가도 사진 크기가
+        // 그대로면 숫자도 그대로다(zoom을 그대로 쓰면 텍스처 기준이라 100%↔23%로 튀었다).
+        let zoom_pct = self.current_real().and_then(|r| self.display_zoom(r)).map(|z| z * 100.0);
         egui::TopBottomPanel::bottom("status")
             .exact_height(STATUS_H)
             .frame(egui::Frame::none().fill(theme::BG2).inner_margin(egui::Margin::symmetric(12.0, 4.0)))
@@ -628,9 +637,12 @@ impl RawBlowApp {
                         if self.view == ViewMode::Single || self.fullscreen {
                             ui.label(egui::RichText::new("·").font(mono(10.5)).color(theme::INK4));
                             ui.label(
-                                egui::RichText::new(format!("{:.0}%", self.zoom * 100.0))
-                                    .font(mono(10.5))
-                                    .color(theme::INK2),
+                                egui::RichText::new(match zoom_pct {
+                                    Some(p) => format!("{p:.0}%"),
+                                    None => "—".to_string(),
+                                })
+                                .font(mono(10.5))
+                                .color(theme::INK2),
                             );
                         }
                     });
@@ -858,6 +870,22 @@ impl RawBlowApp {
             }
         }
 
+        // #48: 실측 1:1 요청 소비 — 원본 1픽셀이 화면 1픽셀이 되도록 맞춘다(표시 배율 100%).
+        // 기준(view_mag)에는 잘리기 전 목표를 남겨, 아직 프리뷰뿐이라 상한에 걸렸더라도 곧
+        // 도착할 ORIG에서 제 배율이 나오게 한다.
+        if self.one_to_one_pending {
+            self.one_to_one_pending = false;
+            if let Some(ref_long) = self.ref_long_px(real) {
+                let want = ref_long / cur_long;
+                let z = want.clamp(min_zoom, max_zoom);
+                self.fit = false;
+                self.zoom = z;
+                self.view_mag.mag = Some(ref_long);
+                self.view_mag.pin = ((z - want).abs() > 1e-4).then_some(z);
+                self.zoom_restore = false; // 사용자가 지정한 배율 → #85 복원 대기 취소
+            }
+        }
+
         // #48: 같은 항목에서 표시 해상도가 바뀌면(ORIG 로드/언로드) 화면상 배율·보던 위치를 유지한다.
         // 유지 기준은 zoom(=화면픽셀/**텍스처**픽셀 → 해상도가 K배면 같은 값이 K배 확대를 뜻함)이
         // 아니라 **긴 변이 차지하는 화면 px**(view_mag)이다. 긴 변 기준이라 가로↔세로가 바뀌어도
@@ -911,12 +939,12 @@ impl RawBlowApp {
             }
         }
 
-        // 클릭(드래그 아님): fit ↔ 1:1.
+        // 클릭(드래그 아님): fit ↔ 1:1(실측 기준, #48). 다음 프레임에 소비되므로 재페인트를 건다.
         if resp.clicked() {
             if self.fit {
-                self.fit = false;
-                self.zoom = 1.0;
+                self.request_one_to_one();
                 self.pan = Vec2::ZERO;
+                ui.ctx().request_repaint();
             } else {
                 self.fit = true;
             }

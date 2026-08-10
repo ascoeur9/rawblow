@@ -160,6 +160,8 @@ pub struct RawBlowApp {
     /// #48: 이 항목에서 본 텍스처 중 가장 긴 변(px). 확대 상한을 현재 텍스처가 아니라 이
     /// 기준으로 잡아야 프리뷰와 ORIG에서 같은 화면상 배율 범위가 나온다. 항목이 바뀌면 0.
     view_ref_long: f32,
+    /// #48: 실측 1:1(원본 1픽셀 = 화면 1픽셀) 요청. 텍스처 크기를 아는 photo_view에서 소비한다.
+    one_to_one_pending: bool,
     af_zoom_pending: bool,   // #49: 다음 1:1 확대를 AF 측거점 중심에 맞추라는 요청.
     /// #85: 사진을 넘겨도 이어받을 확대 상태. `zoom`/`pan`을 그대로 물려주면 안 된다 —
     /// `zoom`은 화면px/**텍스처**px이고 텍스처는 이미 회전·다운스케일된 것이라, 해상도나
@@ -367,6 +369,7 @@ impl RawBlowApp {
             last_view_size: None,
             view_mag: ViewMag::default(),
             view_ref_long: 0.0,
+            one_to_one_pending: false,
             af_zoom_pending: false,
             keep_zoom: None,
             zoom_restore: false,
@@ -756,6 +759,38 @@ impl RawBlowApp {
             return 0;
         };
         self.filtered().iter().position(|&r| r == real).unwrap_or(0)
+    }
+
+    /// 원본 이미지의 긴 변 픽셀 수(#48). 화면에 보이는 텍스처는 프리뷰(1920)·ORIG(8192)로
+    /// 계속 바뀌지만 이 값은 사진 자체의 크기라 불변이다 — 사용자에게 보여줄 배율의 기준.
+    ///
+    /// EXIF 실측 크기를 쓰되 지금까지 본 텍스처(`view_ref_long`)와 큰 쪽을 택한다. 일부 RAW는
+    /// EXIF에 임베디드 프리뷰 크기가 들어와 실제보다 작게 나오는데, 그걸 그대로 믿으면 ORIG가
+    /// 도착하는 순간 기준이 커지면서 표시 배율이 튀기 때문. 둘 다 없으면 None(배율 미표시).
+    fn ref_long_px(&self, real: usize) -> Option<f32> {
+        let exif = self
+            .items
+            .get(real)
+            .and_then(|it| it.exif.as_ref())
+            .and_then(|e| e.display_size())
+            .map(|(w, h)| w.max(h) as f32)
+            .unwrap_or(0.0);
+        let r = exif.max(self.view_ref_long);
+        (r > 0.0).then_some(r)
+    }
+
+    /// 사용자에게 보여줄 배율(#48) — [`display_zoom_ratio`] 참조. 표시할 텍스처가 아직 없으면 None.
+    fn display_zoom(&self, real: usize) -> Option<f32> {
+        let cur_long = self.last_view_size?.max_elem();
+        display_zoom_ratio(self.zoom, cur_long, self.ref_long_px(real)?)
+    }
+
+    /// 실측 1:1을 요청한다(#48). 원본 해상도가 있어야 진짜 1:1이 의미 있으므로 ORIG도 함께 켠다
+    /// — 프리뷰(1920)를 4배로 늘려 놓고 "100%"라 부르면 뿌옇기만 하고 픽셀 확인이 안 된다.
+    fn request_one_to_one(&mut self) {
+        self.fit = false;
+        self.full_raw = true;
+        self.one_to_one_pending = true;
     }
 
     /// 현재 필터를 통과하는 항목 인덱스(원본 items 기준).
@@ -1538,10 +1573,9 @@ impl RawBlowApp {
                         Key::Z if cmd => self.undo(),
                         Key::Y if cmd => self.redo(),
                         Key::Space | Key::Z => {
-                            // 창맞춤 ↔ 1:1 토글.
+                            // 창맞춤 ↔ 1:1 토글. 1:1은 **실측**(원본 1픽셀 = 화면 1픽셀)이다(#48).
                             if self.fit {
-                                self.fit = false;
-                                self.zoom = 1.0;
+                                self.request_one_to_one();
                                 self.pan = Vec2::ZERO;
                                 // #49: AF 포인트 표시 중이면 측거점 기준으로 확대(photo_view가 pan 보정).
                                 self.af_zoom_pending = self.show_af;
