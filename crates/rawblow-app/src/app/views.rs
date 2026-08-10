@@ -682,6 +682,7 @@ impl RawBlowApp {
                         draw_thumb(ui, rect, tex, tsize, &info, self.badge_scale());
                         if resp.clicked() {
                             self.index = fi;
+                            self.keep_view_mode_on_move(); // 화살표 이동과 같은 규칙(#85/#87)
                         }
                     }
                 });
@@ -1137,9 +1138,11 @@ impl RawBlowApp {
                                 self.sel_anchor = Some(fi);
                             }
                             self.index = fi;
+                            self.keep_view_mode_on_move(); // 화살표 이동과 같은 규칙(#85/#87)
                         }
                         if resp.double_clicked() {
                             self.index = fi;
+                            self.keep_view_mode_on_move();
                             self.view = ViewMode::Single;
                         }
                     }

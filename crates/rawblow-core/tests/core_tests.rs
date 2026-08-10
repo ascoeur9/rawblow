@@ -1181,6 +1181,29 @@ fn organize_by_camera_keeps_pairs_together() {
 }
 
 #[test]
+fn organize_by_focal_sends_exifless_to_unknown_focal() {
+    use rawblow_core::organize::{self, OrganizeKey, OrganizeRequest};
+    let tmp = tempfile::tempdir().unwrap();
+    let folder = tmp.path();
+    // EXIF 없는 더미 → "unknown-focal"로 모임(#92). 페어는 초점거리 기준에서도 같은 폴더 유지.
+    std::fs::write(folder.join("A.JPG"), b"a").unwrap();
+    std::fs::write(folder.join("A.RW2"), b"aaaa").unwrap();
+
+    let entries = scan::scan_folder(folder, false, rawblow_core::SortOrder::Name);
+    let req = OrganizeRequest {
+        entries: &entries,
+        key: OrganizeKey::Focal,
+        action: transfer::Action::Copy,
+        dest_root: folder.to_path_buf(),
+        conflict: transfer::ConflictPolicy::AutoIncrement,
+    };
+    let report = organize::organize(&req);
+    assert_eq!(report.transferred, 2);
+    assert!(folder.join("unknown-focal").join("A.JPG").exists());
+    assert!(folder.join("unknown-focal").join("A.RW2").exists(), "페어는 같은 폴더로");
+}
+
+#[test]
 fn organize_skips_files_already_in_place() {
     use rawblow_core::organize::{self, OrganizeKey, OrganizeRequest};
     let tmp = tempfile::tempdir().unwrap();

@@ -231,6 +231,14 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "정렬 기준" => ("Sort by", "並び順"),
         "파일명순" => ("File name", "ファイル名順"),
         "촬영시간순" => ("Capture time", "撮影日時順"),
+        // 사진 이동 시 원본 보기(ORIG) 유지 방식(#87)
+        "사진 이동 시 원본 보기" => ("Original view when moving", "写真移動時の原寸表示"),
+        "확대 중일 때만 유지" => ("Keep only while zoomed", "拡大中のみ維持"),
+        "현재 보기 상태 유지" => ("Keep current view", "現在の表示を維持"),
+        "「현재 보기 상태 유지」는 창맞춤에서도 ORIG를 계속 불러옵니다 — 넘김이 느려지고 메모리를 더 씁니다. 새 폴더는 두 방식 모두 프리뷰로 시작합니다." => (
+            "\"Keep current view\" loads ORIG even at fit-to-window — slower moves and more memory. A newly opened folder starts in preview either way.",
+            "「現在の表示を維持」はウィンドウ合わせでもORIGを読み込み続けます — 送りが遅くなりメモリも増えます。新しいフォルダはどちらの方式でもプレビューで始まります。",
+        ),
         "단축키 재바인딩 UI는 v1.1 예정 — 현재 기본값 QWER 고정 표시" => (
             "Shortcut rebinding UI is planned for v1.1 — currently fixed to default QWER",
             "ショートカット再割り当てUIはv1.1予定 — 現在はデフォルトのQWER固定",
@@ -294,14 +302,20 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "촬영일" => ("Capture Date", "撮影日"),
         "카메라" => ("Camera", "カメラ"),
         "렌즈" => ("Lens", "レンズ"),
+        // "초점거리"(#92 분류 기준 칩)는 아래 컬링 필터 블록에 이미 있는 키를 그대로 쓴다
+        // — 같은 match의 중복 arm은 unreachable 경고가 난다.
         "확장자" => ("Extension", "拡張子"),
         "대상 폴더 안에 기준별 하위폴더가 생성됩니다." => (
             "Subfolders are created inside the destination folder.",
             "出力先フォルダ内に基準別サブフォルダが作成されます。",
         ),
-        "촬영일·카메라·렌즈 기준은 실행하며 EXIF를 읽어 분류합니다. RAW+JPG 페어는 같은 폴더로 유지됩니다." => (
-            "Date/camera/lens read EXIF while running. RAW+JPG pairs stay in the same folder.",
-            "撮影日・カメラ・レンズは実行中にEXIFを読んで分類します。RAW+JPGペアは同じフォルダに保たれます。",
+        "촬영일·카메라·렌즈·초점거리 기준은 실행하며 EXIF를 읽어 분류합니다. RAW+JPG 페어는 같은 폴더로 유지됩니다." => (
+            "Date/camera/lens/focal length read EXIF while running. RAW+JPG pairs stay in the same folder.",
+            "撮影日・カメラ・レンズ・焦点距離は実行中にEXIFを読んで分類します。RAW+JPGペアは同じフォルダに保たれます。",
+        ),
+        "초점거리는 1mm 단위(35mm)로 폴더를 만들고, EXIF가 없으면 unknown-focal로 모읍니다." => (
+            "Focal length creates 1 mm folders (35mm); files without EXIF go to unknown-focal.",
+            "焦点距離は1mm単位(35mm)でフォルダを作成し、EXIFがないファイルはunknown-focalにまとめます。",
         ),
         "정리 시작" => ("Start Organize", "整理開始"),
         "전송 중" => ("Transferring", "転送中"),
