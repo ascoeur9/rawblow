@@ -1,9 +1,9 @@
 //! 특정 폴더 내 자동 분류·폴더 이동(#34).
 //!
-//! 셀렉(전송)과 **별개**의 기능이다. 폴더 안의 사진을 촬영일·카메라·렌즈·확장자
+//! 셀렉(전송)과 **별개**의 기능이다. 폴더 안의 사진을 촬영일·카메라·렌즈·초점거리(#92)·확장자
 //! 기준으로 하위폴더에 나눠 담은 뒤(이동 또는 복사), 분류된 폴더를 (하위 폴더 포함)
 //! 다시 열어 셀렉할 수 있다. 전송과 동일하게 충돌 시 자동 일련번호, 진행 보고·취소를
-//! 지원한다(#35 인프라 공유). EXIF 기준(날짜/카메라/렌즈)은 항목(페어) 단위로 같은
+//! 지원한다(#35 인프라 공유). EXIF 기준(날짜/카메라/렌즈/초점거리)은 항목(페어) 단위로 같은
 //! 폴더에 묶어 RAW+JPG 페어를 유지하고, 확장자 기준은 파일 단위로 나눈다.
 
 use crate::meta::read_exif;
@@ -21,6 +21,8 @@ pub enum OrganizeKey {
     Camera,
     /// 렌즈 모델(EXIF). 없으면 미상.
     Lens,
+    /// 초점거리(EXIF FocalLength → `35mm`). 1mm 단위 반올림, 없으면 미상(#92).
+    Focal,
     /// 파일 확장자(대문자: RW2, JPG …). 파일 단위로 나뉜다(페어 분리됨).
     Extension,
 }
@@ -40,6 +42,7 @@ fn unknown_folder(key: OrganizeKey) -> &'static str {
         OrganizeKey::Date => "unknown-date",
         OrganizeKey::Camera => "unknown-camera",
         OrganizeKey::Lens => "unknown-lens",
+        OrganizeKey::Focal => "unknown-focal",
         OrganizeKey::Extension => "unknown-ext",
     }
 }
@@ -77,6 +80,22 @@ fn date_from_mtime(path: &Path) -> Option<String> {
     Some(dt.format("%Y-%m-%d").to_string())
 }
 
+/// EXIF FocalLength 표시값("35 mm", "10.5 mm")에서 mm 수치를 읽어 1mm 단위 폴더명(`35mm`)으로
+/// 만든다(#92). 소수는 반올림한다(어안 10.5mm → `11mm`). 숫자를 못 읽거나 0 이하면 None →
+/// 호출부에서 미상 폴더로 보낸다.
+fn focal_folder(raw: &str) -> Option<String> {
+    let num: String = raw
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let mm: f64 = num.parse().ok()?;
+    if !mm.is_finite() || mm <= 0.0 {
+        return None;
+    }
+    Some(format!("{}mm", mm.round() as i64))
+}
+
 /// 확장자 기준 폴더명(대문자). 확장자가 없으면 미상.
 fn ext_folder(path: &Path) -> String {
     match ext_lower(path) {
@@ -85,7 +104,7 @@ fn ext_folder(path: &Path) -> String {
     }
 }
 
-/// 항목(페어) 단위 분류 폴더명(Date/Camera/Lens). EXIF는 대표 파일에서 한 번만 읽는다.
+/// 항목(페어) 단위 분류 폴더명(Date/Camera/Lens/Focal). EXIF는 대표 파일에서 한 번만 읽는다.
 fn folder_for_entry(e: &Entry, key: OrganizeKey) -> String {
     match key {
         OrganizeKey::Extension => {
@@ -110,6 +129,12 @@ fn folder_for_entry(e: &Entry, key: OrganizeKey) -> String {
             .map(|s| sanitize_folder(&s))
             .filter(|s| s != "unknown")
             .unwrap_or_else(|| unknown_folder(key).to_string()),
+        OrganizeKey::Focal => {
+            let raw = read_exif(&e.display).and_then(|x| x.focal_length);
+            raw.as_deref()
+                .and_then(focal_folder)
+                .unwrap_or_else(|| unknown_folder(key).to_string())
+        }
     }
 }
 
@@ -231,4 +256,30 @@ pub fn organize_with_progress(
     }
 
     report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::focal_folder;
+
+    #[test]
+    fn focal_folder_parses_exif_display_values() {
+        // exif 크레이트의 FocalLength 표시값은 "35 mm" 꼴. 단위와 공백을 떼고 mm만 읽는다.
+        assert_eq!(focal_folder("35 mm").as_deref(), Some("35mm"));
+        assert_eq!(focal_folder("35.0 mm").as_deref(), Some("35mm"));
+        assert_eq!(focal_folder(" 16 mm ").as_deref(), Some("16mm"));
+        assert_eq!(focal_folder("200mm").as_deref(), Some("200mm"));
+        // 소수 초점거리는 1mm 단위로 반올림(#92: 폴더는 1mm 단위).
+        assert_eq!(focal_folder("10.5 mm").as_deref(), Some("11mm"));
+        assert_eq!(focal_folder("34.9 mm").as_deref(), Some("35mm"));
+    }
+
+    #[test]
+    fn focal_folder_rejects_unusable_values() {
+        // 숫자를 못 읽거나 0 이하면 미상 폴더로 보내야 하므로 None.
+        assert_eq!(focal_folder(""), None);
+        assert_eq!(focal_folder("unknown"), None);
+        assert_eq!(focal_folder("0 mm"), None);
+        assert_eq!(focal_folder("."), None);
+    }
 }

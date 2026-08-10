@@ -682,6 +682,7 @@ impl RawBlowApp {
                         draw_thumb(ui, rect, tex, tsize, &info, self.badge_scale());
                         if resp.clicked() {
                             self.index = fi;
+                            self.keep_view_mode_on_move(); // 화살표 이동과 같은 규칙(#85/#87)
                         }
                     }
                 });
@@ -756,6 +757,8 @@ impl RawBlowApp {
         if self.zoom_for != Some(real) {
             self.zoom_for = Some(real);
             self.last_view_size = None; // 항목이 바뀜 → 해상도 추적 리셋(#48)
+            self.view_mag = ViewMag::default(); // 유지할 화면상 배율·상한 기준도 항목마다 새로(#48)
+            self.view_ref_long = 0.0;
             self.af_zoom_pending = false;
             match self.keep_zoom {
                 Some(_) => {
@@ -814,8 +817,16 @@ impl RawBlowApp {
             self.zoom = fit_scale;
             self.pan = Vec2::ZERO;
         }
+        // #48: 확대 상한은 현재 텍스처가 아니라 **이 항목에서 본 가장 좋은 해상도**를 기준으로
+        // 잡는다. 상한을 현재 텍스처 기준(8x 텍스처픽셀)으로 두면 같은 화면상 배율이 프리뷰
+        // (1920)에서는 표현 불가라, ORIG(8192)에서 약 1.9배 넘게 확대한 뒤 D로 돌아올 때 상한에
+        // 잘리고 그 잘린 값이 새 기준이 되어 배율이 영구히 깎였다 — #48 회귀의 직접 원인.
+        // one_to_one = 기준 해상도의 1:1이 현재 텍스처에서는 몇 배인지(프리뷰에선 1보다 크다).
+        let cur_long = size.max_elem().max(1.0);
+        self.view_ref_long = self.view_ref_long.max(cur_long);
+        let one_to_one = self.view_ref_long / cur_long;
         let min_zoom = fit_scale.min(1.0);
-        let max_zoom = 8.0_f32.max(fit_scale); // 최소 8x(작은 이미지도 확대 가능)
+        let max_zoom = (8.0 * one_to_one).max(fit_scale); // 기준 해상도로 8x(작은 이미지도 확대 가능)
 
         // #85: 넘어온 확대 상태를 이 사진에 복원한다. `mag`는 긴 변이 차지하는 화면 px이라
         // 해상도·방향에 불변이다 — 가로(1920x1280) → 세로(1280x1920)로 넘어가도 긴 변은 그대로
@@ -824,13 +835,20 @@ impl RawBlowApp {
         let restored = self.zoom_restore;
         if restored {
             if let Some((mag, pan_norm)) = self.keep_zoom {
-                let z = (mag / size.max_elem().max(1.0)).clamp(min_zoom, max_zoom);
+                let want = mag / cur_long;
+                let z = want.clamp(min_zoom, max_zoom);
                 if z <= fit_scale * 1.001 {
                     self.fit = true;
                     self.pan = Vec2::ZERO;
                 } else {
                     self.zoom = z;
                     self.pan = Vec2::new(pan_norm.x * size.x * z, pan_norm.y * size.y * z);
+                    // #48: 넘겨받은 배율이 지금 텍스처(보통 먼저 도착한 1920 프리뷰)에서 표현
+                    // 불가라 잘렸더라도 기준으로는 **잘리기 전 값**을 남긴다. 잘린 값을 기준으로
+                    // 삼으면 곧 도착할 ORIG에서도 되살아나지 못해 배율이 영구히 깎인다 —
+                    // 아래 D 토글 경로에서 없앤 것과 같은 함정이 이 이월 경로에도 있었다.
+                    self.view_mag.mag = Some(mag);
+                    self.view_mag.pin = ((z - want).abs() > 1e-4).then_some(z);
                 }
             }
             // 프리뷰(정식 해상도)가 도착했으면 복원 확정. 그 전까지는 썸네일 크기에 맞춘
@@ -841,18 +859,25 @@ impl RawBlowApp {
         }
 
         // #48: 같은 항목에서 표시 해상도가 바뀌면(ORIG 로드/언로드) 화면상 배율·보던 위치를 유지한다.
-        // zoom은 화면픽셀/이미지픽셀이라 해상도가 K배면 같은 zoom이 K배 확대로 보인다 → zoom을 1/K로
-        // 맞춰 scaled(=size*zoom, 화면상 크기)를 보존하면 pan(화면픽셀)도 그대로 들어맞는다.
-        // 긴 변 기준으로 비교해야 가로↔세로가 바뀌어도(같은 항목이라도 캐시된 옛 방향 →
-        // 새로 회전된 프리뷰) 종횡비만큼 배율이 튀지 않는다.
-        // 복원 프레임에서는 zoom을 절대값으로 방금 정했으므로 건너뛴다.
+        // 유지 기준은 zoom(=화면픽셀/**텍스처**픽셀 → 해상도가 K배면 같은 값이 K배 확대를 뜻함)이
+        // 아니라 **긴 변이 차지하는 화면 px**(view_mag)이다. 긴 변 기준이라 가로↔세로가 바뀌어도
+        // (캐시된 옛 방향 → 새로 회전된 프리뷰) 종횡비만큼 배율이 튀지 않고, scaled(=size*zoom,
+        // 화면상 크기)가 보존되므로 pan(화면픽셀)도 그대로 들어맞는다.
+        //
+        // 옛 구현은 zoom에 prev/cur 비율을 곱하고 매번 클램프해서, 한 번 상·하한에 잘리면 그 값이
+        // 새 기준이 되어 배율이 **영구히** 깎였다(#48 회귀). 이제 잘린 프레임에서는 view_mag를
+        // 덮지 않고 붙들어(`ViewMag::pin`) 두므로, ORIG에서 표현할 수 없는 배율(창보다 작은 프리뷰의
+        // 1:1 등)이면 그 프레임만 경계로 올라붙고 D로 되돌아오면 원래 배율이 살아난다.
+        // 복원 프레임(#85)에서는 zoom을 절대값으로 방금 정했으므로 건너뛴다.
         if !self.fit && !restored {
-            if let Some(prev) = self.last_view_size {
-                let (pl, sl) = (prev.max_elem(), size.max_elem());
-                if pl > 0.0 && sl > 0.0 && (pl - sl).abs() > 0.5 {
-                    self.zoom = (self.zoom * pl / sl).clamp(min_zoom, max_zoom);
-                }
-            }
+            self.zoom = sync_view_mag(
+                &mut self.view_mag,
+                self.zoom,
+                cur_long,
+                self.last_view_size.map(|prev| prev.max_elem()),
+                min_zoom,
+                max_zoom,
+            );
         }
         self.last_view_size = Some(size);
 
@@ -1137,9 +1162,11 @@ impl RawBlowApp {
                                 self.sel_anchor = Some(fi);
                             }
                             self.index = fi;
+                            self.keep_view_mode_on_move(); // 화살표 이동과 같은 규칙(#85/#87)
                         }
                         if resp.double_clicked() {
                             self.index = fi;
+                            self.keep_view_mode_on_move();
                             self.view = ViewMode::Single;
                         }
                     }

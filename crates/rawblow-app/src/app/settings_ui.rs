@@ -90,6 +90,26 @@ impl RawBlowApp {
                             self.set_sort_order(SortOrder::CaptureTime);
                         }
                     });
+                    // 사진 이동 시 원본 보기(ORIG) 유지 방식(#87). 기본은 기존 동작 —
+                    // 설정을 건드리지 않으면 v0.5.10과 같다.
+                    ui.horizontal(|ui| {
+                        ui.label(tr(lang, "사진 이동 시 원본 보기"));
+                        if ui
+                            .selectable_label(self.cfg.view_carry == ViewCarry::ZoomOnly, tr(lang, "확대 중일 때만 유지"))
+                            .clicked()
+                        {
+                            self.cfg.view_carry = ViewCarry::ZoomOnly;
+                            let _ = config::save(&self.cfg);
+                        }
+                        if ui
+                            .selectable_label(self.cfg.view_carry == ViewCarry::Keep, tr(lang, "현재 보기 상태 유지"))
+                            .clicked()
+                        {
+                            self.cfg.view_carry = ViewCarry::Keep;
+                            let _ = config::save(&self.cfg);
+                        }
+                    });
+                    ui.label(egui::RichText::new(tr(lang, "「현재 보기 상태 유지」는 창맞춤에서도 ORIG를 계속 불러옵니다 — 넘김이 느려지고 메모리를 더 씁니다. 새 폴더는 두 방식 모두 프리뷰로 시작합니다.")).font(mono(10.0)).color(INK_HELP));
                     // 언어 선택(#30): 시스템(자동)/한국어/English/日本語. 변경 즉시 적용·저장.
                     ui.horizontal(|ui| {
                         ui.label(tr(lang, "언어"));

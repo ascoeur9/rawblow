@@ -78,6 +78,55 @@ pub(super) fn af_focus_center(af: &rawblow_core::af::AfInfo, orient: u16) -> Opt
         .or_else(|| avg(af, orient, |_| true))
 }
 
+// ── 화면상 배율 유지(#48) ──────────────────────────────────
+/// 같은 사진에서 표시 해상도가 바뀔 때(ORIG 로드/언로드) 화면상 배율을 유지하기 위한 상태.
+///
+/// `zoom`은 화면픽셀/**텍스처**픽셀이라 해상도가 바뀌면 같은 값이 다른 배율을 뜻한다
+/// (프리뷰 1920에서의 1.0과 ORIG 8192에서의 1.0은 4배 이상 차이). 그래서 해상도·방향에
+/// 불변인 **긴 변이 차지하는 화면 px**(`mag`)을 기준으로 삼는다.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct ViewMag {
+    /// 유지하려는 화면상 긴 변 px. 창맞춤이 아닌 상태에서만 의미가 있다.
+    pub mag: Option<f32>,
+    /// 상·하한에 걸려 `mag`를 재현하지 못한 프레임에서 실제로 쓴 `zoom`.
+    /// 이 값에서 `zoom`이 움직이면 사용자가 직접 조작한 것으로 보고 붙들기를 해제한다.
+    pub pin: Option<f32>,
+}
+
+/// 이번 프레임에 쓸 `zoom`을 돌려주고 `st`를 다음 프레임 기준으로 옮긴다(#48).
+///
+/// - 표시 해상도가 바뀐 프레임이면 `mag`를 재현한다 — 이때 경계에 잘려도 **`mag`는 덮지 않고**
+///   붙들어 둔다. 잘린 값을 기준으로 되쓰면 배율이 영구히 깎이기 때문(#48 회귀의 원인).
+/// - 해상도가 그대로인 프레임의 `zoom`은 사용자가 보고 있는 값이므로 그것을 새 기준으로 삼는다.
+/// - `last_long`이 `None`이면 이 항목의 첫 프레임(비교 대상 없음).
+pub(super) fn sync_view_mag(
+    st: &mut ViewMag,
+    zoom: f32,
+    cur_long: f32,
+    last_long: Option<f32>,
+    min_zoom: f32,
+    max_zoom: f32,
+) -> f32 {
+    let size_changed = last_long.is_some_and(|prev| (prev - cur_long).abs() > 0.5);
+    let pinned = st.pin.is_some_and(|z| (zoom - z).abs() <= 1e-4);
+    if !pinned {
+        st.pin = None;
+    }
+    match st.mag {
+        Some(mag) if size_changed => {
+            let want = mag / cur_long.max(1.0);
+            let z = want.clamp(min_zoom, max_zoom);
+            st.pin = ((z - want).abs() > 1e-4).then_some(z);
+            z
+        }
+        _ if !pinned => {
+            st.mag = Some(cur_long * zoom);
+            zoom
+        }
+        _ => zoom,
+    }
+}
+
 /// `#rrggbb` 또는 `rrggbb`(공백 허용) → [r,g,b](#36). 형식이 아니면 None.
 pub(super) fn parse_hex_rgb(s: &str) -> Option<[u8; 3]> {
     let h = s.trim().trim_start_matches('#');
@@ -380,9 +429,172 @@ pub(super) fn reveal_in_file_manager(path: &std::path::Path) {
 mod tests {
     use super::{
         af_display_coords, af_focus_center, compute_histo, exif_lines, fmt_bytes,
-        format_capture_datetime, hex_str, parse_hex_rgb, ExifInfo,
+        format_capture_datetime, hex_str, parse_hex_rgb, sync_view_mag, ExifInfo, ViewMag,
     };
     use rawblow_core::af::{AfInfo, AfPoint};
+
+    // ── #48: 프리뷰↔ORIG 전환 시 화면상 배율 유지 ──────────────
+    //
+    // photo_view의 프레임 한 컷을 재현하는 하니스. GPU 없이 D 토글 시퀀스를 그대로 돌린다.
+    // 실제 상수: PREVIEW_EDGE=1920, ORIG_EDGE=8192. 사진 영역은 photo_view와 같이 -32 인셋.
+    struct Sim {
+        zoom: f32,
+        fit: bool,
+        st: ViewMag,
+        last_long: Option<f32>,
+        ref_long: f32,
+        area: (f32, f32),
+    }
+
+    impl Sim {
+        fn new(area: (f32, f32)) -> Self {
+            Sim { zoom: 1.0, fit: true, st: ViewMag::default(), last_long: None, ref_long: 0.0, area }
+        }
+
+        /// 텍스처 크기 `size`로 한 프레임 그린다. 반환값 = 화면상 긴 변 px.
+        fn frame(&mut self, size: (f32, f32)) -> f32 {
+            let avail = ((self.area.0 - 32.0).max(1.0), (self.area.1 - 32.0).max(1.0));
+            let fit_scale = (avail.0 / size.0).min(avail.1 / size.1);
+            if self.fit {
+                self.zoom = fit_scale;
+            }
+            let cur_long = size.0.max(size.1).max(1.0);
+            self.ref_long = self.ref_long.max(cur_long);
+            let one_to_one = self.ref_long / cur_long;
+            let min_zoom = fit_scale.min(1.0);
+            let max_zoom = (8.0 * one_to_one).max(fit_scale);
+            if !self.fit {
+                self.zoom =
+                    sync_view_mag(&mut self.st, self.zoom, cur_long, self.last_long, min_zoom, max_zoom);
+            }
+            self.last_long = Some(cur_long);
+            cur_long * self.zoom
+        }
+
+        /// 사진 클릭: 창맞춤 ↔ 1:1 (views.rs의 클릭 처리와 동일).
+        fn click(&mut self) {
+            if self.fit {
+                self.fit = false;
+                self.zoom = 1.0;
+            } else {
+                self.fit = true;
+            }
+        }
+
+        /// Ctrl+휠/핀치로 `target` 배율까지(경계 클램프 + 창맞춤 재판정까지 동일).
+        fn wheel_to(&mut self, target: f32, size: (f32, f32)) {
+            let avail = ((self.area.0 - 32.0).max(1.0), (self.area.1 - 32.0).max(1.0));
+            let fit_scale = (avail.0 / size.0).min(avail.1 / size.1);
+            let cur_long = size.0.max(size.1).max(1.0);
+            let one_to_one = self.ref_long.max(cur_long) / cur_long;
+            let nz = target.clamp(fit_scale.min(1.0), (8.0 * one_to_one).max(fit_scale));
+            self.zoom = nz;
+            self.fit = nz <= fit_scale * 1.001;
+        }
+    }
+
+    /// 1440p 창의 사진 영역. D850 프리뷰(1920 긴 변)와 ORIG(8192로 클램프).
+    const AREA: (f32, f32) = (1400.0, 900.0);
+    const PREV: (f32, f32) = (1920.0, 1280.0);
+    const ORIG: (f32, f32) = (8192.0, 5461.0);
+
+    fn approx(a: f32, b: f32, what: &str) {
+        assert!((a - b).abs() <= b.abs() * 0.005 + 0.5, "{what}: got {a}, want {b}");
+    }
+
+    #[test]
+    fn view_mag_survives_orig_toggle_at_one_to_one() {
+        // 프리뷰에서 1:1로 확대한 뒤 D로 ORIG↔프리뷰를 왕복해도 화면상 배율이 그대로여야 한다.
+        let mut s = Sim::new(AREA);
+        s.frame(PREV); // 창맞춤
+        s.click(); // 1:1
+        let base = s.frame(PREV);
+        approx(base, 1920.0, "프리뷰 1:1");
+        approx(s.frame(ORIG), base, "D → ORIG");
+        approx(s.frame(PREV), base, "D → 프리뷰");
+        approx(s.frame(ORIG), base, "D → ORIG 재확인");
+    }
+
+    #[test]
+    fn view_mag_survives_orig_toggle_at_high_zoom() {
+        // #48 회귀의 핵심: ORIG에서 크게 확대(픽셀 확인)한 뒤 D를 누르면 배율이 줄어들고
+        // 다시 D를 눌러도 원래 배율이 돌아오지 않았다. 상한이 현재 텍스처(8x 프리뷰픽셀)
+        // 기준이라 ORIG의 약 1.9배 이상은 프리뷰에서 표현조차 못 했기 때문.
+        for target in [1.0_f32, 1.875, 2.0, 4.0, 8.0] {
+            let mut s = Sim::new(AREA);
+            s.frame(PREV);
+            s.frame(ORIG); // 창맞춤 상태로 ORIG 로드
+            s.wheel_to(target, ORIG);
+            let base = s.frame(ORIG);
+            approx(base, ORIG.0 * target, &format!("ORIG {target}x"));
+            approx(s.frame(PREV), base, &format!("ORIG {target}x → 프리뷰"));
+            approx(s.frame(ORIG), base, &format!("ORIG {target}x → 프리뷰 → ORIG"));
+        }
+    }
+
+    #[test]
+    fn view_mag_is_not_destroyed_when_clamped() {
+        // 사진 영역이 프리뷰 긴 변보다 넓으면(4K/5K) 프리뷰의 1:1이 창맞춤보다 **작다**.
+        // ORIG에는 그만큼 작은 배율이 없어 창맞춤으로 올라붙는데, 그 잘린 값이 기준이 되면
+        // 배율이 영구히 깎인다. 원래 배율은 붙들어 두고 되돌아올 때 살려야 한다.
+        let mut s = Sim::new((3000.0, 1600.0));
+        s.frame(PREV);
+        s.click(); // 1:1 = 1920px (창맞춤 2352px보다 작다)
+        let base = s.frame(PREV);
+        approx(base, 1920.0, "프리뷰 1:1");
+        let at_orig = s.frame(ORIG);
+        assert!(at_orig > base, "ORIG에는 더 작은 배율이 없어 창맞춤으로 올라붙는다: {at_orig}");
+        approx(s.frame(PREV), base, "프리뷰로 되돌아오면 원래 배율 복구");
+    }
+
+    #[test]
+    fn view_mag_follows_user_zoom_after_a_clamped_frame() {
+        // 경계에 걸려 붙들어 둔 상태에서도 사용자가 직접 확대하면 그 값이 새 기준이 되어야 한다
+        // (붙들기가 사용자 조작을 되돌려버리면 확대가 먹지 않는 버그가 된다).
+        let mut s = Sim::new((3000.0, 1600.0));
+        s.frame(PREV);
+        s.click();
+        s.frame(PREV);
+        s.frame(ORIG); // 여기서 클램프 → 붙들기 발생
+        s.wheel_to(1.0, ORIG); // 사용자가 ORIG 1:1로 확대
+        let base = s.frame(ORIG);
+        approx(base, ORIG.0, "ORIG 1:1");
+        approx(s.frame(PREV), base, "그 뒤 D → 프리뷰도 사용자 배율을 따른다");
+    }
+
+    #[test]
+    fn view_mag_keeps_screen_size_when_orientation_differs() {
+        // 같은 항목의 캐시된 옛 방향 텍스처 → 새로 회전된 텍스처처럼 종횡비가 뒤집혀도
+        // 긴 변 기준이라 배율이 종횡비만큼 튀지 않는다.
+        let mut s = Sim::new(AREA);
+        s.frame((1280.0, 1920.0));
+        s.click();
+        let base = s.frame((1280.0, 1920.0));
+        approx(s.frame((1920.0, 1280.0)), base, "세로 → 가로 텍스처");
+    }
+
+    #[test]
+    fn view_mag_recovers_after_a_clamped_carry() {
+        // #85로 이월된 배율(ORIG에서 2.5배 = 20480px)은 먼저 도착하는 1920 프리뷰에서 표현할 수
+        // 없어 상한(8x)에 잘린다. 그래도 기준은 잘리기 전 값이라 ORIG가 도착하면 되살아나야 한다
+        // — 잘린 값을 기준으로 삼으면 그 사진부터 배율이 영구히 깎인다.
+        let mut st = ViewMag { mag: Some(20480.0), pin: Some(8.0) };
+        let z = sync_view_mag(&mut st, 8.0, 1920.0, Some(1920.0), 0.1, 8.0);
+        approx(z, 8.0, "붙들린 프리뷰 프레임의 배율");
+        assert_eq!(st.mag, Some(20480.0), "잘린 값이 기준을 덮으면 안 된다");
+        let z = sync_view_mag(&mut st, 8.0, 8192.0, Some(1920.0), 0.05, 8.0);
+        approx(z * 8192.0, 20480.0, "ORIG 도착 → 이월 배율 복구");
+    }
+
+    #[test]
+    fn view_mag_ignores_fit_frames() {
+        // 창맞춤에서는 배율이 fit_scale에서 다시 나오므로 유지 대상이 아니다 — ORIG를 물려도
+        // 창맞춤 크기 그대로여야 한다(창맞춤은 해상도와 무관하게 같은 화면 크기).
+        let mut s = Sim::new(AREA);
+        let base = s.frame(PREV);
+        approx(s.frame(ORIG), base, "창맞춤은 해상도가 바뀌어도 같은 화면 크기");
+        assert!(s.st.mag.is_none(), "창맞춤 프레임은 배율을 기록하지 않는다");
+    }
 
     /// 4-튜플 근사 비교(부동소수 오차 허용). 1-0.1 같은 뺄셈은 이진분수로 정확하지 않아
     /// epsilon 비교가 필요하다(0.25/0.75는 정확하지만 일괄로 근사 비교).

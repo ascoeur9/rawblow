@@ -441,6 +441,30 @@ impl Default for KeyMap {
     }
 }
 
+/// 폴더별로 마지막에 보고 있던 사진(#86). 같은 폴더를 다시 열면 그 사진에서 재개한다.
+///
+/// 배열 인덱스가 아니라 **대표 파일의 전체 경로**를 저장한다 — 파일이 추가·삭제되거나
+/// 정렬 기준이 바뀌어도 같은 사진을 다시 집을 수 있고, 하위 폴더 포함 스캔에서 이름이
+/// 겹치는 파일도 구분된다. 저장된 파일이 사라지면 호출부가 첫 사진으로 폴백한다.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct FolderResume {
+    /// 폴더 경로(문자열).
+    pub folder: String,
+    /// 그 폴더에서 마지막으로 보던 항목의 대표 파일 전체 경로.
+    pub file: String,
+}
+
+/// 사진을 넘길 때 원본 보기(ORIG) 상태를 이어가는 방식(#87). 사용자마다 빠른 탐색과
+/// 원본 연속 확인 중 선호가 갈려 설정에서 고른다.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ViewCarry {
+    /// 기존 동작(#85 규칙, 기본값): 확대 중이면 ORIG를 유지하고, 창맞춤 상태면 프리뷰로 복귀한다.
+    #[default]
+    ZoomOnly,
+    /// 현재 보기 상태를 그대로 유지: ORIG면 다음 사진도 ORIG, 프리뷰면 계속 프리뷰.
+    Keep,
+}
+
 /// 전송(내보내기) 리네임 프리셋(#26 UI, #57 저장). Off=원본 이름 유지.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum RenameMode {
@@ -562,6 +586,13 @@ pub struct Config {
     /// 폴더 자동 분류 다이얼로그 마지막 사용 옵션(#57).
     #[serde(default)]
     pub organize_defaults: OrganizeDefaults,
+    /// 사진 이동 시 원본 보기(ORIG) 유지 방식(#87). 기본은 기존 동작(`ZoomOnly`)이라
+    /// 설정을 건드리지 않은 사용자의 체감은 v0.5.10과 같다.
+    #[serde(default)]
+    pub view_carry: ViewCarry,
+    /// 폴더별 마지막으로 보던 사진(#86). 최근 사용 순(맨 앞이 가장 최근), 최대 64개.
+    #[serde(default)]
+    pub folder_resume: Vec<FolderResume>,
 }
 
 impl Default for Config {
@@ -588,6 +619,8 @@ impl Default for Config {
             sort: crate::model::SortOrder::default(), // 촬영시간순이 기본(#56 코멘트).
             transfer_defaults: TransferDefaults::default(), // 전송 마지막 사용 옵션(#57).
             organize_defaults: OrganizeDefaults::default(), // 정리 마지막 사용 옵션(#57).
+            view_carry: ViewCarry::default(), // 이동 시 ORIG 유지 방식(#87). 기본=기존 동작.
+            folder_resume: Vec::new(),        // 폴더별 재개 위치(#86). 처음엔 비어 있음.
         }
     }
 }
@@ -609,6 +642,28 @@ impl Config {
         self.recent_folders.insert(0, folder.to_string());
         self.recent_folders.truncate(12);
         self.last_folder = Some(folder.to_string());
+    }
+
+    /// 폴더의 재개 위치를 기록한다(#86). 최근 것이 맨 앞으로 오고 64개를 넘으면 오래된
+    /// 폴더부터 버린다(`recent_folders`와 같은 LRU 방식 — 오래 쓴 앱에서 무한히 자라지 않게).
+    pub fn set_folder_resume(&mut self, folder: &str, file: &str) {
+        self.folder_resume.retain(|r| r.folder != folder);
+        self.folder_resume.insert(
+            0,
+            FolderResume {
+                folder: folder.to_string(),
+                file: file.to_string(),
+            },
+        );
+        self.folder_resume.truncate(64);
+    }
+
+    /// 폴더에 기록된 재개 위치(대표 파일 전체 경로). 없으면 `None` → 호출부는 첫 사진에서 시작.
+    pub fn folder_resume_file(&self, folder: &str) -> Option<&str> {
+        self.folder_resume
+            .iter()
+            .find(|r| r.folder == folder)
+            .map(|r| r.file.as_str())
     }
 }
 
@@ -818,6 +873,40 @@ mod tests {
         assert_eq!(legacy.transfer_defaults.action, crate::transfer::Action::Copy);
         assert!(legacy.transfer_defaults.scope_all); // 누락 필드는 기본 전체(#68)
         assert_eq!(legacy.organize_defaults.action, crate::transfer::Action::Move); // 정리는 이동 기본(#34)
+    }
+
+    #[test]
+    fn folder_resume_keeps_each_folder_separately() {
+        // 폴더 A와 B가 서로 다른 마지막 위치를 각각 기억한다(#86 완료 기준).
+        let mut c = Config::default();
+        assert_eq!(c.folder_resume_file("/photos/A"), None, "새 폴더는 기록 없음 → 첫 사진");
+        c.set_folder_resume("/photos/A", "/photos/A/DSC_0100.NEF");
+        c.set_folder_resume("/photos/B", "/photos/B/DSC_0200.NEF");
+        assert_eq!(c.folder_resume_file("/photos/A"), Some("/photos/A/DSC_0100.NEF"));
+        assert_eq!(c.folder_resume_file("/photos/B"), Some("/photos/B/DSC_0200.NEF"));
+        // 같은 폴더를 다시 기록하면 덮어쓰고 맨 앞으로(중복 누적 금지).
+        c.set_folder_resume("/photos/A", "/photos/A/DSC_0999.NEF");
+        assert_eq!(c.folder_resume_file("/photos/A"), Some("/photos/A/DSC_0999.NEF"));
+        assert_eq!(c.folder_resume.len(), 2);
+        assert_eq!(c.folder_resume[0].folder, "/photos/A");
+    }
+
+    #[test]
+    fn folder_resume_evicts_oldest_beyond_cap() {
+        // 오래 쓴 앱에서 설정 파일이 무한히 자라지 않도록 64개에서 잘린다(#86).
+        let mut c = Config::default();
+        for i in 0..70 {
+            c.set_folder_resume(&format!("/photos/{i}"), &format!("/photos/{i}/x.NEF"));
+        }
+        assert_eq!(c.folder_resume.len(), 64);
+        assert_eq!(c.folder_resume_file("/photos/69"), Some("/photos/69/x.NEF"), "가장 최근은 남음");
+        assert_eq!(c.folder_resume_file("/photos/0"), None, "가장 오래된 것부터 버려짐");
+    }
+
+    #[test]
+    fn view_carry_defaults_to_existing_behavior() {
+        // #87: 설정을 건드리지 않은 기존 사용자는 v0.5.10과 같은 동작(ZoomOnly)이어야 한다.
+        assert_eq!(Config::default().view_carry, ViewCarry::ZoomOnly);
     }
 
     #[test]

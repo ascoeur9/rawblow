@@ -71,6 +71,7 @@ impl RawBlowApp {
                 match q.parse::<usize>() {
                     Ok(n) if n >= 1 && n <= total => {
                         self.index = n - 1;
+                        self.keep_view_mode_on_move(); // 화살표 이동과 같은 규칙(#85/#87)
                         close = true;
                     }
                     _ => {
@@ -87,6 +88,7 @@ impl RawBlowApp {
                     let f = self.filtered();
                     if let Some(pos) = f.iter().position(|&r| r == first) {
                         self.index = pos;
+                        self.keep_view_mode_on_move(); // 화살표 이동과 같은 규칙(#85/#87)
                     }
                     self.toast_info(trf(lang, "{} 건 매칭 — 첫 항목으로", &[&hits.len().to_string()]));
                     close = true;
