@@ -154,7 +154,12 @@ pub struct RawBlowApp {
     zoom: f32,          // 절대 배율(화면픽셀/이미지픽셀). 1.0 = 1:1
     pan: Vec2,          // 중앙 기준 이동(화면 px)
     zoom_for: Option<usize>, // 줌 상태가 적용된 항목(real). 바뀌면 keep_zoom을 복원하거나 fit으로 리셋
-    last_view_size: Option<Vec2>, // #48: 마지막으로 표시한 텍스처 크기(px). 같은 항목에서 해상도가 바뀌면(ORIG 토글) 화면상 배율을 유지.
+    last_view_size: Option<Vec2>, // #48: 마지막으로 표시한 텍스처 크기(px). 이것과 달라지면 같은 항목에서 해상도가 바뀐 프레임(ORIG 토글).
+    /// #48: 표시 해상도가 바뀌어도(ORIG 로드/언로드) 유지할 화면상 배율(`ViewMag` 참조).
+    view_mag: ViewMag,
+    /// #48: 이 항목에서 본 텍스처 중 가장 긴 변(px). 확대 상한을 현재 텍스처가 아니라 이
+    /// 기준으로 잡아야 프리뷰와 ORIG에서 같은 화면상 배율 범위가 나온다. 항목이 바뀌면 0.
+    view_ref_long: f32,
     af_zoom_pending: bool,   // #49: 다음 1:1 확대를 AF 측거점 중심에 맞추라는 요청.
     /// #85: 사진을 넘겨도 이어받을 확대 상태. `zoom`/`pan`을 그대로 물려주면 안 된다 —
     /// `zoom`은 화면px/**텍스처**px이고 텍스처는 이미 회전·다운스케일된 것이라, 해상도나
@@ -360,6 +365,8 @@ impl RawBlowApp {
             pan: Vec2::ZERO,
             zoom_for: None,
             last_view_size: None,
+            view_mag: ViewMag::default(),
+            view_ref_long: 0.0,
             af_zoom_pending: false,
             keep_zoom: None,
             zoom_restore: false,
