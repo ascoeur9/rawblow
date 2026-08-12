@@ -63,17 +63,24 @@ impl RawBlowApp {
             // 파서가 패닉해도(손상 파일 등) 결과를 보내 inflight 고착을 막는다.
             let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let exif = need_exif.then(|| read_exif(&path));
+                // 표시 배율의 기준이 되는 원본 크기(#48). EXIF와 같은 시점에 한 번만 구한다 —
+                // IFD + 블롭당 64KB head probe라 EXIF 읽기와 비슷한 비용이고, 여기서 얻어 두면
+                // 텍스처가 프리뷰↔ORIG로 바뀌어도 기준이 흔들리지 않는다.
+                let orig_long = need_exif.then(|| rawblow_core::decode::orig_long_edge(&path));
                 let af = need_af.then(|| {
                     (
                         rawblow_core::af::parse_af(&path),
                         rawblow_core::meta::orientation(&path),
                     )
                 });
-                (exif, af)
+                (exif, orig_long, af)
             }));
-            let (exif, af) =
-                parsed.unwrap_or((need_exif.then_some(None), need_af.then_some((None, 1))));
-            let _ = tx.send(MetaResult { generation, real, exif, af });
+            let (exif, orig_long, af) = parsed.unwrap_or((
+                need_exif.then_some(None),
+                need_exif.then_some(None),
+                need_af.then_some((None, 1)),
+            ));
+            let _ = tx.send(MetaResult { generation, real, exif, orig_long, af });
         });
         // 워커 스레드는 egui를 못 깨우므로 결과 수신을 짧은 리페인트로 폴링.
         ctx.request_repaint_after(Duration::from_millis(80));
@@ -90,6 +97,9 @@ impl RawBlowApp {
                 if let Some(exif) = res.exif {
                     it.exif = exif;
                     it.exif_loaded = true;
+                }
+                if let Some(orig_long) = res.orig_long {
+                    it.orig_long = orig_long;
                 }
                 if let Some((af, orient)) = res.af {
                     it.af = af;

@@ -28,6 +28,18 @@ fn main() {
             }
             Err(e) => format!("ERR {e}"),
         };
-        println!("{name}\n  preview: {}\n  ORIG:    {}", dim(&prev), dim(&orig));
+        // 표시 배율(100%=실측 1:1)의 기준(#48). EXIF width/height와 갈리는 바디(NEF 등)를
+        // 잡아내려고 둘 다 찍는다 — ref가 EXIF보다 크면 EXIF가 썸네일 크기라는 뜻.
+        let ref_long = rawblow_core::decode::orig_long_edge(p);
+        let exif_long = rawblow_core::meta::read_exif(p)
+            .and_then(|e| e.display_size())
+            .map(|(w, h)| w.max(h));
+        println!(
+            "{name}\n  preview: {}\n  ORIG:    {}\n  ref(#48): {:?}   exif: {:?}",
+            dim(&prev),
+            dim(&orig),
+            ref_long,
+            exif_long
+        );
     }
 }

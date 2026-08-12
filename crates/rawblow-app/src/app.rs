@@ -87,6 +87,10 @@ struct Item {
     af_loaded: bool,
     /// EXIF Orientation(1..8). AF 좌표(센서 기준)를 표시 좌표로 돌릴 때 필요.
     orient: Option<u16>,
+    /// 원본 긴 변 px(#48) — 표시 배율 100%(실측 1:1)의 기준. EXIF와 **따로** 두는 이유는
+    /// NEF처럼 EXIF width/height가 축소 썸네일(160x120)인 바디가 있어서다.
+    /// EXIF와 같은 백그라운드 패스에서 한 번만 구한다([`rawblow_core::decode::orig_long_edge`]).
+    orig_long: Option<u32>,
 }
 
 /// 우하단 토스트(#61) 심각도. 지속시간이 다르다: 정보는 짧게, 알림은 조금 길게, 오류는
@@ -312,6 +316,8 @@ struct MetaResult {
     real: usize,
     exif: Option<Option<ExifInfo>>, // 바깥 Option=이번에 읽었는지, 안쪽=파일에 있었는지
     af: Option<(Option<rawblow_core::af::AfInfo>, u16)>, // (AF, orientation)
+    /// 원본 긴 변 px(#48). EXIF와 같은 요청에서 함께 구한다. 바깥 Option=이번에 읽었는지.
+    orig_long: Option<Option<u32>>,
 }
 
 /// GPS 미니 지도(#38) 패널 상태. (항목, 줌)당 하나 — 바뀌면 새로 만든다.
@@ -511,6 +517,7 @@ impl RawBlowApp {
                 af: None,
                 af_loaded: false,
                 orient: None,
+                orig_long: None,
             })
             .collect();
 
@@ -761,22 +768,36 @@ impl RawBlowApp {
         self.filtered().iter().position(|&r| r == real).unwrap_or(0)
     }
 
-    /// 원본 이미지의 긴 변 픽셀 수(#48). 화면에 보이는 텍스처는 프리뷰(1920)·ORIG(8192)로
+    /// 원본 이미지의 긴 변 픽셀 수(#48). 화면에 보이는 텍스처는 프리뷰(1600)·ORIG(8192)로
     /// 계속 바뀌지만 이 값은 사진 자체의 크기라 불변이다 — 사용자에게 보여줄 배율의 기준.
     ///
-    /// EXIF 실측 크기를 쓰되 지금까지 본 텍스처(`view_ref_long`)와 큰 쪽을 택한다. 일부 RAW는
-    /// EXIF에 임베디드 프리뷰 크기가 들어와 실제보다 작게 나오는데, 그걸 그대로 믿으면 ORIG가
-    /// 도착하는 순간 기준이 커지면서 표시 배율이 튀기 때문. 둘 다 없으면 None(배율 미표시).
+    /// 기준은 **`orig_long`(임베디드 최대 해상도 실측, [`rawblow_core::decode::orig_long_edge`])**이
+    /// 우선이다. EXIF를 먼저 믿으면 안 된다 — 니콘 NEF는 IFD0이 160x120 썸네일이라 EXIF가
+    /// 160을 준다(D850 실측). 그러면 기준이 `view_ref_long`으로 떨어지고, 그 값이 프리뷰(1600)
+    /// → ORIG(8192)로 자라면서 표시 배율이 100%→23%로 튄다 — #48로 신고된 증상 그 자체다.
+    ///
+    /// 세 후보의 **최댓값**을 쓰는 이유는 안전판이다: 임베디드가 없어 ORIG를 풀 RAW 현상으로
+    /// 푸는 바디는 실제 텍스처가 `orig_long`보다 클 수 있는데, 그때도 기준이 텍스처보다 작아
+    /// 배율이 100%를 넘어 보이는 일이 없게 한다. 셋 다 없으면 None(배율 미표시).
     fn ref_long_px(&self, real: usize) -> Option<f32> {
-        let exif = self
-            .items
-            .get(real)
+        let it = self.items.get(real);
+        let orig = it.and_then(|it| it.orig_long).unwrap_or(0) as f32;
+        let exif = it
             .and_then(|it| it.exif.as_ref())
             .and_then(|e| e.display_size())
             .map(|(w, h)| w.max(h) as f32)
             .unwrap_or(0.0);
-        let r = exif.max(self.view_ref_long);
+        let r = orig.max(exif).max(self.view_ref_long);
         (r > 0.0).then_some(r)
+    }
+
+    /// 표시 배율의 기준이 확정됐는지(#48). 실측(`orig_long`)이 있거나, 메타 읽기가 끝나
+    /// 더 나올 것이 없으면 확정이다. 확정 전에는 `view_ref_long`이 아직 자랄 수 있어
+    /// 실측 1:1을 계산하면 안 된다(계산해 두면 그 잘못된 기준이 그대로 굳는다).
+    fn ref_long_settled(&self, real: usize) -> bool {
+        self.items
+            .get(real)
+            .is_some_and(|it| it.orig_long.is_some() || it.exif_loaded)
     }
 
     /// 사용자에게 보여줄 배율(#48) — [`display_zoom_ratio`] 참조. 표시할 텍스처가 아직 없으면 None.

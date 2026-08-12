@@ -452,13 +452,37 @@ mod tests {
         fit: bool,
         st: ViewMag,
         last_long: Option<f32>,
-        ref_long: f32,
+        /// `view_ref_long`: 이 항목에서 지금까지 본 텍스처 중 가장 긴 변.
+        seen_long: f32,
+        /// `Item::orig_long`: 원본 긴 변 실측(`decode::orig_long_edge`). 백그라운드 메타가
+        /// 채우기 전에는 None — 그동안은 `seen_long`으로 폴백한다(app.rs::ref_long_px와 동일).
+        orig: Option<f32>,
         area: (f32, f32),
     }
 
     impl Sim {
         fn new(area: (f32, f32)) -> Self {
-            Sim { zoom: 1.0, fit: true, st: ViewMag::default(), last_long: None, ref_long: 0.0, area }
+            Sim {
+                zoom: 1.0,
+                fit: true,
+                st: ViewMag::default(),
+                last_long: None,
+                seen_long: 0.0,
+                orig: None,
+                area,
+            }
+        }
+
+        /// 원본 실측 크기가 이미 도착한 상태로 만든다(#48). 실제로는 EXIF와 같은 백그라운드
+        /// 패스가 채운다. EXIF가 못 믿을 바디(NEF: IFD0이 160x120 썸네일)에서도 이 값은 정확하다.
+        fn with_orig(mut self, orig: f32) -> Self {
+            self.orig = Some(orig);
+            self
+        }
+
+        /// app.rs::ref_long_px와 같은 식 — 실측과 본 텍스처의 최댓값.
+        fn ref_long(&self) -> f32 {
+            self.orig.unwrap_or(0.0).max(self.seen_long)
         }
 
         /// 텍스처 크기 `size`로 한 프레임 그린다. 반환값 = 화면상 긴 변 px.
@@ -469,8 +493,8 @@ mod tests {
                 self.zoom = fit_scale;
             }
             let cur_long = size.0.max(size.1).max(1.0);
-            self.ref_long = self.ref_long.max(cur_long);
-            let one_to_one = self.ref_long / cur_long;
+            self.seen_long = self.seen_long.max(cur_long);
+            let one_to_one = (self.ref_long() / cur_long).max(1.0);
             let min_zoom = fit_scale.min(1.0);
             let max_zoom = (8.0 * one_to_one).max(fit_scale);
             if !self.fit {
@@ -479,6 +503,12 @@ mod tests {
             }
             self.last_long = Some(cur_long);
             cur_long * self.zoom
+        }
+
+        /// 상태바에 찍히는 표시 배율(1.0 = 실측 1:1). views.rs의 zoom_pct와 같은 식.
+        fn shown(&self) -> f32 {
+            let cur_long = self.last_long.unwrap_or(0.0);
+            display_zoom_ratio(self.zoom, cur_long, self.ref_long()).unwrap_or(0.0)
         }
 
         /// 사진 클릭: 창맞춤 ↔ 1:1 (views.rs의 클릭 처리와 동일).
@@ -491,13 +521,15 @@ mod tests {
             }
         }
 
-        /// 실측 1:1 요청(#48): 원본 긴 변(`ref_long`)이 화면 긴 변 px가 되도록 맞춘다.
-        /// 아직 프리뷰뿐이라 상한에 걸려도 기준에는 잘리기 전 목표를 남긴다.
-        fn one_to_one(&mut self, ref_long: f32, size: (f32, f32)) {
+        /// 실측 1:1 요청(#48): 원본 긴 변이 화면 긴 변 px가 되도록 맞춘다. 기준은 `ref_long()` —
+        /// 실측이 있으면 그것, 없으면 본 텍스처. 아직 프리뷰뿐이라 상한에 걸려도 기준에는
+        /// 잘리기 전 목표를 남긴다(그래야 ORIG 도착 시 제 배율이 나온다).
+        fn one_to_one(&mut self, size: (f32, f32)) {
             let avail = ((self.area.0 - 32.0).max(1.0), (self.area.1 - 32.0).max(1.0));
             let fit_scale = (avail.0 / size.0).min(avail.1 / size.1);
             let cur_long = size.0.max(size.1).max(1.0);
-            let one = self.ref_long.max(cur_long) / cur_long;
+            let ref_long = self.ref_long().max(cur_long);
+            let one = (ref_long / cur_long).max(1.0);
             let want = ref_long / cur_long;
             let z = want.clamp(fit_scale.min(1.0), (8.0 * one).max(fit_scale));
             self.fit = false;
@@ -511,7 +543,7 @@ mod tests {
             let avail = ((self.area.0 - 32.0).max(1.0), (self.area.1 - 32.0).max(1.0));
             let fit_scale = (avail.0 / size.0).min(avail.1 / size.1);
             let cur_long = size.0.max(size.1).max(1.0);
-            let one_to_one = self.ref_long.max(cur_long) / cur_long;
+            let one_to_one = (self.ref_long().max(cur_long) / cur_long).max(1.0);
             let nz = target.clamp(fit_scale.min(1.0), (8.0 * one_to_one).max(fit_scale));
             self.zoom = nz;
             self.fit = nz <= fit_scale * 1.001;
@@ -598,20 +630,21 @@ mod tests {
         approx(s.frame((1920.0, 1280.0)), base, "세로 → 가로 텍스처");
     }
 
-    /// D850 EXIF 실측 긴 변. 표시 배율(원본 픽셀 대비)의 기준값.
+    /// D850 원본 긴 변(8256). `decode::orig_long_edge`가 임베디드 최대 해상도에서 읽어 오는 값 —
+    /// 이 바디의 EXIF는 160x120(IFD0 축소 썸네일)이라 EXIF로는 절대 못 얻는다.
     const ORIG_LONG: f32 = 8256.0;
 
     #[test]
     fn display_zoom_is_stable_across_orig_toggle() {
         // #48 신고의 실제 정체: 사진 크기는 그대로인데 상태바 숫자만 100%→23%로 튀었다.
         // 표시 배율은 `화면상 긴 변 / 원본 긴 변`이라 텍스처가 바뀌어도 값이 같아야 한다.
-        let mut s = Sim::new(AREA);
+        let mut s = Sim::new(AREA).with_orig(ORIG_LONG);
         s.frame(PREV);
         s.click();
         s.frame(PREV);
-        let (zoom_prev, base) = (s.zoom, display_zoom_ratio(s.zoom, PREV.0, ORIG_LONG).unwrap());
+        let (zoom_prev, base) = (s.zoom, s.shown());
         s.frame(ORIG);
-        approx(display_zoom_ratio(s.zoom, ORIG.0, ORIG_LONG).unwrap(), base, "D → ORIG 표시 배율");
+        approx(s.shown(), base, "D → ORIG 표시 배율");
         // 옛 표시식(zoom을 그대로 %로)이 왜 안 되는지 못박는다: 같은 화면 크기인데 4배 넘게 튄다.
         let jump = (zoom_prev / s.zoom).max(s.zoom / zoom_prev);
         assert!(
@@ -620,19 +653,65 @@ mod tests {
             s.zoom
         );
         s.frame(PREV);
-        approx(display_zoom_ratio(s.zoom, PREV.0, ORIG_LONG).unwrap(), base, "D → 프리뷰 표시 배율");
+        approx(s.shown(), base, "D → 프리뷰 표시 배율");
     }
 
     #[test]
     fn one_to_one_reaches_true_hundred_percent_on_orig() {
         // 실측 1:1을 요청하면 ORIG가 도착했을 때 원본 1픽셀 = 화면 1픽셀(=100%)이어야 한다.
         // 프리뷰(1920)뿐인 동안은 상한에 걸릴 수 있지만 기준은 남아 ORIG에서 제 배율이 나온다.
-        let mut s = Sim::new(AREA);
+        let mut s = Sim::new(AREA).with_orig(ORIG_LONG);
         s.frame(PREV);
-        s.one_to_one(ORIG_LONG, PREV);
+        s.one_to_one(PREV);
         s.frame(PREV);
         approx(s.frame(ORIG), ORIG_LONG, "ORIG 도착 후 실측 1:1");
         approx(s.frame(PREV) / ORIG_LONG * 100.0, 100.0, "프리뷰로 돌아와도 표시 100% 유지");
+    }
+
+    // ── #48 후속: EXIF가 원본 크기를 거짓말하는 바디(니콘 NEF) ────────────
+    //
+    // D850 실측: EXIF display_size = 160x120(IFD0이 NewSubFileType=1 축소 썸네일),
+    // 실제 원본 = 8256x5504. 기준을 "본 텍스처 중 가장 큼"으로 잡으면 프리뷰(1600) →
+    // ORIG(8192)로 기준이 자라 표시 배율이 그만큼 튄다. `orig_long_edge`가 임베디드
+    // 최대 해상도(8256)를 실측으로 주면 기준이 처음부터 확정되어 튀지 않는다.
+    /// D850 프리뷰 실측(1600x1067). PREV(1920)과 달리 실제 앱이 받는 크기.
+    const PREV_REAL: (f32, f32) = (1600.0, 1067.0);
+
+    #[test]
+    fn display_zoom_is_stable_when_exif_understates_original() {
+        // 창맞춤에서 D를 눌러 ORIG를 물려도 사진 크기가 그대로면 숫자도 그대로여야 한다.
+        // 실측 기준이 없으면 68% → 16%로 튀던 자리(윈도우 D850 재현).
+        let mut s = Sim::new(AREA).with_orig(ORIG_LONG);
+        let screen_prev = s.frame(PREV_REAL);
+        let shown_prev = s.shown();
+        let screen_orig = s.frame(ORIG);
+        approx(screen_orig, screen_prev, "창맞춤 화면 크기는 해상도와 무관하게 동일");
+        approx(s.shown(), shown_prev, "표시 배율도 동일해야 한다");
+        // 기준이 실측이라 표시값은 `화면px / 8256`과 정확히 일치한다(텍스처 크기와 무관).
+        approx(shown_prev, screen_prev / ORIG_LONG, "표시 배율 = 화면 긴 변 / 원본 긴 변");
+    }
+
+    #[test]
+    fn one_to_one_reaches_hundred_percent_when_exif_understates_original() {
+        // 프리뷰(1600)만 있는 상태에서 Space를 눌러도, 기준이 실측(8256)이라 ORIG가 도착하면
+        // 실측 1:1(=100%)에 도달해야 한다. 실측이 없을 때는 1600에 묶여 23%에서 멈췄다.
+        let mut s = Sim::new(AREA).with_orig(ORIG_LONG);
+        s.frame(PREV_REAL);
+        s.one_to_one(PREV_REAL);
+        s.frame(PREV_REAL);
+        approx(s.frame(ORIG), ORIG_LONG, "ORIG 도착 → 실측 1:1(원본 1px = 화면 1px)");
+        approx(s.shown() * 100.0, 100.0, "상태바 100%");
+    }
+
+    #[test]
+    fn display_zoom_never_exceeds_hundred_at_fit_without_orig_measure() {
+        // 안전판: 실측을 못 구하는 컨테이너(CR3 등)에서도 기준은 본 텍스처의 최댓값이라
+        // 창맞춤 표시가 100%를 넘지 않는다(기준이 텍스처보다 작아지는 일이 없다).
+        let mut s = Sim::new(AREA); // orig = None
+        s.frame(PREV_REAL);
+        assert!(s.shown() <= 1.0 + 1e-3, "창맞춤인데 100% 초과: {}", s.shown());
+        s.frame(ORIG);
+        assert!(s.shown() <= 1.0 + 1e-3, "ORIG 창맞춤인데 100% 초과: {}", s.shown());
     }
 
     #[test]

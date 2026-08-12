@@ -480,6 +480,50 @@ fn tiff_ifd0_jpeg_blobs(path: &Path) -> Vec<(u64, usize)> {
     blobs
 }
 
+/// 표시 배율 100%(=실측 1:1, 원본 1픽셀 = 화면 1픽셀)의 기준이 되는 **원본 긴 변 px**(#48).
+///
+/// 화면에 띄우는 텍스처는 프리뷰(1600)·ORIG(8192)로 계속 바뀌지만 이 값은 사진 자체의
+/// 크기라 항목이 사는 동안 불변이다 — 표시 배율의 기준으로 쓰려면 이 불변성이 핵심이다.
+///
+/// **EXIF를 쓰지 않는 이유**: 니콘 NEF는 IFD0이 160x120 축소 썸네일(NewSubFileType=1)이라
+/// `PixelXDimension`/`ImageWidth`가 실측이 아니다(D850 실측 확인 — 8256이 아니라 160으로
+/// 읽힌다). 그걸 믿으면 기준이 "지금까지 본 가장 큰 텍스처"로 떨어져 ORIG가 도착하는 순간
+/// 기준이 자라고 표시 배율이 100%→23%로 튄다(#48 신고 증상 그대로).
+///
+/// 그래서 RAW는 IFD가 가리키는 임베디드 JPEG 중 **가장 큰 것의 긴 변**을 쓴다. ORIG로 실제
+/// 보여줄 수 있는 최대 해상도라 기준으로 정확하고, 각 블롭의 SOF만 64KB head probe로 읽어
+/// 싸다(전체 파일을 읽지 않는다 — `decode_ifd_embedded`와 같은 방식).
+///
+/// 구하지 못하면 `None`(TIFF가 아닌 CR3, 임베디드가 없는 RAW, 미지원 컨테이너 등) —
+/// 호출부는 종전 추정으로 폴백한다.
+pub fn orig_long_edge(path: &Path) -> Option<u32> {
+    match kind_of(path)? {
+        Kind::Raw => {
+            let mut best = 0u32;
+            for (off, len) in tiff_ifd0_jpeg_blobs(path) {
+                let Ok(probe) = read_range(path, off, len.min(64 * 1024)) else {
+                    continue;
+                };
+                if probe.len() < 4 || probe[0] != 0xFF || probe[1] != 0xD8 {
+                    continue;
+                }
+                if let Some((w, h)) = jpeg_dimensions(&probe) {
+                    best = best.max(w.max(h) as u32);
+                }
+            }
+            (best > 0).then_some(best)
+        }
+        // 일반 이미지는 헤더만 읽어 크기를 얻는다(픽셀 디코딩 없음). 긴 변만 쓰므로
+        // orientation 회전으로 가로/세로가 바뀌어도 값은 같다.
+        Kind::Image => image::ImageReader::open(path)
+            .ok()?
+            .into_dimensions()
+            .ok()
+            .map(|(w, h)| w.max(h))
+            .filter(|&e| e > 0),
+    }
+}
+
 /// ORIG용: RW2 IFD가 가리키는 **가장 큰** 임베디드 JPEG를 그 구간만 읽어 디코딩한다.
 /// 전체파일(수십 MB) 읽기와 rawloader 패닉을 모두 피한다. JPEG가 충분히 크면(`min_long_edge`
 /// 이상) 원본 디테일로 채택, 작으면 None(풀 RAW 현상으로 폴백 유도).

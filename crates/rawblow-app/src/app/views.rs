@@ -834,9 +834,12 @@ impl RawBlowApp {
         // (1920)에서는 표현 불가라, ORIG(8192)에서 약 1.9배 넘게 확대한 뒤 D로 돌아올 때 상한에
         // 잘리고 그 잘린 값이 새 기준이 되어 배율이 영구히 깎였다 — #48 회귀의 직접 원인.
         // one_to_one = 기준 해상도의 1:1이 현재 텍스처에서는 몇 배인지(프리뷰에선 1보다 크다).
+        // 기준은 원본 실측(`ref_long_px`)을 쓴다 — "본 것 중 가장 큼"(view_ref_long)으로 잡으면
+        // ORIG를 아직 못 본 프리뷰 단계의 상한이 1:1(=1.0)에 묶여, 실측 1:1조차 표현하지 못한다.
         let cur_long = size.max_elem().max(1.0);
         self.view_ref_long = self.view_ref_long.max(cur_long);
-        let one_to_one = self.view_ref_long / cur_long;
+        let ref_long = self.ref_long_px(real).unwrap_or(self.view_ref_long);
+        let one_to_one = (ref_long / cur_long).max(1.0);
         let min_zoom = fit_scale.min(1.0);
         let max_zoom = (8.0 * one_to_one).max(fit_scale); // 기준 해상도로 8x(작은 이미지도 확대 가능)
 
@@ -873,7 +876,14 @@ impl RawBlowApp {
         // #48: 실측 1:1 요청 소비 — 원본 1픽셀이 화면 1픽셀이 되도록 맞춘다(표시 배율 100%).
         // 기준(view_mag)에는 잘리기 전 목표를 남겨, 아직 프리뷰뿐이라 상한에 걸렸더라도 곧
         // 도착할 ORIG에서 제 배율이 나오게 한다.
-        if self.one_to_one_pending {
+        //
+        // 기준이 확정되기 전(메타 로딩 중)에는 **소비하지 않고 기다린다**. 여기서 임시 기준으로
+        // 계산해 버리면 그 값이 view_mag에 굳어, 곧 도착할 실측 크기와 어긋난 배율이 남는다.
+        if self.one_to_one_pending && !self.ref_long_settled(real) {
+            // 메타(원본 크기)를 기다리는 중 — 도착하면 다음 프레임에 적용한다.
+            ui.ctx().request_repaint_after(Duration::from_millis(80));
+        }
+        if self.one_to_one_pending && self.ref_long_settled(real) {
             self.one_to_one_pending = false;
             if let Some(ref_long) = self.ref_long_px(real) {
                 let want = ref_long / cur_long;
