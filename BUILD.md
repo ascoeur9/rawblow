@@ -87,6 +87,30 @@ gh release create vX.Y.Z "RawBlow-vX.Y.Z-<os>.exe" \
   --title "RawBlow vX.Y.Z" --notes-file notes.md --target main
 ```
 
+### 플랫폼별 릴리즈 경로 (어디서 뭘 돌리나)
+
+| 산출물 | 스크립트 | 돌릴 OS |
+|---|---|---|
+| Windows 인스톨러(NSIS) | `scripts\build-release-windows.ps1` | Windows 전용 |
+| MS 스토어 MSIX 제출 | `scripts\submit-msix-store.ps1` | Windows 전용 |
+| 원커맨드(윈도우 빌드+깃헙+스토어) | `scripts\release-all.ps1` | Windows 전용 |
+| macOS `.app` + 배포 zip | `bash scripts/build-macos.sh` | macOS |
+| GitHub 릴리즈(맥에서) | `bash scripts/release-github.sh` | macOS |
+
+macOS에서는 Windows 인스톨러도 MSIX 스토어 제출도 만들 수 없다(MSVC·NSIS·dumpbin·
+스토어 API가 전부 Windows 전용). 맥에서 릴리즈하려면:
+
+```bash
+bash scripts/build-macos.sh        # dist/RawBlow.app + dist/RawBlow-v<버전>-macos-arm64.zip
+bash scripts/release-github.sh --dry-run   # 본문·에셋 확인
+bash scripts/release-github.sh             # 태그 푸시 + gh 릴리즈 게시
+```
+
+`release-github.sh`는 `release-all.ps1`의 GitHub 절반만 이식한 것이다 — 릴리즈 노트
+(`scripts/release-notes/v<버전>.md`)의 `@github`/`@changelog` 구획을 같은 규칙으로 뽑아 쓰고,
+태그 중복도 똑같이 막는다. `dist/`에 Windows에서 만든 `RawBlow-Setup-v<버전>.exe`를 미리
+복사해 두면 함께 첨부하고, 없으면 경고 후 macOS 에셋만 올린다.
+
 - `.exe` 파일 아이콘은 `crates/rawblow-app/build.rs`가 로고를 Windows 리소스로 임베드(빌드 시 자동).
 - macOS 앱 아이콘(`.icns`)은 `bash scripts/gen-macos-icon.sh`로 생성한다(`logo.rs` 기하 + macOS
   표준 여백 824/1024). cmd+Tab·Dock에서 다른 앱과 같은 크기로 보이게 하는 여백이 들어간다.
