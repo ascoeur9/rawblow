@@ -6,157 +6,210 @@
 [![Downloads](https://img.shields.io/github/downloads/ascoeur9/rawblow/total?label=downloads&color=brightgreen)](https://github.com/ascoeur9/rawblow/releases)
 [![Latest release](https://img.shields.io/github/v/release/ascoeur9/rawblow?sort=semver&label=latest)](https://github.com/ascoeur9/rawblow/releases/latest)
 
-**Fast RAW photo culling (selection) viewer** — Rust + egui/wgpu native · Windows / macOS / Linux
+**A culling viewer for flipping through RAW photos fast and picking the keepers.** Native Rust + egui/wgpu · Windows / macOS / Linux
 
-A lightweight culling tool that lets you flip quickly through thousands of RAWs, sort them into **Pick / Hold / Reject**, and then copy or move only the ones you chose. It instantly displays the embedded preview inside the RAW for fast flipping, and loads the full resolution at native size with **ORIG (original)** only when you need to inspect focus and detail precisely. Sorting results are written only to a sidecar file without ever touching the originals (non-destructive).
+A lightweight culling tool for flipping through thousands of RAWs, sorting them into Pick, Hold, and Reject, and then copying or moving only the ones you chose. It normally displays the preview embedded inside the RAW so flipping stays fast, and loads full resolution only when you need to inspect focus and detail. Your sorting goes into a sidecar file inside the folder and never touches the originals.
 
----
+The paragraph above was written by an AI. The truth is that RawBlow exists because culling RAWs in Lightroom got so unbearably slow that I lost my temper, swung a fist at my desk, missed, and hit myself somewhere considerably more painful. This absurdly fast RAW viewer / culling tool is what came out of that...
 
-## Key features
-
-- **Two views** — Single view (+ bottom film strip) / thumbnail grid (toggle with T)
-- **Sorting** — Q Pick · W Hold · E Reject · R Clear, auto-advance, filter by label
-- **Star rating (★1–5)** — Rate with the number keys **1–5**, clear with **`` ` `` (backtick)**. Ratings are applied **independently** of labels (QWER) at the same time, and you can also select by rating when transferring
-- **Color tags** — Assign 5-color tags (orange, pink, teal, blue, purple) with **⇧1–5**, **independently** of labels and ratings. Name each color in settings (e.g., by edit style), reflected in filters, transfers, and file names
-- **View filters** — In the left rail, combine **label**, **rating (exactly N stars)**, and **color tag** **independently with AND** to narrow down to just the shots you want
-- **Multi-select in grid** — Toggle with Ctrl(⌘)+click, click then Shift+click for range selection → sort them **all at once** with Q/W/E/R / ratings
-- **AI culling** — Analyzes photos to auto-sort by **blur (focus) · exposure · horizon tilt**, plus an optional **aesthetic score (CLIP-IQA AI)**. Assigns good/reject to one of **label · rating · color tag** (your manual axes stay untouched). Fully **local** and **GPU-accelerated** (Windows WebGPU / macOS CoreML), runs in the background. The model is downloaded automatically on first use (sha256-verified)
-- **Zoom / pan** — Click a photo to switch fit-to-window↔1:1, **Ctrl+wheel or touchpad pinch** for continuous zoom, **drag to pan** while zoomed in. The zoom level is shown at the bottom right
-- **ORIG (original view)** — Decodes the RAW at full resolution to check the actual detail (loading may take a moment). Used manually only when needed
-- **EXIF overlay (I)** · **RGB histogram (H)**
-- **Photo background color** — change the viewer background in settings (presets: black/gray/white, incl. Lightroom's 50% gray / **custom HEX·RGB**)
-- **Auto portrait/landscape rotation**, RAW+JPG pairing, RAW+ badge
-- **Transfer** — Copy/**move** only the chosen files (by label · **rating** · **color tag**, folders per label/tag, companion files, serial numbers on conflict). On **Move**, the moved items are automatically cleared from the list. Shows a **progress bar and cancel** during transfer — never looks frozen on large folders or slow drives
-- **Rename on transfer** — Copy or move while renaming by sequence number (1, 2, 3) / **rating grade (A1, B1…)** / a custom template (`{seq}` `{gradeseq}` `{stars}` `{tag}` `{orig}`, etc.) — with live preview, and identical names for RAW+JPG pairs
-- **Auto-organize folder** — The **Organize** button (bottom of the left rail) sorts the photos in a folder into subfolders by **capture date / camera / lens / extension** (move or copy). EXIF-based criteria keep RAW+JPG pairs in the same folder; after organizing, the result opens right away for culling (separate from Transfer)
-- **Update notice** — When idle after launch, checks GitHub for the latest release and, if a newer version exists, shows a notice button above the Organize button (click to open Releases)
-- **Multilingual** — 한국어 / English / 日本語 (auto-detected from OS language, changeable and saved in settings)
-- **Full screen** — Toggle OS-window full screen with **F11** or the toolbar button. Works from either single or grid view, and the flip / ORIG / zoom shortcuts all work in full screen too
-- **Non-destructive saving** — Saves and restores sorting, ratings, and color tags in `.rawblow/session.json` (+ a human-readable txt) inside the folder
-- **Fast loading** — Background decoding + forward preloading + LRU texture cache
-- **Thumbnail disk cache** — Once a thumbnail is decoded, it is kept in the OS cache → even after you close and reopen the folder, it is **shown instantly without re-decoding**. Check and clear the size in settings + an **automatic cap (MB, user-configurable, default 1 GB)**; when exceeded, the oldest entries are cleaned up automatically
+Features keep getting added to make culling easier and faster, but "fast culling" comes before all of them.
 
 ---
 
-## Install / Run
+## The basic loop
 
-### Windows — Microsoft Store (recommended)
-[**Get it on the Microsoft Store**](https://apps.microsoft.com/store/detail/9PC2FKGPQPD1) — installing from the Store keeps it up to date automatically and runs without security warnings.
+1. Open a folder. Use the **Open Folder** button at the top left, `⌘/Ctrl+O`, or drag a folder onto the window.
+2. Flip with `←` `→` and press `Q` (Pick), `W` (Hold), or `E` (Reject). Star ratings `1`–`5` and color tags `⇧1`–`⇧5` are separate axes, so you can apply them at the same time.
+3. Narrow the view down in the left rail, then press `Enter` to open Transfer and copy or move just the files you picked.
 
-> **Only if you can't use the Microsoft Store**, grab the `RawBlow-Setup-vX.Y.Z.exe` installer from [**Releases**](https://github.com/ascoeur9/rawblow/releases/latest) (all required runtimes bundled). It is unsigned, so if SmartScreen shows a "Windows protected your PC" warning, click **More info → Run anyway**.
-
-### macOS (Apple Silicon)
-Grab `RawBlow-vX.Y.Z-macos-arm64.zip` from [**Releases**](https://github.com/ascoeur9/rawblow/releases/latest) (unzip to get `RawBlow.app`).
-- On first launch, if you get an "unidentified developer" warning (not notarized): click **Done** in the dialog, then open **System Settings → Privacy & Security → Security** and click **Open Anyway** near the bottom. (Since macOS 15 Sequoia, the old **right-click → Open** bypass no longer works.)
-- Or, in a terminal, `xattr -dr com.apple.quarantine /Applications/RawBlow.app`
-
-### Build from source (Linux, others)
-```bash
-cargo build --release -p rawblow-app   # 실행물: target/release/rawblow(.exe)
-cargo run   --release -p rawblow-app
-```
-Requires: Rust 1.80+, a C linker (MSVC Build Tools / gcc / clang), and the Vulkan runtime on Linux. Korean fonts are loaded automatically from the OS fonts.
-
-> 📌 For a **clean release build for distribution** (standalone + build path / username stripped), see [`BUILD.md`](BUILD.md).
+Your original files stay where they are the whole time. Labels, ratings, and tags accumulate in `.rawblow/session.json` inside the folder, and reopening the folder restores them.
 
 ---
 
-## Usage
+## Features
+
+### Viewing and flipping
+
+- **Single view and grid.** Toggle with `T` between a single view with a film strip along the bottom and a thumbnail grid. Grid columns are configurable from 4 to 12.
+- **Zoom.** Click a photo to switch between fit-to-window and 1:1. Zoom continuously with `Ctrl`+wheel or a touchpad pinch, and drag to pan while zoomed in. The magnification appears at the bottom right, where 100% means one original pixel per screen pixel. Zoom is carried over as you move between photos.
+- **Original view (ORIG).** Decodes the RAW at full resolution instead of the embedded preview so you can check real detail. Turn it on with `D` or the **ORIG** button in the toolbar; depending on the file it may take a moment to load. Whether original view stays on as you flip is a setting.
+- **Overlays.** `I` for EXIF, `H` for an RGB histogram, `A` for the AF points the camera locked onto, and `M` for a mini map of where a geotagged photo was taken.
+- **Photo background color.** Change the viewer background with a preset (black, three grays, white) or by entering HEX/RGB directly. Lightroom's Develop default of 50% gray is among the presets.
+- **Full screen.** `F11` or the **Full** button in the toolbar. Flipping, zoom, and original view shortcuts all keep working in full screen, from either single view or the grid.
+- Automatic portrait/landscape rotation, RAW+JPG pairing, and a RAW+ badge.
+
+### Sorting
+
+- **Labels.** `Q` Pick, `W` Hold, `E` Reject, `R` Clear. Pressing the same key again clears it. Labeling advances to the next photo automatically, which you can turn off in settings.
+- **Star ratings.** Set with `1`–`5` and clear with `` ` `` (backtick). Ratings are their own axis, so they apply alongside labels.
+- **Color tags.** `⇧1`–`⇧5` apply orange, pink, teal, blue, and purple; `⇧0` removes the tag. Tags are independent of labels and ratings. Name each color in settings (by edit style, for example) and that name follows through into filters, transfers, and file names.
+- **Multi-select in the grid.** `Ctrl`(`⌘`)+click toggles one at a time, and clicking then `Shift`+clicking selects a range. Sort the whole selection at once with `Q` `W` `E` `R` or a rating.
+- **Batch relabel.** Press `B` in the grid. Paste file names or parts of them separated by newlines, commas, or tabs, and the matching items all get the label.
+- **Undo.** `⌘/Ctrl+Z` undoes, `⌘/Ctrl+⇧Z` or `⌘/Ctrl+Y` redoes.
+- **Non-destructive saving.** Labels, ratings, and color tags are saved to `.rawblow/session.json` inside the folder, along with a human-readable txt. The original files are left alone.
+
+### Narrowing down
+
+- **Filters.** Pick a label, a rating (exactly N stars), and a color tag in the left rail. The three are independent and stack with AND. Press `F` to cycle the label filter alone.
+- **Jump.** Press `G` and enter a position or part of a file name to go straight there.
+- **Resume per folder.** Each folder remembers the last photo you were on and starts there when you reopen it. It remembers the file path rather than the position in the list, so adding or deleting files or changing the sort order still lands on the same photo.
+- **Sort order.** Capture time by default, switchable to file name in settings. When several cameras are mixed together, file names no longer match the shooting order.
+
+### AI culling (experimental)
+
+> **The model-driven checks are still being tested.** Face detection, AI sharpness, and object presence can get it wrong, so don't take the results at face value. No original file is ever deleted, and a culled shot only has its label, rating, or tag changed.
+
+Analyzes your photos and marks them Good or Culled automatically. The result goes into just one axis you choose (label, rating, or color tag), so whatever you sorted by hand is left untouched. Everything runs locally on your machine, in the background, and can be canceled partway through.
+
+- **Checks that need no model.** Focus (sharpness), exposure, and horizon tilt. Focus can be measured only within the AF points the camera locked onto instead of across the whole frame.
+- **Metadata filters.** Portrait/landscape, ISO ceiling, focal length range, maximum aperture, minimum shutter speed, and partial matches on camera and lens names.
+- **Burst best-N.** Groups shots taken within a chosen interval and keeps only the top N by score in each group.
+- **Dedup.** Groups near-identical scenes with a perceptual hash and keeps only the best of each cluster.
+- **Checks that need a model.** Aesthetic score (CLIP-IQA), AI sharpness, genre pick (portrait/landscape), face detection (YuNet), and object detection (YOLOv10n). Models download automatically on first use and are verified with sha256.
+- **GPU acceleration.** WebGPU on Windows, CoreML on macOS. If registration fails it quietly falls back to the CPU.
+
+### Getting files out
+
+- **Transfer.** Copies or moves only the files you picked. Choose targets by label, rating, and color tag; anything matching at least one of the three is included (union). You can split the output into subfolders by label or tag, decide how companion files are handled, and set serial numbering for name conflicts. On Move, the moved items drop out of the list automatically. A progress bar and a cancel button mean it never looks frozen on large folders or slow drives.
+- **Rename on transfer.** Choose sequence numbers (1, 2, 3), rating grades (A1, B1 …), or a custom template. Templates take `{seq}` `{gradeseq}` `{grade}` `{stars}` `{label}` `{tag}` `{orig}`, with zero padding as in `{seq:03}`. A live preview updates as you type, and RAW+JPG pairs get the same name.
+- **Organize folder.** The **Organize** button at the bottom of the left rail sorts the photos in a folder into subfolders by capture date, camera, lens, focal length, or extension (move or copy). EXIF-based criteria keep RAW+JPG pairs in the same folder, and files whose EXIF can't be read collect in folders like `unknown-date`. You can open the organized folder and start culling right away; this is separate from Transfer.
+
+### Everything else
+
+- **Fast loading.** Embedded previews are decoded down to the size the screen needs, on top of background decoding, forward preloading, and an LRU texture cache.
+- **Thumbnail disk cache.** Once decoded, thumbnails stay in the OS cache, so closing and reopening a folder shows them instantly with no re-decoding. Check and clear the cache in settings; when it exceeds the limit (1 GB by default, 0 for unlimited) the oldest entries are removed first.
+- **Languages.** 한국어 / English / 日本語. Follows the OS language, and your choice in settings is saved.
+- **Shortcut cheat sheet.** Press `?` or `F1` to see every shortcut inside the app.
+- **Update notice.** When idle after launch, it checks GitHub for the latest release and shows a notice button in the left rail if a newer version exists. Can be turned off in settings.
+- **Open source license notice.** Settings lists the bundled components and their full license texts.
+
+---
+
+## Keyboard shortcuts
+
+Press them right over the photo. There is no text field, so they respond instantly.
 
 | Action | Key / Operation |
 |------|-----------|
-| Open folder | Top-left **Open folder** button · ⌘/Ctrl+O |
-| Previous/next photo | ← / → |
-| Up/down row in grid | ↑ / ↓ (auto-scrolls to follow the selection) |
-| Pick / Hold / Reject / Clear | **Q** / **W** / **E** / **R** |
-| Set / clear rating | **1 2 3 4 5** / **`** (backtick) — independent of labels |
-| Set / clear color tag | **⇧1 ~ ⇧5** / **⇧0** — independent of labels and ratings |
-| Single view ↔ grid | **T** |
-| Fit to window ↔ 1:1 | **Click** the photo · Space · Z |
-| Zoom in / out | **Ctrl+mouse wheel** · touchpad **pinch** |
-| Pan while zoomed in | **Drag** the photo |
-| Original view (ORIG) | **D** · toolbar **ORIG** |
-| EXIF / histogram | **I** / **H** |
-| Full screen | **F11** · toolbar **Full** (exit with ESC/F11) |
-| Jump (go to number) | **G** |
-| Switch filter | **F** |
-| Transfer (copy/move selected files) | **Enter** · ⌘/Ctrl+E |
-| Multi-select in grid | **Ctrl/⌘+click** (toggle) · click then **Shift+click** (range) |
+| Open folder | **Open Folder** button at top left · `⌘/Ctrl+O` · drag a folder onto the window |
+| Previous / next photo | `←` `→` · mouse wheel in single view when fit to window |
+| Move a row in the grid | `↑` `↓` (auto-scrolls to follow the selection) |
+| Jump | `G` |
+| Batch relabel (grid) | `B` |
+| Pick / Hold / Reject / Clear | `Q` `W` `E` `R` |
+| Set / clear rating | `1` `2` `3` `4` `5` / `` ` `` |
+| Set / clear color tag | `⇧1` – `⇧5` / `⇧0` |
+| Undo / redo | `⌘/Ctrl+Z` / `⌘/Ctrl+⇧Z` · `⌘/Ctrl+Y` |
+| Single view ↔ grid | `T` |
+| Fit to window ↔ 1:1 | click the photo · `Space` · `Z` |
+| Zoom in / out | `Ctrl`+wheel · touchpad pinch |
+| Pan while zoomed in | drag the photo |
+| Original view (ORIG) | `D` · toolbar **ORIG** |
+| EXIF / histogram | `I` / `H` |
+| AF points / location map | `A` / `M` |
+| Cycle label filter | `F` |
+| Full screen | `F11` · toolbar **Full** (exit with `Esc`) |
+| Multi-select in the grid | `Ctrl/⌘`+click (toggle) · click then `Shift`+click (range) |
+| Transfer | `Enter` · `⌘/Ctrl+E` |
+| Shortcut help | `?` · `F1` |
 
 ---
 
-## Tested environments
+## Install
 
-- **OS**: Windows 11 · macOS (Apple Silicon) officially released. Linux is supported in code but no prebuilt binary is provided (build from source).
-- Other bodies and formats (other RAWs, JPG/PNG/HEIC, etc.) are made to work too, but **unverified bodies are displayed via the embedded preview path**. If you see gray/broken images or errors on a new body, please be sure to let us know.
+### Windows (Microsoft Store recommended)
 
-### Tested camera RAWs (verified with real files)
+[**Get it on the Microsoft Store**](https://apps.microsoft.com/store/detail/9PC2FKGPQPD1). Installing from the Store keeps it updated automatically and launches without security warnings.
 
-#### Panasonic — `.RW2`
-- LUMIX S1R II (`DC-S1RM2`)
-- LUMIX S1 II (`DC-S1M2`)
+Only if you can't use the Microsoft Store, download `RawBlow-Setup-vX.Y.Z.exe` from [**Releases**](https://github.com/ascoeur9/rawblow/releases/latest). Every runtime it needs is bundled, so there is nothing else to install. It is unsigned, so if SmartScreen shows "Windows protected your PC" on first launch, click **More info → Run anyway**.
 
-#### Nikon — `.NEF`
-- Z6III
-- Z8
-- Z30
-- Z50II
+### macOS (Apple Silicon)
 
-#### Sony — `.ARW`
-- α7R III
-- α7C II
+Download `RawBlow-vX.Y.Z-macos-arm64.zip` from [**Releases**](https://github.com/ascoeur9/rawblow/releases/latest) and unzip it to get `RawBlow.app`.
 
-#### Fujifilm — `.RAF`
-- GFX100S
-- GFX100RF
-- X-T5
+It isn't notarized, so the first launch shows an "unidentified developer" warning. Click **Done** in the dialog, then open **System Settings → Privacy & Security → Security** and click **Open Anyway** near the bottom. Since macOS 15 Sequoia, the old right-click → Open workaround no longer works. From a terminal, this one line does the same thing.
 
-#### Canon — `.CR2`
-- EOS 5D
-- EOS 5D Mark II
+```bash
+xattr -dr com.apple.quarantine /Applications/RawBlow.app
+```
+
+### Build from source (Linux and others)
+
+```bash
+cargo build --release -p rawblow-app   # binary: target/release/rawblow(.exe)
+cargo run   --release -p rawblow-app
+```
+
+You need Rust 1.80 or later and a C linker (MSVC Build Tools / gcc / clang); Linux also needs the Vulkan runtime. Korean fonts are loaded from the OS fonts automatically.
+
+For a clean release build for distribution (standalone, with build paths and user names stripped), see [`BUILD.md`](BUILD.md).
 
 ---
 
-## Reporting issues / Feedback
+## Supported formats and verified cameras
 
-For bugs (especially crashes), display errors, requests for new camera support, etc., use whichever is more convenient:
+RawBlow reads `.ARW` `.CR2` `.CR3` `.NEF` `.ORF` `.RW2` `.RAF` `.DNG` `.PEF` `.SRW` `.RAW` for RAW, and `.JPG` `.JPEG` `.PNG` `.WEBP` `.HEIC` `.HEIF` `.TIF` `.TIFF` for regular images.
 
-- **GitHub Issues** — https://github.com/ascoeur9/rawblow/issues
-- **Email** — **hare.rinko@gmail.com**
+**OS.** Officially released for Windows 11 and macOS (Apple Silicon). Linux is supported in code but ships no prebuilt binary, so build from source.
 
-**If a crash (forced termination) occurs, a `rawblow_crash.log` file is automatically created on the desktop.** Please attach it (or paste its contents). It helps a lot if you also include the following:
+Bodies outside the list below are meant to work too, but any body that hasn't been verified is displayed through the embedded preview path. If you see a gray screen, broken images, or errors on a new body, please tell us.
 
-- What you were doing (e.g., holding down ↓ in the grid)
-- Camera body / file format, roughly how many photos
-- OS / GPU (if possible)
+### Cameras verified with real files
+
+| Maker | Format | Bodies |
+|---|---|---|
+| Panasonic | `.RW2` | LUMIX S1R II (`DC-S1RM2`), LUMIX S1 II (`DC-S1M2`) |
+| Nikon | `.NEF` | Z6III, Z8, Z30, Z50II, D850 |
+| Sony | `.ARW` | α7R III, α7C II |
+| Fujifilm | `.RAF` | GFX100S, GFX100RF, X-T5 |
+| Canon | `.CR2` / `.CR3` | EOS 5D, EOS 5D Mark II / EOS R6 Mark III |
+| OM SYSTEM · Olympus | `.ORF` | OM-1, E-300 |
+| Pentax | `.PEF` | K-1 |
+
+---
+
+## Reporting issues
+
+For bugs (especially crashes), display errors, or requests to support a new camera, use whichever is easier.
+
+- **GitHub Issues** [github.com/ascoeur9/rawblow/issues](https://github.com/ascoeur9/rawblow/issues)
+- **Email** hare.rinko@gmail.com
+
+If the app crashes, a `rawblow_crash.log` file is created on your desktop automatically. Please attach it or paste its contents. These details make the cause much easier to find.
+
+- What you were doing (holding `↓` down in the grid, for example)
+- Camera body and file format, and roughly how many photos
+- OS and GPU, if you can
 
 ---
 
 ## Known limitations
 
-- Color management goes from the embedded ICC → sRGB only (monitor ICC profile lookup is not applied; sRGB is assumed).
-- No UI for rebinding shortcuts (defaults are fixed).
+- Color management goes from the embedded ICC profile to sRGB. The monitor's ICC profile is not consulted; sRGB is assumed.
+- There is no screen for rebinding shortcuts. The defaults are fixed.
 - Some formats such as HEIC rely on the platform decoder.
-- ORIG original view displays within the GPU texture limit (about 8192px).
+- Original view displays within the GPU texture limit (roughly 8192 px on the long edge).
+- Pentax files record no lens name anywhere, so the lens field stays empty.
+- The model-driven checks in AI culling are still experimental.
 
 ---
 
 ## Support
 
-→ **[Donate via Toonation](https://toon.at/donate/hare)**
+→ [**Donate via Toonation**](https://toon.at/donate/hare)
 
 ---
 
-## Thanks To
+## Thanks
 
-Thanks to everyone who helped refine RawBlow through issue reports and testing:
+Thanks to everyone who has helped refine RawBlow with issue reports and testing.
 
-- **Party!!** — Reported the issue where Canon EOS 5D Mark II (`.CR2`) was not displayed in single view (fixed in v0.2.7)
-- **jebber** ([@dcjebber](https://x.com/dcjebber)) — Tested Sony α7C II (`.ARW`)
-- **@stellar_sound** ([X](https://x.com/stellar_sound)) — Tested Nikon Z8 / Z30 / Z50II (`.NEF`), verified image loading on macOS
-- **doer** — Tested Fujifilm GFX100S / GFX100RF (`.RAF`)
-- **Laflat** — Tested Nikon Z6III (`.NEF`)
-- **Agnes Digital** — Tested Fujifilm X-T5 (`.RAF`)
+- **Party!!** Reported that Canon EOS 5D Mark II (`.CR2`) would not display in single view (fixed in v0.2.7)
+- **jebber** ([@dcjebber](https://x.com/dcjebber)) Tested Sony α7C II (`.ARW`)
+- **@stellar_sound** ([X](https://x.com/stellar_sound)) Tested Nikon Z8 / Z30 / Z50II (`.NEF`), verified image loading on macOS
+- **doer** Tested Fujifilm GFX100S / GFX100RF (`.RAF`)
+- **Laflat** Tested Nikon Z6III (`.NEF`)
+- **Agnes Digital** Tested Fujifilm X-T5 (`.RAF`)
 
 ---
 
@@ -164,6 +217,6 @@ Thanks to everyone who helped refine RawBlow through issue reports and testing:
 
 Copyright © 2026 Hare. **All rights reserved.**
 
-The source in this repository is published for **evaluation, testing, and feedback purposes only**. It may not be used, reproduced, modified, or distributed without the prior written permission of the copyright holder. See [`LICENSE`](LICENSE) for details. (Third-party libraries used follow their respective licenses.)
+The source in this repository is published for evaluation, testing, and feedback only. It may not be used, reproduced, modified, or distributed without prior written permission from the copyright holder. See [`LICENSE`](LICENSE) for details. Third-party libraries follow their own licenses.
 
 Contact: hare.rinko@gmail.com
