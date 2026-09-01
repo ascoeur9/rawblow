@@ -81,15 +81,13 @@ impl RawBlowApp {
             } else if q.is_empty() {
                 self.toast_info(tr(lang, "파일명 일부를 입력하세요").into());
             } else {
-                // 파일명 점프: 단일 항(부분일치, 대소문자 무시) → 첫 매칭.
-                let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
+                // 파일명 점프: 현재 필터 안에서만 찾는다(#99). 필터 밖 히트는 이동하지 않는다.
+                let f = self.filtered();
+                let entries: Vec<Entry> = f.iter().map(|&i| self.items[i].entry.clone()).collect();
                 let hits = transfer::match_indices(&entries, &[q], MatchMode::Contains);
-                if let Some(&first) = hits.first() {
-                    let f = self.filtered();
-                    if let Some(pos) = f.iter().position(|&r| r == first) {
-                        self.index = pos;
-                        self.keep_view_mode_on_move(); // 화살표 이동과 같은 규칙(#85/#87)
-                    }
+                if let Some(&local) = hits.first() {
+                    self.index = local;
+                    self.keep_view_mode_on_move();
                     self.toast_info(trf(lang, "{} 건 매칭 — 첫 항목으로", &[&hits.len().to_string()]));
                     close = true;
                 } else {
@@ -262,6 +260,7 @@ impl RawBlowApp {
             }
             let target = self.bulk_target;
             let mut changed = 0usize;
+            self.push_undo(&self.bulk_hits);
             for &idx in &self.bulk_hits {
                 if let Some(it) = self.items.get_mut(idx) {
                     if it.entry.label != target {
@@ -276,7 +275,7 @@ impl RawBlowApp {
                 self.last_save = Instant::now() - Duration::from_millis(400);
             }
             self.toast_info(
-                trf(lang, "{}건 → {}", &[&self.bulk_hits.len().to_string(), target.name(lang)]),
+                trf(lang, "{}건 → {}", &[&changed.to_string(), target.name(lang)]),
             );
             self.bulk_open = false;
             return;

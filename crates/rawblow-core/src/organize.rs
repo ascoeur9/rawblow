@@ -8,7 +8,7 @@
 
 use crate::meta::read_exif;
 use crate::model::{ext_lower, Entry};
-use crate::transfer::{move_file, unique_path, Action, ConflictPolicy, Progress, TransferReport};
+use crate::transfer::{move_file, unique_group, Action, ConflictPolicy, Progress, TransferReport};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -185,6 +185,7 @@ pub fn organize_with_progress(
             _ => Some(folder_for_entry(e, req.key)),
         };
 
+        let mut jobs: Vec<(PathBuf, String, PathBuf)> = Vec::new(); // src, file_name, target_dir
         for src in &e.members {
             let file_name = match src.file_name().and_then(|s| s.to_str()) {
                 Some(n) => n.to_string(),
@@ -194,64 +195,72 @@ pub fn organize_with_progress(
                     continue;
                 }
             };
-            progress.current = file_name.clone();
-            if !on_progress(&progress) {
-                report.canceled = true;
-                return report;
-            }
-
             let folder = entry_folder.clone().unwrap_or_else(|| ext_folder(src));
             let target_dir = req.dest_root.join(&folder);
-
-            // 이미 제자리에 있는 파일(같은 대상 폴더)은 옮기지 않고 통과(in-place 재분류 안전).
             if src.parent() == Some(target_dir.as_path()) {
                 progress.done += 1;
                 continue;
             }
+            jobs.push((src.clone(), file_name, target_dir));
+        }
 
+        use std::collections::BTreeMap;
+        let mut by_dir: BTreeMap<PathBuf, Vec<(PathBuf, String)>> = BTreeMap::new();
+        for (src, file_name, target_dir) in jobs {
+            by_dir.entry(target_dir).or_default().push((src, file_name));
+        }
+
+        for (target_dir, group) in by_dir {
             if let Err(err) = std::fs::create_dir_all(&target_dir) {
-                report.failed.push((src.clone(), err.to_string()));
-                progress.done += 1;
+                for (src, _) in &group {
+                    report.failed.push((src.clone(), err.to_string()));
+                    progress.done += 1;
+                }
                 continue;
             }
-
-            let (dst, conflict_renamed) = match unique_path(&target_dir, &file_name, req.conflict) {
+            let names: Vec<String> = group.iter().map(|(_, n)| n.clone()).collect();
+            let resolved = match unique_group(&target_dir, &names, req.conflict) {
                 Some(v) => v,
                 None => {
-                    report.skipped += 1;
-                    progress.done += 1;
+                    report.skipped += group.len();
+                    progress.done += group.len();
                     continue;
                 }
             };
-
-            let size = std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
-            let result = match req.action {
-                Action::Copy => std::fs::copy(src, &dst).map(|_| ()),
-                Action::Move => move_file(src, &dst),
-            };
-            match result {
-                Ok(()) => {
-                    report.transferred += 1;
-                    report.bytes += size;
-                    match kind_of(src) {
-                        Some(Kind::Raw) => report.raw_count += 1,
-                        Some(Kind::Image) => report.image_count += 1,
-                        None => {}
-                    }
-                    // Move인데 원본이 남아 있으면 원본 삭제 실패 — 정직하게 기록(#63, 전송 결과창 공용).
-                    if req.action == Action::Move && src.exists() {
-                        report.remove_failed.push(src.clone());
-                    }
-                    if let Some(new_name) = conflict_renamed {
-                        if new_name != file_name {
-                            report.renamed.push((file_name.clone(), new_name));
+            for ((src, file_name), (dst, conflict_renamed)) in group.into_iter().zip(resolved) {
+                progress.current = file_name.clone();
+                if !on_progress(&progress) {
+                    report.canceled = true;
+                    return report;
+                }
+                let size = std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
+                let result = match req.action {
+                    Action::Copy => std::fs::copy(&src, &dst).map(|_| ()),
+                    Action::Move => move_file(&src, &dst),
+                };
+                match result {
+                    Ok(()) => {
+                        report.transferred += 1;
+                        report.bytes += size;
+                        match kind_of(&src) {
+                            Some(Kind::Raw) => report.raw_count += 1,
+                            Some(Kind::Image) => report.image_count += 1,
+                            None => {}
+                        }
+                        if req.action == Action::Move && src.exists() {
+                            report.remove_failed.push(src.clone());
+                        }
+                        if let Some(new_name) = conflict_renamed {
+                            if new_name != file_name {
+                                report.renamed.push((file_name, new_name));
+                            }
                         }
                     }
+                    Err(err) => report.failed.push((src, err.to_string())),
                 }
-                Err(err) => report.failed.push((src.clone(), err.to_string())),
+                progress.done += 1;
+                progress.bytes = report.bytes;
             }
-            progress.done += 1;
-            progress.bytes = report.bytes;
         }
     }
 

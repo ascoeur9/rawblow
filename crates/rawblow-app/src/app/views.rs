@@ -333,8 +333,7 @@ impl RawBlowApp {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
                     if resp.clicked() {
-                        self.filter = filt;
-                        self.index = 0;
+                        self.apply_label_filter(filt);
                     }
                 }
 

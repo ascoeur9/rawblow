@@ -96,9 +96,9 @@ ditto -c -k --keepParent "$APP" "$ZIP"
 
 # ── [6] 검증 ───────────────────────────────────────────────────────────
 echo "==> 검증"
-LEAK="$(strings "$APP/Contents/MacOS/rawblow" 2>/dev/null | grep -c "$USER" || true)"
+LEAK="$(strings "$APP/Contents/MacOS/rawblow" 2>/dev/null | grep -cE "(^|[^[:alnum:]_])${USER}([^[:alnum:]_]|$)" || true)"
 if [ "$LEAK" != "0" ]; then
-    echo "!! 바이너리에 사용자명($USER)이 ${LEAK}건 남아 있음 — 배포 금지" >&2
+    echo "!! 바이너리에 사용자명($USER) 토큰이 ${LEAK}건 남아 있음 — 배포 금지" >&2
     exit 1
 fi
 codesign --verify --strict "$APP"

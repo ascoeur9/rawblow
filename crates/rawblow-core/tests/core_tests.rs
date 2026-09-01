@@ -509,7 +509,7 @@ fn sidecar_roundtrip_restores_labels() {
     // 라벨 리셋 후 복원.
     let mut reloaded = scan::scan_folder(folder, false, rawblow_core::SortOrder::Name);
     let session = sidecar::load(folder).expect("사이드카 로드");
-    sidecar::apply(&session, &mut reloaded);
+    sidecar::apply(&session, &mut reloaded, folder);
 
     let pick = reloaded.iter().find(|e| e.stem.eq_ignore_ascii_case("IMG_1")).unwrap();
     let rej = reloaded.iter().find(|e| e.stem.eq_ignore_ascii_case("IMG_2")).unwrap();
@@ -550,9 +550,10 @@ fn transfer_copies_selected_with_conflict_rename() {
     assert_eq!(report.transferred, 2, "JPG+RW2 둘 다 전송");
     assert_eq!(report.raw_count, 1);
     assert_eq!(report.image_count, 1);
-    assert_eq!(report.renamed.len(), 1, "JPG 충돌로 1건 리네임");
-    assert!(dst.join("IMG_1_001.JPG").exists(), "충돌 파일은 일련번호로");
-    assert!(dst.join("IMG_1.RW2").exists());
+    assert_eq!(report.renamed.len(), 2, "페어 전체가 같은 stem으로 리네임(#103)");
+    assert!(dst.join("IMG_1_001.JPG").exists(), "충돌 시 JPG도 _001");
+    assert!(dst.join("IMG_1_001.RW2").exists(), "페어 RAW도 같은 _001");
+    assert!(!dst.join("IMG_1.RW2").exists(), "한쪽만 원본 stem이면 안 됨");
     // 원본 보존(copy).
     assert!(src.join("IMG_1.JPG").exists());
 }
@@ -777,7 +778,7 @@ fn sidecar_roundtrip_restores_stars() {
     sidecar::save(folder, &entries).unwrap();
     let mut reloaded = scan::scan_folder(folder, false, rawblow_core::SortOrder::Name);
     let session = sidecar::load(folder).expect("사이드카 로드");
-    sidecar::apply(&session, &mut reloaded);
+    sidecar::apply(&session, &mut reloaded, folder);
 
     let s1 = reloaded.iter().find(|e| e.stem.eq_ignore_ascii_case("IMG_1")).unwrap();
     let s2 = reloaded.iter().find(|e| e.stem.eq_ignore_ascii_case("IMG_2")).unwrap();
@@ -1042,7 +1043,7 @@ fn sidecar_tag_roundtrip() {
 
     let mut reloaded = scan::scan_folder(folder, false, rawblow_core::SortOrder::Name);
     let session = sidecar::load(folder).expect("세션 로드");
-    sidecar::apply(&session, &mut reloaded);
+    sidecar::apply(&session, &mut reloaded, folder);
 
     let only = reloaded.iter().find(|e| e.stem == "ONLY_TAG").unwrap();
     assert_eq!(only.tag, ColorTag::Teal, "태그만 있는 항목도 저장·복원");
@@ -1441,7 +1442,7 @@ fn sidecar_corrupt_recovers_from_bak() {
     std::fs::write(sidecar::sidecar_path(folder), "{ torn json").unwrap();
     let session = sidecar::load(folder).expect("bak 복구");
     assert_eq!(session.items.get("IMG_1").map(|r| r.label), Some(Label::Pick));
-    assert!(!sidecar::sidecar_path(folder).exists(), "손상 main은 치워짐");
+    assert!(sidecar::sidecar_path(folder).exists(), "bak 복구 후 session.json을 되살림(#96)");
     let corrupt = sidecar::sidecar_dir(folder).join(sidecar::SIDECAR_CORRUPT);
     assert_eq!(std::fs::read_to_string(corrupt).unwrap(), "{ torn json");
 }
@@ -1592,4 +1593,49 @@ fn cr3_bmff_orientation_applies_on_every_decode_path() {
     assert_eq!(dec(&p, true, 8192).expect("ORIG decode"), (3200, 2000));
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pairing_does_not_merge_same_number_in_unrelated_date_folders() {
+    // 다른 날짜 폴더의 같은 번호는 별개 촬영(#107).
+    let root = std::env::temp_dir().join("rb_date_pair_test");
+    let _ = std::fs::remove_dir_all(&root);
+    let d1 = root.join("2024-01-01");
+    let d2 = root.join("2024-06-01");
+    std::fs::create_dir_all(&d1).unwrap();
+    std::fs::create_dir_all(&d2).unwrap();
+    std::fs::write(d1.join("P1000001.RW2"), b"x").unwrap();
+    std::fs::write(d2.join("P1000001.JPG"), b"x").unwrap();
+    let entries = scan::scan_folder(&root, true, rawblow_core::SortOrder::Name);
+    assert_eq!(entries.len(), 2, "날짜가 다른 폴더는 RAW+JPG로 합치지 않음");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn sidecar_recursive_same_stem_keeps_independent_labels() {
+    let tmp = tempfile::tempdir().unwrap();
+    let folder = tmp.path();
+    let day1 = folder.join("day1");
+    let day2 = folder.join("day2");
+    std::fs::create_dir_all(&day1).unwrap();
+    std::fs::create_dir_all(&day2).unwrap();
+    std::fs::write(day1.join("DSC_0001.NEF"), b"a").unwrap();
+    std::fs::write(day2.join("DSC_0001.NEF"), b"b").unwrap();
+    let mut entries = scan::scan_folder(folder, true, rawblow_core::SortOrder::Name);
+    assert_eq!(entries.len(), 2);
+    for e in &mut entries {
+        if e.display.starts_with(&day1) {
+            e.label = Label::Pick;
+        } else {
+            e.label = Label::Reject;
+        }
+    }
+    sidecar::save(folder, &entries).unwrap();
+    let mut reloaded = scan::scan_folder(folder, true, rawblow_core::SortOrder::Name);
+    let session = sidecar::load(folder).expect("로드");
+    sidecar::apply(&session, &mut reloaded, folder);
+    let pick = reloaded.iter().filter(|e| e.label == Label::Pick).count();
+    let rej = reloaded.iter().filter(|e| e.label == Label::Reject).count();
+    assert_eq!(pick, 1);
+    assert_eq!(rej, 1);
 }
