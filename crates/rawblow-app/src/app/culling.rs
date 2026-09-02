@@ -116,6 +116,7 @@ pub(super) fn save_cull_cache_to(path: &std::path::Path, map: &std::collections:
             Some(CullCacheDisk { path: p.to_string_lossy().into_owned(), mtime_nanos: nanos, sig: e.sig, report: e.report, dhash: e.dhash })
         })
         .collect();
+    list.sort_by(|a, b| b.mtime_nanos.cmp(&a.mtime_nanos));
     list.truncate(50_000);
     if let Ok(s) = serde_json::to_string(&list) {
         // 원자적 교체: 저장 도중 크래시에도 기존 캐시가 잘린 채 남지 않는다(재컬링 방지).
@@ -1516,7 +1517,9 @@ impl RawBlowApp {
                             // 얼굴 검사(YuNet): 디코드된 이미지에서 존재만 판정해 보고서에 기록(캐시됨).
                             #[cfg(feature = "ai")]
                             if let Some(fm) = face_model.as_ref() {
-                                q.face = Some(fm.has_face(&img));
+                                q.face = fm
+                                    .face_score(&img)
+                                    .map(|s| s >= rawblow_core::face_detect::FACE_SCORE_THRESH);
                             }
                             // AI 선명도(CLIP sharp 축): 보고서에 기록(캐시됨).
                             #[cfg(feature = "ai")]
@@ -1526,7 +1529,7 @@ impl RawBlowApp {
                             // 객체 포함(YOLO): 설정 클래스 포함 여부를 보고서에 기록(캐시됨).
                             #[cfg(feature = "ai")]
                             if let (Some(om), Some(idx)) = (object_model.as_ref(), object_class_idx) {
-                                q.object_match = Some(om.contains(&img, idx));
+                                q.object_match = om.detected(&img).map(|set| set.contains(&idx));
                             }
                             imgs.push(img);
                             metas.push((*real, q, cv));

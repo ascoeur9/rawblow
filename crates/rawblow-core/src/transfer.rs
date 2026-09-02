@@ -129,26 +129,50 @@ pub fn plan(req: &TransferRequest) -> Vec<(PathBuf, Label, u8)> {
     out
 }
 
-/// 대상 디렉토리에서 충돌을 피한 경로를 만든다. 이름이 바뀌면 새 파일명을 반환.
-pub(crate) fn unique_path(dir: &Path, file_name: &str, policy: ConflictPolicy) -> Option<(PathBuf, Option<String>)> {
-    let candidate = dir.join(file_name);
-    if !candidate.exists() {
-        return Some((candidate, None));
+/// 한 항목의 동반 파일이 같은 새 이름을 공유하도록 충돌을 한 번에 피한다(#103).
+/// 한쪽만 `_001`이 되면 RAW+JPG 페어가 깨진다. Skip이면 그룹 전체를 건너뛴다.
+pub(crate) fn unique_group(
+    dir: &Path,
+    file_names: &[String],
+    policy: ConflictPolicy,
+) -> Option<Vec<(PathBuf, Option<String>)>> {
+    if file_names.is_empty() {
+        return Some(Vec::new());
+    }
+    let free = |names: &[String]| names.iter().all(|n| !dir.join(n).exists());
+    if free(file_names) {
+        return Some(file_names.iter().map(|n| (dir.join(n), None)).collect());
     }
     match policy {
         ConflictPolicy::Skip => None,
         ConflictPolicy::AutoIncrement => {
-            let p = Path::new(file_name);
-            let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or(file_name);
-            let ext = p.extension().and_then(|s| s.to_str());
+            let parsed: Vec<(String, Option<String>)> = file_names
+                .iter()
+                .map(|n| {
+                    let p = Path::new(n);
+                    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or(n).to_string();
+                    let ext = p.extension().and_then(|s| s.to_str()).map(|s| s.to_string());
+                    (stem, ext)
+                })
+                .collect();
             for n in 1..100_000u32 {
-                let name = match ext {
-                    Some(e) => format!("{stem}_{n:03}.{e}"),
-                    None => format!("{stem}_{n:03}"),
-                };
-                let p = dir.join(&name);
-                if !p.exists() {
-                    return Some((p, Some(name)));
+                let names: Vec<String> = parsed
+                    .iter()
+                    .map(|(stem, ext)| match ext {
+                        Some(e) => format!("{stem}_{n:03}.{e}"),
+                        None => format!("{stem}_{n:03}"),
+                    })
+                    .collect();
+                if free(&names) {
+                    return Some(
+                        names
+                            .into_iter()
+                            .map(|name| {
+                                let p = dir.join(&name);
+                                (p, Some(name))
+                            })
+                            .collect(),
+                    );
                 }
             }
             None
@@ -310,6 +334,7 @@ pub fn execute_with_progress(
             continue;
         }
 
+        let mut planned: Vec<(PathBuf, String, String)> = Vec::new(); // src, original file_name, out_name
         for src in members {
             let file_name = match src.file_name().and_then(|s| s.to_str()) {
                 Some(n) => n.to_string(),
@@ -319,13 +344,6 @@ pub fn execute_with_progress(
                     continue;
                 }
             };
-            // 진행 보고 + 취소 확인(파일 처리 직전). 취소면 지금까지 결과로 즉시 반환.
-            progress.current = file_name.clone();
-            if !on_progress(&progress) {
-                report.canceled = true;
-                return report;
-            }
-            // 새 이름 = 템플릿 stem + 원본 확장자(없으면 stem). 리네임 없으면 원본명 그대로.
             let out_name = match &new_stem {
                 Some(stem) => match src.extension().and_then(|s| s.to_str()) {
                     Some(ext) => format!("{stem}.{ext}"),
@@ -333,42 +351,49 @@ pub fn execute_with_progress(
                 },
                 None => file_name.clone(),
             };
+            planned.push((src.clone(), file_name, out_name));
+        }
+        let names: Vec<String> = planned.iter().map(|(_, _, n)| n.clone()).collect();
+        let resolved = match unique_group(&target_dir, &names, req.conflict) {
+            Some(v) => v,
+            None => {
+                report.skipped += planned.len();
+                progress.done += planned.len();
+                continue;
+            }
+        };
 
-            let (dst, conflict_renamed) = match unique_path(&target_dir, &out_name, req.conflict) {
-                Some(v) => v,
-                None => {
-                    report.skipped += 1;
-                    progress.done += 1;
-                    continue;
-                }
-            };
+        for ((src, file_name, out_name), (dst, conflict_renamed)) in planned.into_iter().zip(resolved) {
+            progress.current = file_name.clone();
+            if !on_progress(&progress) {
+                report.canceled = true;
+                return report;
+            }
 
-            let size = std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+            let size = std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
             let result = match req.action {
-                Action::Copy => std::fs::copy(src, &dst).map(|_| ()),
-                Action::Move => move_file(src, &dst),
+                Action::Copy => std::fs::copy(&src, &dst).map(|_| ()),
+                Action::Move => move_file(&src, &dst),
             };
 
             match result {
                 Ok(()) => {
                     report.transferred += 1;
                     report.bytes += size;
-                    match kind_of(src) {
+                    match kind_of(&src) {
                         Some(Kind::Raw) => report.raw_count += 1,
                         Some(Kind::Image) => report.image_count += 1,
                         None => {}
                     }
-                    // Move인데 원본이 남아 있으면 copy는 됐으나 원본 삭제가 실패한 경우(#63).
-                    // 전송 성공(위에서 집계)은 유지하고, 원본 잔존만 따로 기록해 결과창에서 알린다.
                     if req.action == Action::Move && src.exists() {
-                        report.remove_failed.push((*src).clone());
+                        report.remove_failed.push(src.clone());
                     }
                     let final_name = conflict_renamed.unwrap_or(out_name);
                     if final_name != file_name {
                         report.renamed.push((file_name, final_name));
                     }
                 }
-                Err(err) => report.failed.push((src.clone(), err.to_string())),
+                Err(err) => report.failed.push((src, err.to_string())),
             }
             progress.done += 1;
             progress.bytes = report.bytes;

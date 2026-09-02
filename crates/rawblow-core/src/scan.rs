@@ -12,9 +12,8 @@ use walkdir::WalkDir;
 /// 원칙적으로 별개 항목이다. RAW+JPG/HEIC가 같은 폴더·같은 stem이면 한 항목.
 ///
 /// 예외(폴더 분리 동반 페어): 같은 stem이 **정확히 두 폴더**에 있고 한쪽은 RAW만,
-/// 다른쪽은 이미지만일 때는 한 항목으로 합친다 — 카메라/사용자가 RAW와 JPG를
-/// `루트 + "새 폴더"`, `RAW/ + JPG/`처럼 나눠 둔 흔한 구조. 세 폴더 이상이거나
-/// 양쪽 종류가 섞이면 모호하므로 합치지 않는다(서로 다른 촬영의 번호 충돌 보호).
+/// 다른쪽은 이미지만이며, 폴더가 직계(루트+하위)이거나 형제 `RAW/`·`JPG/`일 때만
+/// 한 항목으로 합친다(#107). 서로 다른 날짜 루트의 번호 충돌은 별개 항목.
 pub fn scan_folder(folder: &Path, recursive: bool, sort: SortOrder) -> Vec<Entry> {
     let max_depth = if recursive { usize::MAX } else { 1 };
     let mut groups: BTreeMap<(PathBuf, String), Vec<PathBuf>> = BTreeMap::new();
@@ -41,23 +40,27 @@ pub fn scan_folder(folder: &Path, recursive: bool, sort: SortOrder) -> Vec<Entry
         }
     }
 
-    // 폴더 분리 동반 페어 병합: stem 기준으로 재묶고, RAW만/이미지만 1:1이면 합친다.
-    let mut by_stem: BTreeMap<String, Vec<Vec<PathBuf>>> = BTreeMap::new();
-    for ((_, stem_l), members) in groups {
-        by_stem.entry(stem_l).or_default().push(members);
+    // 폴더 분리 동반 페어 병합: stem 기준으로 재묶고, RAW만/이미지만 1:1이면서
+    // 같은 촬영으로 볼 수 있는 폴더 관계일 때만 합친다(#107).
+    let mut by_stem: BTreeMap<String, Vec<(PathBuf, Vec<PathBuf>)>> = BTreeMap::new();
+    for ((parent, stem_l), members) in groups {
+        by_stem.entry(stem_l).or_default().push((parent, members));
     }
     let mut merged: Vec<Vec<PathBuf>> = Vec::new();
     for (_, mut sets) in by_stem {
         let only = |ms: &[PathBuf], k: Kind| ms.iter().all(|p| kind_of(p) == Some(k));
-        if sets.len() == 2
-            && ((only(&sets[0], Kind::Raw) && only(&sets[1], Kind::Image))
-                || (only(&sets[0], Kind::Image) && only(&sets[1], Kind::Raw)))
+        let related = sets.len() == 2 && split_pair_related(&sets[0].0, &sets[1].0);
+        if related
+            && ((only(&sets[0].1, Kind::Raw) && only(&sets[1].1, Kind::Image))
+                || (only(&sets[0].1, Kind::Image) && only(&sets[1].1, Kind::Raw)))
         {
-            let mut all = sets.pop().unwrap();
-            all.extend(sets.pop().unwrap());
+            let mut all = sets.pop().unwrap().1;
+            all.extend(sets.pop().unwrap().1);
             merged.push(all);
         } else {
-            merged.append(&mut sets);
+            for (_, mut members) in sets {
+                merged.push(std::mem::take(&mut members));
+            }
         }
     }
 
@@ -76,6 +79,30 @@ pub fn scan_folder(folder: &Path, recursive: bool, sort: SortOrder) -> Vec<Entry
 
     sort_entries(&mut entries, sort);
     entries
+}
+
+/// 폴더 분리 RAW+JPG를 한 촬영으로 볼 수 있는지(#107).
+/// 허용: 한쪽이 다른 쪽의 직계 부모(루트 + 하위폴더), 또는 형제 폴더명이 RAW/JPG(JPEG).
+fn split_pair_related(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    if a.parent() == Some(b) || b.parent() == Some(a) {
+        return true;
+    }
+    if a.parent() != b.parent() {
+        return false;
+    }
+    let name = |p: &Path| {
+        p.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+    };
+    let (na, nb) = (name(a), name(b));
+    let is_raw = |s: &str| s == "raw";
+    let is_jpg = |s: &str| s == "jpg" || s == "jpeg";
+    (is_raw(&na) && is_jpg(&nb)) || (is_jpg(&na) && is_raw(&nb))
 }
 
 /// 주어진 기준으로 항목을 정렬한다.

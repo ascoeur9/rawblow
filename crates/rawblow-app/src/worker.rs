@@ -163,6 +163,7 @@ impl Worker {
                         .as_ref()
                         .map(|k| rawblow_core::cache::exists(&cache_dir, k))
                         .unwrap_or(false);
+                    let mut ok = have;
                     if !have {
                         if let Some(key) = &cache_key {
                             let img = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -172,6 +173,7 @@ impl Worker {
                             .and_then(|r| r.ok());
                             if let Some(img) = img {
                                 rawblow_core::cache::store(&cache_dir, key, &img);
+                                ok = true;
                             }
                         }
                     }
@@ -182,7 +184,11 @@ impl Worker {
                         thumb: req.thumb,
                         prefetch: true,
                         dropped: false,
-                        image: Ok(empty_image()),
+                        image: if ok {
+                            Ok(empty_image())
+                        } else {
+                            Err("prefetch decode failed".into())
+                        },
                     });
                     continue;
                 }

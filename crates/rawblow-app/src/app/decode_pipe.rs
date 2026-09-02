@@ -21,8 +21,11 @@ impl RawBlowApp {
         let hi = (cur + AHEAD).min(f.len() - 1);
         for &real in &f[lo..=hi] {
             // 이미 GPU 캐시에 있거나, 곧 prio로 처리되거나, 이미 프리페치 대기면 건너뛴다.
+            // 전경에서 실패한/죽은 파일은 백그라운드가 무한 재시도하지 않는다(#100).
             if self.thumbs.contains(real)
                 || self.pending_thumb.contains(&real)
+                || self.failed_thumb.contains(&real)
+                || self.decode_dead(real)
                 || !self.pending_prefetch.insert(real)
             {
                 continue;
@@ -253,10 +256,13 @@ impl RawBlowApp {
             // 프리페치 완료 통지: 디스크 캐시만 채웠으므로 GPU 업로드 없이 pending만 정리한다.
             // (업로드 상한 uploads를 소비하지 않아 보이는 셀 업로드를 막지 않는다.)
             if res.prefetch {
-                // 현재 세대일 때만 제거: 폴더 전환 직후 도착한 옛 세대 프리페치 결과가
-                // 새 폴더의 동일 id pending을 잘못 지우지 않게 한다(그 항목 프리페치 누락 방지).
                 if res.generation == self.generation {
                     self.pending_prefetch.remove(&res.id);
+                    if res.image.is_err() {
+                        self.failed_thumb.insert(res.id);
+                        let n = self.decode_fails.entry(res.id).or_insert(0);
+                        *n = n.saturating_add(1);
+                    }
                 }
                 continue;
             }

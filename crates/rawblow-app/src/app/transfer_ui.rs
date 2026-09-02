@@ -211,7 +211,19 @@ impl RawBlowApp {
         let mut confirm_no = false; // 확인 오버레이 "돌아가기".
         // Enter로 시작(#63). typing은 대상 폴더/리네임 템플릿 TextEdit에 포커스가 있을 때
         // Enter를 시작으로 오인하지 않게 막는 가드.
-        let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+        let enter = ctx.input(|i| {
+            i.events.iter().any(|ev| {
+                matches!(
+                    ev,
+                    egui::Event::Key {
+                        key: egui::Key::Enter,
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    }
+                )
+            })
+        });
         let typing = ctx.memory(|m| m.focused().is_some());
         let tag_names: Vec<String> =
             ColorTag::ALL.iter().map(|t| self.cfg.tag_label(*t, lang)).collect();
@@ -953,7 +965,19 @@ impl RawBlowApp {
         let mut confirm_yes = false; // 확인 오버레이 "이동 시작".
         let mut confirm_no = false; // 확인 오버레이 "돌아가기".
         // Enter로 시작(#63). typing은 대상 폴더 TextEdit 포커스 중 Enter 오인을 막는 가드.
-        let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+        let enter = ctx.input(|i| {
+            i.events.iter().any(|ev| {
+                matches!(
+                    ev,
+                    egui::Event::Key {
+                        key: egui::Key::Enter,
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    }
+                )
+            })
+        });
         let typing = ctx.memory(|m| m.focused().is_some());
 
         // 대상 카운트(가벼움). 확장자 기준은 폴더 분포도 즉석 계산(EXIF 불필요).

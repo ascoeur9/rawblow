@@ -48,6 +48,7 @@ pub fn sidecar_txt_path(folder: &Path) -> PathBuf {
 /// 사이드카를 읽는다(없으면 None). 파손 시엔 손상본을 `.corrupt`로 치워 두고
 /// (다음 저장이 덮어써 증거가 사라지는 것 방지) 직전 백업(`.bak`)으로 복구를 시도한다 —
 /// 복구까지 실패하면 None. 파일이 아예 없을 때는 백업을 뒤지지 않는다(의도적 초기화 존중).
+/// `.bak`으로 읽으면 `session.json`에 다시 써서, 라벨을 안 바꾼 채 다시 열어도 분류가 남는다(#96).
 pub fn load(folder: &Path) -> Option<Session> {
     let data = std::fs::read_to_string(sidecar_path(folder)).ok()?;
     if let Ok(s) = serde_json::from_str(&data) {
@@ -56,7 +57,10 @@ pub fn load(folder: &Path) -> Option<Session> {
     let dir = sidecar_dir(folder);
     let _ = std::fs::rename(sidecar_path(folder), dir.join(SIDECAR_CORRUPT));
     let bak = std::fs::read_to_string(dir.join(SIDECAR_BAK)).ok()?;
-    serde_json::from_str(&bak).ok()
+    let session: Session = serde_json::from_str(&bak).ok()?;
+    // 복구한 내용을 메인 경로에 되살린다. 실패해도 이번 세션 메모리는 유효하다.
+    let _ = crate::fsio::write_atomic_nosync(&sidecar_path(folder), bak.as_bytes());
+    Some(session)
 }
 
 /// 멤버 경로를 폴더 기준 상대 문자열로(불가하면 파일명).
@@ -67,6 +71,20 @@ fn rel(folder: &Path, p: &Path) -> String {
         .map(|s| s.to_string())
         .or_else(|| p.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()))
         .unwrap_or_default()
+        .replace('\\', "/")
+}
+
+/// 사이드카 항목 키(#98). 재귀 스캔에서 같은 파일번호가 여러 장이면 stem만으로는 덮어쓴다.
+/// 폴더 기준 상대 경로에서 확장자를 뺀 값(`day1/DSC_0001`). 루트 파일은 기존처럼 stem.
+fn item_key(folder: &Path, e: &Entry) -> String {
+    let primary = e.members.first().map(|p| p.as_path()).unwrap_or(e.display.as_path());
+    let rel = rel(folder, primary);
+    let no_ext = Path::new(&rel).with_extension("");
+    no_ext
+        .to_str()
+        .map(|s| s.replace('\\', "/"))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| e.stem.clone())
 }
 
 /// 분류된(미선택 제외) 항목을 사이드카로 저장한다. txt도 동시 출력.
@@ -78,7 +96,7 @@ pub fn save(folder: &Path, entries: &[Entry]) -> std::io::Result<()> {
         }
         let members = e.members.iter().map(|p| rel(folder, p)).collect();
         items.insert(
-            e.stem.clone(),
+            item_key(folder, e),
             ItemRec {
                 label: e.label,
                 stars: e.stars,
@@ -170,15 +188,29 @@ pub fn render_txt(session: &Session) -> String {
     out
 }
 
-/// 로드한 세션의 라벨을 현재 항목에 복원한다(stem 대소문자 무시 매칭).
-pub fn apply(session: &Session, entries: &mut [Entry]) {
+/// 로드한 세션의 라벨을 현재 항목에 복원한다.
+/// 키는 상대 경로(확장자 제외). 옛 stem-only 세션은 그 stem이 **한 장뿐일 때**만 폴백(#98).
+pub fn apply(session: &Session, entries: &mut [Entry], folder: &Path) {
     let map: BTreeMap<String, (Label, u8, ColorTag)> = session
         .items
         .iter()
-        .map(|(k, v)| (k.to_ascii_lowercase(), (v.label, v.stars, v.tag)))
+        .map(|(k, v)| (k.replace('\\', "/").to_ascii_lowercase(), (v.label, v.stars, v.tag)))
         .collect();
+    let mut stem_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for e in entries.iter() {
+        *stem_counts.entry(e.stem.to_ascii_lowercase()).or_insert(0) += 1;
+    }
     for e in entries.iter_mut() {
-        if let Some((l, s, t)) = map.get(&e.stem.to_ascii_lowercase()) {
+        let key = item_key(folder, e).to_ascii_lowercase();
+        let stem_l = e.stem.to_ascii_lowercase();
+        let rec = map.get(&key).or_else(|| {
+            if stem_counts.get(&stem_l).copied().unwrap_or(0) == 1 {
+                map.get(&stem_l)
+            } else {
+                None
+            }
+        });
+        if let Some((l, s, t)) = rec {
             e.label = *l;
             e.stars = (*s).min(5); // 손편집/구포맷의 비정상 값 방어(표시 깨짐 방지).
             e.tag = *t;

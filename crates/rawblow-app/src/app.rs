@@ -524,7 +524,7 @@ impl RawBlowApp {
         // 사이드카 복원.
         if let Some(session) = sidecar::load(&folder) {
             let mut tmp: Vec<Entry> = items.iter().map(|i| i.entry.clone()).collect();
-            sidecar::apply(&session, &mut tmp);
+            sidecar::apply(&session, &mut tmp, &folder);
             for (it, e) in items.iter_mut().zip(tmp) {
                 it.entry.label = e.label;
                 it.entry.stars = e.stars;
@@ -550,6 +550,7 @@ impl RawBlowApp {
         self.failed_preview.clear();
         self.failed_thumb.clear();
         self.decode_fails.clear(); // real 인덱스가 재배정되므로 실패 카운터도 함께 리셋(#64).
+        self.meta_inflight = false; // 이전 폴더 EXIF 읽기가 새 폴더 메타를 막지 않게(#105).
         self.undo_stack.clear(); // real 인덱스 재배정 → 되돌리기 스냅샷도 무효(#78).
         self.redo_stack.clear();
         self.histo.clear();
@@ -718,6 +719,7 @@ impl RawBlowApp {
         self.failed_preview.clear();
         self.failed_thumb.clear();
         self.decode_fails.clear(); // real 인덱스가 재배정되므로 실패 카운터도 함께 리셋(#64).
+        self.meta_inflight = false; // 이전 폴더 EXIF 읽기가 새 폴더 메타를 막지 않게(#105).
         self.undo_stack.clear(); // real 인덱스 재배정 → 되돌리기 스냅샷도 무효(#78).
         self.redo_stack.clear();
         self.histo.clear();
@@ -834,6 +836,25 @@ impl RawBlowApp {
         self.filter != Filter::All
             || self.star_filter != StarFilter::Any
             || self.tag_filter != TagFilter::Any
+    }
+
+    /// 라벨 필터를 바꾸고, 인덱스를 새 목록 안에 두며 안 보이는 그리드 선택을 뺀다(#102).
+    fn apply_label_filter(&mut self, filt: Filter) {
+        let old_real = self.current_real();
+        self.filter = filt;
+        let f = self.filtered();
+        self.index = old_real
+            .and_then(|r| f.iter().position(|&x| x == r))
+            .unwrap_or(0);
+        if !f.is_empty() {
+            self.index = self.index.min(f.len() - 1);
+        } else {
+            self.index = 0;
+        }
+        self.selected.retain(|&r| f.contains(&r));
+        if self.selected.is_empty() {
+            self.sel_anchor = None;
+        }
     }
 
     /// 필터 세 축을 모두 기본값으로 되돌린다(#67). 레일의 개별 필터 클릭 핸들러와 동일하게
@@ -1607,7 +1628,10 @@ impl RawBlowApp {
                             }
                         }
                         Key::D => self.full_raw = !self.full_raw, // ORIG(원본 보기) 토글
-                        Key::F => self.filter = self.filter.next(),
+                        Key::F => {
+                            let next = self.filter.next();
+                            self.apply_label_filter(next);
+                        }
                         Key::G => self.jump_open = true,
                         Key::B if self.view == ViewMode::Grid => {
                             self.bulk_open = true;

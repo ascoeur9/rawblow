@@ -24,10 +24,11 @@ cargo test  -p rawblow-core              # 코어 로직 단위 테스트
 
 ## 배포용 클린 릴리스 빌드 (중요)
 
-배포 바이너리는 아래 두 가지를 반드시 적용합니다:
+배포 바이너리는 **빌드 경로 익명화**를 반드시 적용합니다. Windows 출하(ai 기본)는 정적 CRT를 쓰지 않습니다.
 
-1. **정적 CRT** — Windows에서 VC++ 재배포 패키지 없이 단독 실행되도록.
-   `.cargo/config.toml`의 `[target.x86_64-pc-windows-msvc] rustflags = ["-C","target-feature=+crt-static"]`로 자동 적용됨.
+1. **Windows CRT** — 출하 기본(`ai`)은 ORT prebuilt가 `/MD`라 **동적 CRT + VC++ DLL 동봉**.
+   `.cargo/config.toml`에 `+crt-static`은 **없습니다**(ORT와 충돌). 실제 빌드는 `scripts/build-release-windows.ps1`.
+   dumpbin 검증은 묶음 **안에** `vcruntime140*.dll` / `msvcp140*.dll`이 있어야 통과합니다(#106).
 
 2. **빌드 경로 익명화 (`--remap-path-prefix`)** — 그냥 빌드하면 바이너리에
    `C:\Users\<이름>\.cargo\registry\…` 처럼 **빌드한 사람의 사용자명·홈 경로**가 박힙니다
@@ -35,29 +36,26 @@ cargo test  -p rawblow-core              # 코어 로직 단위 테스트
    *(Cargo의 `profile.trim-paths`가 stable이 되면 그걸로 대체 가능. 현재는 RUSTFLAGS 사용.)*
 
 > ⚠️ **중요**: 환경변수 `RUSTFLAGS`를 설정하면 `.cargo/config.toml`의 `rustflags`가
-> **완전히 덮어써집니다**(append 아님). 따라서 배포용 PowerShell/bash 명령에서는
-> `+crt-static`을 직접 같이 넣어야 합니다 — 빠뜨리면 VCRUNTIME140.dll 의존이 부활해
-> 테스터 PC(VC++ 재배포 미설치)에서 `LoadLibrary failed with error 126`로 실행 불가
-> (이슈 #10, v0.2.9에서 발생).
+> **완전히 덮어써집니다**(append 아님). 배포는 스크립트로 돌리는 것을 권장합니다.
+> 정적 CRT 단독 exe가 필요하면 `ai`를 끈 별도 경로만 쓰세요:
+> `cargo build --release -p rawblow-app --no-default-features` + `RUSTFLAGS`에 `+crt-static`.
 
 ### Windows (PowerShell) — 권장: 빌드 스크립트
 ```powershell
 .\scripts\build-release-windows.ps1
-# 산출물: target\release\rawblow.exe  (단독 실행, 사용자명 없음)
+# 산출물: dist\RawBlow-v<버전>-windows-x86_64\  (exe + DLL 동봉)
 ```
 
-스크립트는 매 호출마다 `RUSTFLAGS`를 명시적으로 다시 설정하고, 빌드 직후
-`dumpbin /dependents`로 **VCRUNTIME140.dll / api-ms-win-crt-*.dll 의존이
-남았는지 자동 검증**합니다. 의존이 잡히면 종료 코드 1로 실패해서 그 바이너리는
-배포되지 못합니다 — 이슈 #10이 v0.2.10/v0.2.11에서 재발한 적이 있어(셸 세션에
-다른 `RUSTFLAGS`가 살아있던 케이스) 릴리스 빌드는 반드시 이 스크립트로 돌리는
-걸 권장합니다.
+스크립트는 매 호출마다 `RUSTFLAGS`를 remap만으로 설정하고, 빌드 직후
+`dumpbin /dependents`로 **묶음 자체완결성**(non-OS DLL이 전부 옆에 있는지)을 검증합니다.
+빠져 있으면 종료 코드 1입니다. 릴리스 빌드는 이 스크립트로 돌리는 걸 권장합니다.
 
 ### Windows (PowerShell) — 수동 빌드 (스크립트를 못 쓸 때)
 ```powershell
-$env:RUSTFLAGS = "-C target-feature=+crt-static --remap-path-prefix=$env:USERPROFILE=~"
+# 출하(ai) 경로: 정적 CRT 넣지 말 것. ORT /MD와 충돌합니다.
+$env:RUSTFLAGS = "--remap-path-prefix=$env:USERPROFILE=~"
 cargo build --release -p rawblow-app
-# 산출물: target\release\rawblow.exe  (단독 실행, 사용자명 없음)
+# VC++ 런타임 DLL을 exe 옆에 복사해야 재배포 미설치 PC에서 실행됩니다.
 ```
 
 ### macOS / Linux (bash/zsh)
@@ -67,17 +65,15 @@ RUSTFLAGS="--remap-path-prefix=$HOME=~" cargo build --release -p rawblow-app
 # 산출물: target/release/rawblow
 ```
 
-### 검증 (Windows 배포 바이너리에 VCRUNTIME 의존이 없어야 함)
+### 검증 (Windows 배포 묶음이 자체완결이어야 함)
 ```powershell
-# 결과에 VCRUNTIME140.dll / api-ms-win-crt-*.dll 이 나오면 정적 CRT가 빠진 것
-dumpbin /dependents target\release\rawblow.exe | Select-String -Pattern "vcruntime|api-ms-win-crt"
-# 정상 출력: (없음)
+dumpbin /dependents dist\RawBlow-v*\RawBlow.exe
 ```
 
 ### 확인 (사용자명이 안 박혔는지)
 ```bash
-# 결과가 0이어야 함 (경로는 ~\.cargo\… 형태로만 남음)
-strings target/release/rawblow* | grep -c "$USER"     # macOS/Linux
+# 결과가 0이어야 함. 부분문자열(hare⊂share)이 아니라 토큰만 본다(#110).
+strings target/release/rawblow* | grep -cE "(^|[^[:alnum:]_])${USER}([^[:alnum:]_]|$)"
 ```
 
 ## 릴리스 업로드 (gh)
