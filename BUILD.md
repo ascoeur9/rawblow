@@ -76,36 +76,49 @@ dumpbin /dependents dist\RawBlow-v*\RawBlow.exe
 strings target/release/rawblow* | grep -cE "(^|[^[:alnum:]_])${USER}([^[:alnum:]_]|$)"
 ```
 
-## 릴리스 업로드 (gh)
+## 릴리즈 절차
+
+GitHub에 올라가는 설치 파일(Windows exe + macOS zip)은 **태그 푸시 시 Actions**가 빌드한다.
+MS 스토어 제출만 로컬 Windows에서 한다.
+
+1. `Cargo.toml` 버전을 올리고 `scripts/release-notes/v<버전>.md` 를 작성한다.
+2. 커밋한 뒤 태그를 푸시한다.
 
 ```bash
-gh release create vX.Y.Z "RawBlow-vX.Y.Z-<os>.exe" \
-  --title "RawBlow vX.Y.Z" --notes-file notes.md --target main
+git tag -a vX.Y.Z -m "release: vX.Y.Z"
+git push origin vX.Y.Z
 ```
 
-### 플랫폼별 릴리즈 경로 (어디서 뭘 돌리나)
+3. Actions 워크플로 `GitHub Release`가 Windows NSIS 설치파일과 macOS arm64 zip을
+   만들어 그 태그 릴리즈에 올린다. 노트는 `scripts/release-notes/vX.Y.Z.md`의
+   `@github` / `@changelog` 구획이다.
+4. MS 스토어는 Windows PC에서:
 
-| 산출물 | 스크립트 | 돌릴 OS |
-|---|---|---|
-| Windows 인스톨러(NSIS) | `scripts\build-release-windows.ps1` | Windows 전용 |
-| MS 스토어 MSIX 제출 | `scripts\submit-msix-store.ps1` | Windows 전용 |
-| 원커맨드(윈도우 빌드+깃헙+스토어) | `scripts\release-all.ps1` | Windows 전용 |
-| macOS `.app` + 배포 zip | `bash scripts/build-macos.sh` | macOS |
-| GitHub 릴리즈(맥에서) | `bash scripts/release-github.sh` | macOS |
+```powershell
+.\scripts\release-all.ps1                 # 스토어만 (기본)
+.\scripts\release-all.ps1 -DryRun         # 제출 없이 MSIX 빌드만
+```
 
-macOS에서는 Windows 인스톨러도 MSIX 스토어 제출도 만들 수 없다(MSVC·NSIS·dumpbin·
-스토어 API가 전부 Windows 전용). 맥에서 릴리즈하려면:
+비상용: Actions가 안 될 때만 로컬에서 GitHub 게시 (`-WithGitHub` 또는 `scripts/release-github.sh`).
+
+### 플랫폼별 릴리즈 경로
+
+| 산출물 | 어디서 |
+|---|---|
+| GitHub Windows 설치파일 (`RawBlow-Setup-v*.exe`) | Actions (`windows-latest`) |
+| GitHub macOS zip (`RawBlow-v*-macos-arm64.zip`) | Actions (`macos-latest`, Apple Silicon) |
+| GitHub 릴리즈 게시 | 태그 `v*` 푸시 → Actions |
+| MS 스토어 MSIX 제출 | 로컬 Windows `.\scripts\release-all.ps1` |
+
+로컬에서 설치 파일만 다시 만들 때:
+
+```powershell
+.\scripts\build-release-windows.ps1    # Windows
+```
 
 ```bash
-bash scripts/build-macos.sh        # dist/RawBlow.app + dist/RawBlow-v<버전>-macos-arm64.zip
-bash scripts/release-github.sh --dry-run   # 본문·에셋 확인
-bash scripts/release-github.sh             # 태그 푸시 + gh 릴리즈 게시
+bash scripts/build-macos.sh            # macOS
 ```
-
-`release-github.sh`는 `release-all.ps1`의 GitHub 절반만 이식한 것이다 — 릴리즈 노트
-(`scripts/release-notes/v<버전>.md`)의 `@github`/`@changelog` 구획을 같은 규칙으로 뽑아 쓰고,
-태그 중복도 똑같이 막는다. `dist/`에 Windows에서 만든 `RawBlow-Setup-v<버전>.exe`를 미리
-복사해 두면 함께 첨부하고, 없으면 경고 후 macOS 에셋만 올린다.
 
 - `.exe` 파일 아이콘은 `crates/rawblow-app/build.rs`가 로고를 Windows 리소스로 임베드(빌드 시 자동).
 - macOS 앱 아이콘(`.icns`)은 `bash scripts/gen-macos-icon.sh`로 생성한다(`logo.rs` 기하 + macOS

@@ -48,6 +48,20 @@ pub enum ConflictPolicy {
     Skip,
 }
 
+/// 전송 파일을 dest 아래에 어떻게 나눌지(#113/#89). 한 축만 고른다(라벨·태그 동시 분기 없음).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default)]
+pub enum TransferSplit {
+    /// 한 폴더로. dest가 지금 열린 폴더와 같으면 기본값은 `{원본}/selected`이며, 원본 폴더 자체는 고를 수 없다.
+    #[default]
+    None,
+    /// QWER 라벨별 (`pick`/`hold`/`reject`/`unrated`, 별점만 있으면 `Nstar`).
+    Label,
+    /// 별점별 (`1star`…`5star`, 무별점은 `unrated`).
+    Stars,
+    /// 색 태그별 (`@teal` …, 무태그는 `@untagged`).
+    Tag,
+}
+
 pub struct TransferRequest<'a> {
     pub entries: &'a [Entry],
     pub labels: Vec<Label>,
@@ -59,9 +73,8 @@ pub struct TransferRequest<'a> {
     pub action: Action,
     pub companions: Companions,
     pub dest: PathBuf,
-    pub split_by_label: bool,
-    /// 태그별 하위폴더(`@green` 등)로 분기(#27).
-    pub split_by_tag: bool,
+    /// 하위폴더 분기 축. `None`이면 dest 한 폴더에 모두 둔다.
+    pub split: TransferSplit,
     pub conflict: ConflictPolicy,
     /// 분류 기반 파일명 변경(#26). `None`이면 원본 이름 유지.
     pub rename: Option<RenameRule>,
@@ -319,14 +332,7 @@ pub fn execute_with_progress(
             Some(render_name(&rule.template, &ctx))
         });
 
-        // 분기 폴더: 라벨(있으면) + 태그(있으면)(#27).
-        let mut target_dir = req.dest.clone();
-        if req.split_by_label {
-            target_dir = target_dir.join(split_folder(e.label, e.stars));
-        }
-        if req.split_by_tag && e.tag != ColorTag::None {
-            target_dir = target_dir.join(format!("@{}", e.tag.slug()));
-        }
+        let target_dir = split_dir(&req.dest, req.split, e);
         if let Err(err) = std::fs::create_dir_all(&target_dir) {
             for src in &members {
                 report.failed.push(((*src).clone(), err.to_string()));
@@ -505,7 +511,7 @@ fn label_folder(label: Label) -> &'static str {
     }
 }
 
-/// split_by_label 시 분기 폴더명. 라벨이 있으면 라벨 폴더, 라벨 없이 별점만 매긴 항목은
+/// 라벨 분기 폴더명. 라벨이 있으면 라벨 폴더, 라벨 없이 별점만 매긴 항목은
 /// `5star` 같은 별점 폴더로 보낸다(#23/#24 함정 방지: 별점-only 베스트컷이 `unrated/`로 가지 않게).
 fn split_folder(label: Label, stars: u8) -> String {
     if label != Label::Unrated {
@@ -514,6 +520,23 @@ fn split_folder(label: Label, stars: u8) -> String {
         format!("{}star", stars.min(5))
     } else {
         "unrated".to_string()
+    }
+}
+
+fn stars_folder(stars: u8) -> String {
+    if stars >= 1 {
+        format!("{}star", stars.min(5))
+    } else {
+        "unrated".to_string()
+    }
+}
+
+fn split_dir(dest: &Path, split: TransferSplit, e: &Entry) -> PathBuf {
+    match split {
+        TransferSplit::None => dest.to_path_buf(),
+        TransferSplit::Label => dest.join(split_folder(e.label, e.stars)),
+        TransferSplit::Stars => dest.join(stars_folder(e.stars)),
+        TransferSplit::Tag => dest.join(format!("@{}", e.tag.slug())),
     }
 }
 

@@ -434,11 +434,70 @@ pub(super) fn reveal_in_file_manager(path: &std::path::Path) {
     };
 }
 
+/// 맥 HFS NFD 한글을 NFC로 묶어 표시한다(#94). 자모가 분리되어 깨져 보이던 경로·파일명용.
+pub(super) fn nfc_hangul(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let cu = c as u32;
+        if (0x1100..=0x1112).contains(&cu) && i + 1 < chars.len() {
+            let v = chars[i + 1] as u32;
+            if (0x1161..=0x1175).contains(&v) {
+                let mut t_idx = 0u32;
+                let mut used = 2;
+                if i + 2 < chars.len() {
+                    let t = chars[i + 2] as u32;
+                    if (0x11A8..=0x11C2).contains(&t) {
+                        t_idx = t - 0x11A8 + 1;
+                        used = 3;
+                    }
+                }
+                let l = cu - 0x1100;
+                let v = v - 0x1161;
+                let sidx = (l * 21 + v) * 28 + t_idx;
+                if let Some(ch) = char::from_u32(0xAC00 + sidx) {
+                    out.push(ch);
+                    i += used;
+                    continue;
+                }
+            }
+        }
+        if (0xAC00..=0xD7A3).contains(&cu) && (cu - 0xAC00) % 28 == 0 && i + 1 < chars.len() {
+            let t = chars[i + 1] as u32;
+            if (0x11A8..=0x11C2).contains(&t) {
+                if let Some(ch) = char::from_u32(cu + (t - 0x11A8 + 1)) {
+                    out.push(ch);
+                    i += 2;
+                    continue;
+                }
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+pub(super) fn nfc_path_label(path: &std::path::Path) -> String {
+    nfc_hangul(&path.to_string_lossy())
+}
+
+pub(super) fn nfc_file_name(path: &std::path::Path) -> String {
+    nfc_hangul(
+        &path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string_lossy().into_owned()),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         af_display_coords, af_focus_center, compute_histo, exif_lines, fmt_bytes,
-        display_zoom_ratio, format_capture_datetime, hex_str, parse_hex_rgb, sync_view_mag,
+        display_zoom_ratio, format_capture_datetime, hex_str, nfc_hangul, parse_hex_rgb, sync_view_mag,
         ExifInfo, ViewMag,
     };
     use rawblow_core::af::{AfInfo, AfPoint};
@@ -897,6 +956,16 @@ mod tests {
         // ISO만 있으면 노출 한 줄만(카메라·렌즈·일시 없음).
         let iso_only = ExifInfo { iso: Some("100".into()), ..Default::default() };
         assert_eq!(exif_lines(&iso_only), vec!["ISO 100".to_string()]);
+    }
+
+    #[test]
+    fn nfc_hangul_composes_jamo() {
+        // 맥 NFD: ㄱ+ㅏ → 가 (#94)
+        let nfd: String = ['\u{1100}', '\u{1161}'].into_iter().collect();
+        assert_eq!(nfc_hangul(&nfd), "가");
+        let nfd_t: String = ['\u{1100}', '\u{1161}', '\u{11AB}'].into_iter().collect();
+        assert_eq!(nfc_hangul(&nfd_t), "간");
+        assert_eq!(nfc_hangul("이미NFC"), "이미NFC");
     }
 
     #[test]

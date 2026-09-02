@@ -291,7 +291,11 @@ pub fn draw_histogram(ui: &Ui, rect: Rect, bins: &[[u32; 64]; 3], max: u32) {
 /// 간단한 LRU 텍스처 캐시. 키 = 항목 인덱스. 원본 픽셀 크기를 함께 보관(1:1 줌용).
 pub struct TexCache {
     map: HashMap<usize, (egui::TextureHandle, bool, [usize; 2])>, // (handle, is_full_raw, size)
-    order: VecDeque<usize>,
+    /// LRU: (id, 이 항목이 들어온 시각). 같은 id를 다시 touch하면 새 항목을 뒤에 붙이고
+    /// 앞의 옛 항목은 꺼낼 때 gen이 안 맞으면 건너뛴다 → O(1) (#117).
+    order: VecDeque<(usize, u32)>,
+    gen: HashMap<usize, u32>,
+    tick: u32,
     cap: usize,
     // eviction된 핸들을 바로 버리지 않고 잠시 살려두는 유예(은퇴) 큐.
     // egui/wgpu는 핸들이 드롭되면 프레임 경계에서 GPU 텍스처를 파괴하는데, 빠른 스크롤 중
@@ -317,6 +321,8 @@ impl TexCache {
         TexCache {
             map: HashMap::new(),
             order: VecDeque::new(),
+            gen: HashMap::new(),
+            tick: 0,
             cap,
             retired: VecDeque::new(),
             retire_keep,
@@ -361,18 +367,19 @@ impl TexCache {
         //  제출 중인 프레임이 참조하면 "Texture ... destroyed"로 크래시.)
         if let Some((old, _, _)) = self.map.insert(id, (handle, full, size)) {
             self.retire(old);
-            self.touch(id);
-        } else {
-            self.order.push_back(id);
         }
-        // LRU: 가장 오래 안 쓰인 것부터 제거(현재 항목은 매 프레임 touch되어 뒤쪽이라 보호됨).
-        while self.order.len() > self.cap {
-            if let Some(old_id) = self.order.pop_front() {
-                if old_id != id {
-                    if let Some((handle, _, _)) = self.map.remove(&old_id) {
-                        self.retire(handle);
-                    }
-                }
+        self.touch(id);
+        while self.map.len() > self.cap {
+            let Some((old_id, t)) = self.order.pop_front() else { break };
+            if self.gen.get(&old_id) != Some(&t) {
+                continue; // 더 최근 touch가 뒤에 있음
+            }
+            if old_id == id {
+                continue;
+            }
+            if let Some((handle, _, _)) = self.map.remove(&old_id) {
+                self.gen.remove(&old_id);
+                self.retire(handle);
             }
         }
     }
@@ -402,12 +409,15 @@ impl TexCache {
     /// 크래시 방지). order(LRU) 앞쪽=오래된 것부터 넣어, 상한에 걸리면 현재 프레임에 그려졌을
     /// 가능성이 큰 최신 핸들이 남도록 한다.
     pub fn retire_all(&mut self) {
-        while let Some(id) = self.order.pop_front() {
+        while let Some((id, t)) = self.order.pop_front() {
+            if self.gen.get(&id) != Some(&t) {
+                continue;
+            }
             if let Some((handle, _, _)) = self.map.remove(&id) {
                 self.retired.push_back((handle, RETIRE_TTL_FRAMES));
             }
         }
-        // order에 없던 잔여 핸들도 안전하게 유예.
+        self.gen.clear();
         for (_, (handle, _, _)) in self.map.drain() {
             self.retired.push_back((handle, RETIRE_TTL_FRAMES));
         }
@@ -417,9 +427,8 @@ impl TexCache {
     }
 
     fn touch(&mut self, id: usize) {
-        if let Some(pos) = self.order.iter().position(|&x| x == id) {
-            self.order.remove(pos);
-        }
-        self.order.push_back(id);
+        self.tick = self.tick.wrapping_add(1);
+        self.gen.insert(id, self.tick);
+        self.order.push_back((id, self.tick));
     }
 }

@@ -98,6 +98,10 @@ fn tile_bytes(z: u8, x: u32, y: u32, cache: &Path) -> Option<Vec<u8>> {
     let b = fetch_tile(z, x, y)?;
     let _ = std::fs::create_dir_all(cache);
     let _ = std::fs::write(&file, &b);
+    let dir = cache.to_path_buf();
+    std::thread::spawn(move || {
+        rawblow_core::cache::trim_ext(&dir, 256 * 1024 * 1024, "png");
+    });
     Some(b)
 }
 

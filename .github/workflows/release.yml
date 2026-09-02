@@ -1,0 +1,102 @@
+# GitHub 릴리즈 산출물: Windows NSIS 설치파일 + macOS arm64 zip.
+# 태그 v* 를 푸시하면 빌드해서 그 태그 릴리즈에 올린다.
+# MS 스토어(MSIX)는 로컬 Windows 에서 scripts/release-all.ps1 (기본=스토어만).
+name: GitHub Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "다시 빌드할 태그 (예: v0.6.1). 이미 origin 에 있어야 함."
+        required: true
+
+concurrency:
+  group: github-release-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: Windows · NSIS setup
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install NSIS
+        run: choco install nsis --no-progress -y
+      - name: Build installer
+        shell: pwsh
+        run: ./scripts/build-release-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-setup
+          path: dist/RawBlow-Setup-v*.exe
+          if-no-files-found: error
+
+  macos:
+    name: macOS · arm64 zip
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build .app zip
+        run: bash scripts/build-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-zip
+          path: dist/RawBlow-v*-macos-arm64.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VER="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -1)"
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then TAG="${GITHUB_REF_NAME}"; fi
+          if [ "$TAG" != "v${VER}" ]; then
+            echo "!! 태그 $TAG 와 Cargo.toml version $VER 이 다릅니다" >&2
+            exit 1
+          fi
+          SETUP="dist/RawBlow-Setup-v${VER}.exe"
+          MAC="dist/RawBlow-v${VER}-macos-arm64.zip"
+          [ -f "$SETUP" ] || { echo "!! 없음: $SETUP"; ls -la dist; exit 1; }
+          [ -f "$MAC" ] || { echo "!! 없음: $MAC"; ls -la dist; exit 1; }
+          BODY="$(mktemp)"
+          bash scripts/github-release-body.sh "$VER" > "$BODY"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$SETUP" "$MAC" --clobber
+            gh release edit "$TAG" --title "RawBlow $TAG" --notes-file "$BODY"
+          else
+            gh release create "$TAG" --title "RawBlow $TAG" --notes-file "$BODY" "$SETUP" "$MAC"
+          fi
+          echo "https://github.com/${{ github.repository }}/releases/tag/${TAG}"

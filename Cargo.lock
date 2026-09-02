@@ -1565,6 +1565,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "heif-oxide"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e12acb6edcb3bb9227dc6a06dd375a221eafe397ae2de72a876d79313831e365"
+dependencies = [
+ "rust_h265",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3054,6 +3064,7 @@ version = "0.6.0"
 dependencies = [
  "chrono",
  "crossbeam-channel",
+ "heif-oxide",
  "image 0.25.10",
  "imagepipe",
  "jpeg-decoder",
@@ -3206,6 +3217,12 @@ dependencies = [
  "untrusted",
  "windows-sys 0.52.0",
 ]
+
+[[package]]
+name = "rust_h265"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dde60f5842f27ed06f1d84844cacd93d1a159f606365b30a5594c771e6b4eb17"
 
 [[package]]
 name = "rustc-hash"

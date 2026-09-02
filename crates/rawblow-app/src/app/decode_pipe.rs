@@ -22,15 +22,17 @@ impl RawBlowApp {
         for &real in &f[lo..=hi] {
             // 이미 GPU 캐시에 있거나, 곧 prio로 처리되거나, 이미 프리페치 대기면 건너뛴다.
             // 전경에서 실패한/죽은 파일은 백그라운드가 무한 재시도하지 않는다(#100).
+            let display = &self.items[real].entry.display;
             if self.thumbs.contains(real)
                 || self.pending_thumb.contains(&real)
                 || self.failed_thumb.contains(&real)
                 || self.decode_dead(real)
+                || rawblow_core::heif::is_heic_path(display)
                 || !self.pending_prefetch.insert(real)
             {
                 continue;
             }
-            let path = self.items[real].entry.display.clone();
+            let path = display.clone();
             self.worker.request_background(DecodeRequest {
                 id: real,
                 path,
@@ -227,6 +229,47 @@ impl RawBlowApp {
         }
     }
 
+    /// HEIC 디코드 실패 시 같은 항목의 RAW로 한 번 재시도(#97).
+    fn retry_heic_as_raw(&mut self, real: usize, thumb: bool) -> bool {
+        let Some(it) = self.items.get(real) else { return false };
+        if !rawblow_core::heif::is_heic_path(&it.entry.display) {
+            return false;
+        }
+        let Some(raw) = it
+            .entry
+            .members
+            .iter()
+            .find(|p| rawblow_core::model::kind_of(p) == Some(rawblow_core::model::Kind::Raw))
+            .cloned()
+        else {
+            return false;
+        };
+        if thumb {
+            self.pending_thumb.insert(real);
+            self.worker.request_thumb(DecodeRequest {
+                id: real,
+                path: raw,
+                full_raw: false,
+                max_edge: Some(THUMB_EDGE),
+                thumb: true,
+                prefetch: false,
+                generation: self.generation,
+            });
+        } else {
+            self.pending_preview.insert(real);
+            self.worker.request_preview(DecodeRequest {
+                id: real,
+                path: raw,
+                full_raw: self.full_raw,
+                max_edge: if self.full_raw { Some(ORIG_EDGE) } else { Some(PREVIEW_EDGE) },
+                thumb: false,
+                prefetch: false,
+                generation: self.generation,
+            });
+        }
+        true
+    }
+
     /// 워커 결과를 텍스처로 업로드.
     pub(super) fn drain_results(&mut self, ctx: &egui::Context) {
         // 프레임당 GPU 업로드 수를 제한해 버스트로 메인 스레드가 멈추는 것을 방지.
@@ -312,17 +355,28 @@ impl RawBlowApp {
                     );
                     self.cache.insert(res.id, handle, res.full_raw);
                     uploads += 1;
+                    if self.full_raw && !res.full_raw && self.current_real() == Some(res.id) {
+                        self.toast_info(tr(self.lang, "원본 해상도를 못 구해 프리뷰로 표시합니다").into());
+                    }
                 }
             } else if res.thumb {
-                // 디코딩 실패는 마킹해 무한 재시도(=keep-alive 무한 루프)를 막는다.
+                let n = self.decode_fails.entry(res.id).or_insert(0);
+                *n = n.saturating_add(1);
+                if *n == 1 {
+                    if self.retry_heic_as_raw(res.id, true) {
+                        continue;
+                    }
+                }
                 self.failed_thumb.insert(res.id);
-                // 누적 실패 횟수(#64): decode_dead()가 3 이상을 영구 손상으로 판단한다.
-                let n = self.decode_fails.entry(res.id).or_insert(0);
-                *n = n.saturating_add(1);
             } else {
-                self.failed_preview.insert(res.id);
                 let n = self.decode_fails.entry(res.id).or_insert(0);
                 *n = n.saturating_add(1);
+                if *n == 1 {
+                    if self.retry_heic_as_raw(res.id, false) {
+                        continue;
+                    }
+                }
+                self.failed_preview.insert(res.id);
             }
         }
         // 업로드 상한에 걸려 남은 결과가 있으면 곧바로 다음 프레임에서 이어 비운다.

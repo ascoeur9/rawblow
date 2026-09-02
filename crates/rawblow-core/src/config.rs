@@ -454,6 +454,74 @@ pub struct FolderResume {
     pub file: String,
 }
 
+/// 한 폴더 모드에서 dest가 원본과 같을 때 쓰는 하위폴더 이름(#113).
+pub const TRANSFER_FLAT_SUBFOLDER: &str = "selected";
+
+/// 전송 dest 기본값(#113). Cmd+E에서 바꿀 수 있지만 다음 열기는 다시 이 기본값.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TransferDestMode {
+    /// 지금 보고 있는 폴더. 한 폴더 모드면 기본 dest는 `{폴더}/selected`.
+    #[default]
+    CurrentFolder,
+    /// 설정에 저장한 절대 경로(비어 있으면 OS 사진 폴더).
+    Fixed,
+}
+
+/// 두 경로가 같은 폴더를 가리키는지. 존재하면 canonicalize, 아니면 구성 요소로 비교.
+pub fn same_folder(a: &Path, b: &Path) -> bool {
+    fn norm(p: &Path) -> PathBuf {
+        match p.canonicalize() {
+            Ok(c) => c,
+            Err(_) => {
+                let mut out = PathBuf::new();
+                for c in p.components() {
+                    match c {
+                        std::path::Component::CurDir => {}
+                        std::path::Component::ParentDir => {
+                            out.pop();
+                        }
+                        other => out.push(other.as_os_str()),
+                    }
+                }
+                out
+            }
+        }
+    }
+    let na = norm(a);
+    let nb = norm(b);
+    if na.as_os_str().is_empty() || nb.as_os_str().is_empty() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        na.to_string_lossy().eq_ignore_ascii_case(&nb.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        na == nb
+    }
+}
+
+/// OS 사진 폴더. 없으면 `Pictures` 상대 경로로 폴백.
+pub fn pictures_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(user) = std::env::var("USERPROFILE") {
+            return PathBuf::from(user).join("Pictures");
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join("Pictures");
+    }
+    PathBuf::from("Pictures")
+}
+
+/// 한 폴더 모드에서 dest가 지금 열린 폴더와 같으면 시작할 수 없다(#113).
+pub fn dest_is_open_folder(dest: &Path, source: Option<&Path>, split: crate::transfer::TransferSplit) -> bool {
+    split == crate::transfer::TransferSplit::None
+        && source.is_some_and(|s| same_folder(dest, s))
+}
+
 /// 사진을 넘길 때 원본 보기(ORIG) 상태를 이어가는 방식(#87). 사용자마다 빠른 탐색과
 /// 원본 연속 확인 중 선호가 갈려 설정에서 고른다.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -476,7 +544,7 @@ pub enum RenameMode {
 }
 
 /// 전송(내보내기) 다이얼로그의 마지막 사용 옵션(#57). 시작할 때 저장하고 다음 열기 때
-/// 기본값으로 로드한다. dest(대상 폴더)는 저장하지 않는다 — 열 때마다 현재 폴더 기준 제안.
+/// 기본값으로 로드한다. dest(대상 폴더)는 저장하지 않는다 — 열 때마다 설정 기본값으로 제안(#113).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct TransferDefaults {
@@ -485,7 +553,12 @@ pub struct TransferDefaults {
     pub tags: Vec<crate::model::ColorTag>,
     pub action: crate::transfer::Action,
     pub companions: crate::transfer::Companions,
+    pub split: crate::transfer::TransferSplit,
+    /// 구 설정 호환(#27/#57). 직렬화하지 않고, `split`이 None일 때만 승격한다.
+    #[serde(default, skip_serializing)]
     pub split_by_label: bool,
+    /// 구 설정 호환(#27).
+    #[serde(default, skip_serializing)]
     pub split_by_tag: bool,
     pub conflict: crate::transfer::ConflictPolicy,
     pub rename_mode: RenameMode,
@@ -504,6 +577,7 @@ impl Default for TransferDefaults {
             tags: Vec::new(),
             action: crate::transfer::Action::Copy,
             companions: crate::transfer::Companions::Both,
+            split: crate::transfer::TransferSplit::None,
             split_by_label: false,
             split_by_tag: false,
             conflict: crate::transfer::ConflictPolicy::AutoIncrement,
@@ -511,6 +585,23 @@ impl Default for TransferDefaults {
             rename_template: "{gradeseq}_{orig}".into(),
             rename_numbering: crate::transfer::Numbering::GradeGrouped,
             scope_all: true,
+        }
+    }
+}
+
+impl TransferDefaults {
+    /// 새 `split` 필드, 없으면 구 `split_by_label`/`split_by_tag` 플래그.
+    pub fn split(&self) -> crate::transfer::TransferSplit {
+        use crate::transfer::TransferSplit;
+        if self.split != TransferSplit::None {
+            return self.split;
+        }
+        if self.split_by_label {
+            TransferSplit::Label
+        } else if self.split_by_tag {
+            TransferSplit::Tag
+        } else {
+            TransferSplit::None
         }
     }
 }
@@ -590,6 +681,12 @@ pub struct Config {
     /// 설정을 건드리지 않은 사용자의 체감은 v0.5.10과 같다.
     #[serde(default)]
     pub view_carry: ViewCarry,
+    /// 전송 dest 기본값(#113). 기본은 지금 보고 있는 폴더.
+    #[serde(default)]
+    pub transfer_dest_mode: TransferDestMode,
+    /// `Fixed`일 때 쓸 절대 경로. 비어 있으면 OS 사진 폴더.
+    #[serde(default)]
+    pub transfer_dest_folder: String,
     /// 폴더별 마지막으로 보던 사진(#86). 최근 사용 순(맨 앞이 가장 최근), 최대 64개.
     #[serde(default)]
     pub folder_resume: Vec<FolderResume>,
@@ -620,12 +717,41 @@ impl Default for Config {
             transfer_defaults: TransferDefaults::default(), // 전송 마지막 사용 옵션(#57).
             organize_defaults: OrganizeDefaults::default(), // 정리 마지막 사용 옵션(#57).
             view_carry: ViewCarry::default(), // 이동 시 ORIG 유지 방식(#87). 기본=기존 동작.
+            transfer_dest_mode: TransferDestMode::default(),
+            transfer_dest_folder: String::new(),
             folder_resume: Vec::new(),        // 폴더별 재개 위치(#86). 처음엔 비어 있음.
         }
     }
 }
 
 impl Config {
+    /// Cmd+E dest 기본값(#113). 한 폴더 모드이고 루트가 원본 폴더와 같으면 `{원본}/selected`.
+    pub fn transfer_default_dest(
+        &self,
+        source: Option<&Path>,
+        split: crate::transfer::TransferSplit,
+    ) -> PathBuf {
+        let root = match self.transfer_dest_mode {
+            TransferDestMode::CurrentFolder => source.map(|p| p.to_path_buf()).unwrap_or_default(),
+            TransferDestMode::Fixed => {
+                let p = self.transfer_dest_folder.trim();
+                if p.is_empty() {
+                    pictures_dir()
+                } else {
+                    PathBuf::from(p)
+                }
+            }
+        };
+        if crate::transfer::TransferSplit::None == split {
+            if let Some(src) = source {
+                if same_folder(&root, src) {
+                    return src.join(TRANSFER_FLAT_SUBFOLDER);
+                }
+            }
+        }
+        root
+    }
+
     /// 컬러 태그의 표시 이름: 커스텀 이름이 있으면 그것을, 없으면 기본 색 이름(다국어).
     pub fn tag_label(&self, tag: crate::model::ColorTag, lang: Lang) -> String {
         match tag.index() {
@@ -839,7 +965,7 @@ mod tests {
                 labels: vec![crate::model::Label::Pick, crate::model::Label::Hold],
                 stars: vec![4, 5],
                 action: crate::transfer::Action::Move,
-                split_by_label: true,
+                split: crate::transfer::TransferSplit::Label,
                 rename_mode: RenameMode::Custom,
                 rename_template: "{orig}_final".into(),
                 rename_numbering: crate::transfer::Numbering::Order,
@@ -858,7 +984,7 @@ mod tests {
         assert_eq!(l.transfer_defaults.labels, c.transfer_defaults.labels);
         assert_eq!(l.transfer_defaults.stars, vec![4, 5]);
         assert_eq!(l.transfer_defaults.action, crate::transfer::Action::Move);
-        assert!(l.transfer_defaults.split_by_label);
+        assert_eq!(l.transfer_defaults.split(), crate::transfer::TransferSplit::Label);
         assert_eq!(l.transfer_defaults.rename_mode, RenameMode::Custom);
         assert_eq!(l.transfer_defaults.rename_template, "{orig}_final");
         assert_eq!(l.transfer_defaults.rename_numbering, crate::transfer::Numbering::Order);
@@ -920,5 +1046,53 @@ mod tests {
         assert!(!path.exists());
         let corrupt = dir.path().join("config.json.corrupt");
         assert_eq!(std::fs::read_to_string(corrupt).unwrap(), "{ not json !!");
+    }
+
+    #[test]
+    fn transfer_default_dest_flat_uses_selected_under_source() {
+        use crate::transfer::TransferSplit;
+        let src = PathBuf::from("/photos/job");
+        let c = Config::default();
+        assert_eq!(c.transfer_dest_mode, TransferDestMode::CurrentFolder);
+        assert_eq!(
+            c.transfer_default_dest(Some(&src), TransferSplit::None),
+            src.join(TRANSFER_FLAT_SUBFOLDER)
+        );
+        // 분기 모드면 지금 폴더 자체가 dest(하위에 pick/reject 등이 생긴다).
+        assert_eq!(c.transfer_default_dest(Some(&src), TransferSplit::Label), src);
+    }
+
+    #[test]
+    fn transfer_default_dest_fixed_uses_stored_or_pictures() {
+        use crate::transfer::TransferSplit;
+        let src = PathBuf::from("/photos/job");
+        let mut c = Config {
+            transfer_dest_mode: TransferDestMode::Fixed,
+            transfer_dest_folder: "/exports".into(),
+            ..Default::default()
+        };
+        assert_eq!(c.transfer_default_dest(Some(&src), TransferSplit::None), PathBuf::from("/exports"));
+        c.transfer_dest_folder.clear();
+        assert_eq!(c.transfer_default_dest(Some(&src), TransferSplit::None), pictures_dir());
+    }
+
+    #[test]
+    fn dest_is_open_folder_only_in_flat_mode() {
+        use crate::transfer::TransferSplit;
+        let src = PathBuf::from("/photos/job");
+        assert!(dest_is_open_folder(&src, Some(&src), TransferSplit::None));
+        assert!(!dest_is_open_folder(&src, Some(&src), TransferSplit::Label));
+        assert!(!dest_is_open_folder(&src.join("selected"), Some(&src), TransferSplit::None));
+        assert!(!dest_is_open_folder(&src, None, TransferSplit::None));
+    }
+
+    #[test]
+    fn legacy_split_by_label_flag_promotes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, r#"{"transfer_defaults":{"split_by_label":true}}"#).unwrap();
+        let l = load_from(&path);
+        assert_eq!(l.transfer_defaults.split(), crate::transfer::TransferSplit::Label);
+        assert_eq!(l.transfer_dest_mode, TransferDestMode::CurrentFolder);
     }
 }

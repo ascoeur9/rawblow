@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// 핵심 비용은 "읽은 바이트"이므로, 전체파일(수십 MB) 폴백을 정량 추적한다. 거의 0비용.
 pub static BYTES_READ: AtomicU64 = AtomicU64::new(0);
 #[inline]
-fn count_read(n: usize) {
+pub(crate) fn count_read(n: usize) {
     BYTES_READ.fetch_add(n as u64, Ordering::Relaxed);
 }
 /// 카운터를 0으로 리셋하고 이전 값을 반환(프로파일러가 디코드 단위로 측정).
@@ -144,6 +144,8 @@ pub fn decode_file(path: &Path, opts: DecodeOptions) -> Result<DecodedImage, Dec
                 }
                 let bytes = read_whole(path)?;
                 decode_jpeg_scaled(&bytes, orient, opts.max_edge)
+            } else if crate::heif::is_heic_path(path) {
+                crate::heif::decode(path, opts.max_edge)
             } else {
                 decode_other_image(path, orient, opts.max_edge)
             }
@@ -153,7 +155,8 @@ pub fn decode_file(path: &Path, opts: DecodeOptions) -> Result<DecodedImage, Dec
                 // ORIG(원본 보기): 먼저 IFD가 가리키는 **풀해상도 임베디드 JPEG**를 그 구간만
                 // 읽어 디코딩한다(예: RW2 0x0127의 8144px). 전체파일(수십 MB) 읽기와 rawloader
                 // 패닉을 모두 피해 가장 빠르고, 카메라 풀해상도 JPEG라 컬링에 충분한 디테일.
-                if let Some(img) = decode_ifd_embedded(path, orient, opts.max_edge, orig_gate(), false) {
+                if let Some(mut img) = decode_ifd_embedded(path, orient, opts.max_edge, orig_gate(), false) {
+                    img.full_raw = true; // 풀해상도 임베디드 = ORIG 성공(#109)
                     return Ok(img);
                 }
                 // 큰 임베디드가 없을 때만 풀 RAW 현상 시도(미지원 카메라는 패닉 → 폴백).
@@ -515,12 +518,17 @@ pub fn orig_long_edge(path: &Path) -> Option<u32> {
         }
         // 일반 이미지는 헤더만 읽어 크기를 얻는다(픽셀 디코딩 없음). 긴 변만 쓰므로
         // orientation 회전으로 가로/세로가 바뀌어도 값은 같다.
-        Kind::Image => image::ImageReader::open(path)
-            .ok()?
-            .into_dimensions()
-            .ok()
-            .map(|(w, h)| w.max(h))
-            .filter(|&e| e > 0),
+        Kind::Image => {
+            if crate::heif::is_heic_path(path) {
+                return crate::heif::orig_long_edge(path);
+            }
+            image::ImageReader::open(path)
+                .ok()?
+                .into_dimensions()
+                .ok()
+                .map(|(w, h)| w.max(h))
+                .filter(|&e| e > 0)
+        }
     }
 }
 
@@ -600,7 +608,7 @@ fn decode_ifd_embedded(
 
 /// JPEG 바이트를 디코딩한다. 빠른 경로는 jpeg-decoder의 DCT 축소(`scale`),
 /// 어떤 이유로든 실패/이상하면 견고한 `image` 크레이트로 폴백(검은 화면 방지).
-fn decode_jpeg_scaled(
+pub(crate) fn decode_jpeg_scaled(
     bytes: &[u8],
     orient: u16,
     max_edge: Option<u32>,
@@ -735,7 +743,7 @@ fn decode_other_image(
 }
 
 /// DynamicImage → (orientation 회전) → (다운스케일) → RGBA8 + ICC→sRGB.
-fn finish(
+pub(crate) fn finish(
     img: DynamicImage,
     icc: Option<Vec<u8>>,
     full_raw: bool,
