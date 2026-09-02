@@ -162,6 +162,11 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "디코딩 중…" => ("Decoding…", "デコード中…"),
         "이 파일을 열 수 없습니다" => ("Can't open this file", "このファイルを開けません"), // #64
         "파일 전송" => ("Transfer Files", "ファイル転送"),
+        "원본 해상도를 못 구해 프리뷰로 표시합니다" => (
+            "Couldn't get original resolution — showing preview",
+            "原寸解像度が取れずプレビューで表示します",
+        ),
+        "폴더 스캔 중…" => ("Scanning folder…", "フォルダをスキャン中…"),
         "선택한 라벨·별점의 파일을 복사/이동 · RAW 페어 처리" => (
             "Copy/Move files by selected label and rating · handles RAW pairs",
             "選択したラベル・評価のファイルをコピー/移動 · RAWペア処理",
@@ -818,6 +823,8 @@ mod tests {
             "전송 폴더 기본값",
             "한 폴더로",
             "폴더 나누기",
+            "폴더 스캔 중…",
+            "원본 해상도를 못 구해 프리뷰로 표시합니다",
         ] {
             assert_ne!(tr(Lang::En, ko), ko, "En 번역 누락: {ko}");
             assert_ne!(tr(Lang::Ja, ko), ko, "Ja 번역 누락: {ko}");

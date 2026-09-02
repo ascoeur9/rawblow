@@ -237,10 +237,11 @@ impl Worker {
                     rawblow_core::cache::store(&cache_dir, key, img);
                 }
 
+                let decoded_full = image.as_ref().map(|img| img.full_raw).unwrap_or(false);
                 let _ = res_tx.send(DecodeResult {
                     id: req.id,
                     generation: req.generation,
-                    full_raw: req.full_raw,
+                    full_raw: decoded_full, // 폴백 프리뷰를 ORIG 성공으로 올리지 않음(#109)
                     thumb: req.thumb,
                     prefetch: false,
                     dropped: false,

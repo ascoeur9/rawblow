@@ -118,6 +118,48 @@ fn pairing_merges_raw_and_jpg_split_across_folders() {
 }
 
 #[test]
+fn pairing_raw_heic_jpg_same_folder_and_split_dirs() {
+    // 같은 폴더 RAW+HEIC+JPG는 한 항목, 표시는 JPG 우선(#97).
+    let e = Entry::from_members(
+        "IMG_0001".into(),
+        vec![
+            PathBuf::from("IMG_0001.NEF"),
+            PathBuf::from("IMG_0001.HEIC"),
+            PathBuf::from("IMG_0001.JPG"),
+        ],
+    );
+    assert_eq!(e.display.extension().unwrap(), "JPG");
+    assert!(e.has_raw && e.has_image);
+    assert_eq!(e.members.len(), 3);
+    assert_eq!(e.members_of_kind(Kind::Image).len(), 2, "HEIC도 JPG와 같이 Image");
+    assert_eq!(e.members_of_kind(Kind::Raw).len(), 1);
+
+    let heic_raw = Entry::from_members(
+        "IMG_0002".into(),
+        vec![PathBuf::from("IMG_0002.NEF"), PathBuf::from("IMG_0002.HEIC")],
+    );
+    assert_eq!(heic_raw.display.extension().unwrap(), "HEIC");
+
+    let root = std::env::temp_dir().join("rb_heic_pair_test");
+    let _ = std::fs::remove_dir_all(&root);
+    let raw_dir = root.join("RAW");
+    let jpg_dir = root.join("JPG");
+    let heic_dir = root.join("HEIC");
+    std::fs::create_dir_all(&raw_dir).unwrap();
+    std::fs::create_dir_all(&jpg_dir).unwrap();
+    std::fs::create_dir_all(&heic_dir).unwrap();
+    std::fs::write(raw_dir.join("P1000001.NEF"), b"r").unwrap();
+    std::fs::write(jpg_dir.join("P1000001.JPG"), b"j").unwrap();
+    std::fs::write(heic_dir.join("P1000001.HEIC"), b"h").unwrap();
+    let entries = scan::scan_folder(&root, true, rawblow_core::SortOrder::Name);
+    let hits: Vec<_> = entries.iter().filter(|e| e.stem.eq_ignore_ascii_case("P1000001")).collect();
+    assert_eq!(hits.len(), 1, "RAW/JPG/HEIC 형제 폴더는 한 항목");
+    assert_eq!(hits[0].members.len(), 3);
+    assert_eq!(hits[0].display.extension().unwrap(), "JPG");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn extract_embedded_jpeg_from_real_rw2() {
     let dir = require_sample!();
     // 루트의 RW2 하나를 찾는다.

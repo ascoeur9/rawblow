@@ -20,6 +20,7 @@ imagepipe = { version = "0.5", optional = true }
 # GPU 가속은 OS별 분기(아래 target 의존성): macOS=CoreML(`none` prebuilt에 포함),
 # Windows=WebGPU(`wgpu` prebuilt). Linux는 CPU. EP 등록 실패는 비치명적 → CPU 폴백.
 ort = { version = "=2.0.0-rc.12", features = ["download-binaries"], optional = true }
+heif-oxide = "0.1"
 
 # GPU EP는 OS별 분기. 같은 optional `ort`에 feature를 합집합으로 더한다(ai 피처가 dep:ort를 켤 때 함께 활성).
 # macOS: CoreML(Apple GPU+ANE). `coreml`은 prebuilt 변형을 바꾸지 않아 `none` 빌드(=CoreML 포함)를 받는다.

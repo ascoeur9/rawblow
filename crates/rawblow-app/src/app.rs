@@ -182,6 +182,9 @@ pub struct RawBlowApp {
     // 촬영시간순 정렬(#56): 백그라운드 EXIF 시각 수집 상태. gen이 현재와 같으면 수집 완료/진행 중.
     sort_scan_gen: Option<u64>,
     sort_rx: Option<crossbeam_channel::Receiver<SortScanResult>>,
+    /// 폴더 스캔 백그라운드(#116). generation이 안 맞으면 결과를 버린다.
+    scan_rx: Option<crossbeam_channel::Receiver<(u64, PathBuf, Vec<Item>)>>,
+    scanning: bool,
 
     // 그리드 다중 선택(Ctrl/Shift+클릭) — 항목(real) 인덱스 집합 + 범위 선택 앵커(필터 인덱스).
     selected: std::collections::HashSet<usize>,
@@ -383,6 +386,8 @@ impl RawBlowApp {
             sort: cfg.sort,
             sort_scan_gen: None,
             sort_rx: None,
+            scan_rx: None,
+            scanning: false,
             selected: std::collections::HashSet::new(),
             sel_anchor: None,
             grid_scroll_to: None,
@@ -507,36 +512,7 @@ impl RawBlowApp {
         }
         // 컬링 캐시는 절대 경로+mtime+설정 서명으로 키잉되므로 폴더가 바뀌어도 안전(다른 파일은
         // 절대 적중 안 함). 비우지 않고 유지 → 이전에 컬링한 폴더로 돌아와 재컬링해도 즉시(세션·재시작 무관).
-        let entries = scan::scan_folder(&folder, self.cfg.recursive, self.sort);
-        let mut items: Vec<Item> = entries
-            .into_iter()
-            .map(|entry| Item {
-                entry,
-                exif: None,
-                exif_loaded: false,
-                af: None,
-                af_loaded: false,
-                orient: None,
-                orig_long: None,
-            })
-            .collect();
-
-        // 사이드카 복원.
-        if let Some(session) = sidecar::load(&folder) {
-            let mut tmp: Vec<Entry> = items.iter().map(|i| i.entry.clone()).collect();
-            sidecar::apply(&session, &mut tmp, &folder);
-            for (it, e) in items.iter_mut().zip(tmp) {
-                it.entry.label = e.label;
-                it.entry.stars = e.stars;
-                it.entry.tag = e.tag;
-            }
-        }
-
-        self.items = items;
-        // 마지막으로 보던 사진에서 재개(#86). 기록이 없는 새 폴더는 종전대로 0번에서 시작한다.
-        self.index = self.resume_index(&folder);
         self.generation += 1;
-        // 워커가 이전 폴더의 프리페치 큐(수천 건)를 헛디코딩하지 않도록 세대를 먼저 올린다.
         self.worker.set_generation(self.generation);
         // 캐시를 통째로 새로 만들지 **않는다**: 그러면 옛 핸들이 즉시 드롭→GPU 텍스처가
         // 파괴되어, 직전 프레임을 제출(submit) 중인 wgpu가 이를 참조하면 크래시한다.
@@ -572,8 +548,41 @@ impl RawBlowApp {
         self.save_fail_count = 0;
         self.cfg.push_recent(&folder.to_string_lossy());
         let _ = config::save(&self.cfg);
-        self.folder = Some(folder);
-        self.toast_info(trf(self.lang, "{} 항목 로드", &[&self.items.len().to_string()]));
+        self.items.clear();
+        self.index = 0;
+        self.folder = Some(folder.clone());
+        self.scanning = true;
+        let gen = self.generation;
+        let recursive = self.cfg.recursive;
+        let sort = self.sort;
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.scan_rx = Some(rx);
+        std::thread::spawn(move || {
+            let entries = scan::scan_folder(&folder, recursive, sort);
+            let mut items: Vec<Item> = entries
+                .into_iter()
+                .map(|entry| Item {
+                    entry,
+                    exif: None,
+                    exif_loaded: false,
+                    af: None,
+                    af_loaded: false,
+                    orient: None,
+                    orig_long: None,
+                })
+                .collect();
+            if let Some(session) = sidecar::load(&folder) {
+                let mut tmp: Vec<Entry> = items.iter().map(|i| i.entry.clone()).collect();
+                sidecar::apply(&session, &mut tmp, &folder);
+                for (it, e) in items.iter_mut().zip(tmp) {
+                    it.entry.label = e.label;
+                    it.entry.stars = e.stars;
+                    it.entry.tag = e.tag;
+                }
+            }
+            let _ = tx.send((gen, folder, items));
+        });
+        self.toast_info(tr(self.lang, "폴더 스캔 중…").into());
         // 플러시 실패 안내는 위 로드 토스트 **뒤에** 설정한다(#62): 토스트 슬롯이 하나뿐이라
         // 마지막 설정이 이기므로, 순서가 앞서면 정보 토스트가 실패 안내를 덮어 유실이 다시
         // 무음이 된다. (로드 안내를 굳이 막을 필요는 없고 — 정상 경로 동작 불변 — Error는
@@ -587,6 +596,33 @@ impl RawBlowApp {
         }
         self.schedule_cache_trim(); // 폴더 열 때 캐시 상한 정리(다른/오래된 폴더 썸네일 회수).
         // 프리페치는 폴더 전체가 아니라 현재 위치 주변 윈도우만(update에서 매 프레임 슬라이드).
+    }
+
+    fn drain_folder_scan(&mut self, ctx: &egui::Context) {
+        let rx = match &self.scan_rx {
+            Some(rx) => rx,
+            None => return,
+        };
+        match rx.try_recv() {
+            Ok((gen, folder, items)) => {
+                self.scan_rx = None;
+                if gen != self.generation {
+                    return;
+                }
+                self.items = items;
+                self.index = self.resume_index(&folder);
+                self.scanning = false;
+                self.toast_info(trf(self.lang, "{} 항목 로드", &[&self.items.len().to_string()]));
+                ctx.request_repaint();
+            }
+            Err(crossbeam_channel::TryRecvError::Empty) => {
+                ctx.request_repaint_after(Duration::from_millis(50));
+            }
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                self.scan_rx = None;
+                self.scanning = false;
+            }
+        }
     }
 
 
@@ -1307,6 +1343,7 @@ impl eframe::App for RawBlowApp {
         self.thumbs.tick();
 
         self.drain_results(ctx);
+        self.drain_folder_scan(ctx);
 
         // AI 컬링(#50)은 백그라운드 비차단 — 모달과 무관하게 매 프레임 진행률을 펌프하고
         // 완료 시 결과를 적용한다(좌측 레일 버튼이 프로그레스바로 표시).
@@ -1749,7 +1786,7 @@ impl RawBlowApp {
                         let recents = self.cfg.recent_folders.clone();
                         for r in recents.iter().take(8) {
                             if ui
-                                .add(egui::Label::new(egui::RichText::new(r).font(mono(11.0)).color(theme::INK2)).sense(Sense::click()))
+                                .add(egui::Label::new(egui::RichText::new(nfc_path_label(Path::new(r))).font(mono(11.0)).color(theme::INK2)).sense(Sense::click()))
                                 .clicked()
                             {
                                 let p = PathBuf::from(r);

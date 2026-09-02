@@ -145,9 +145,12 @@ pub fn dir_size(cache_dir: &Path) -> u64 {
 }
 
 /// 캐시가 `max_bytes`를 초과하면 mtime이 오래된 `.jpg`부터 지워 상한 이하로 맞춘다(best-effort).
-/// `max_bytes == 0`이면 무제한(아무 것도 안 함). 동시 호출은 1개만 실행되고 나머지는 즉시 반환한다.
-/// (현재 보고 있는 폴더의 썸네일은 최근에 쓰여 mtime이 최신이라 가장 늦게 제거된다.)
 pub fn trim(cache_dir: &Path, max_bytes: u64) {
+    trim_ext(cache_dir, max_bytes, "jpg")
+}
+
+/// 확장자 `ext`인 파일만 대상으로 trim(#112 지도 PNG).
+pub fn trim_ext(cache_dir: &Path, max_bytes: u64, ext: &str) {
     if max_bytes == 0 {
         return; // 무제한.
     }
@@ -159,8 +162,8 @@ pub fn trim(cache_dir: &Path, max_bytes: u64) {
     if let Ok(rd) = std::fs::read_dir(cache_dir) {
         for e in rd.flatten() {
             let p = e.path();
-            if p.extension().and_then(|s| s.to_str()) != Some("jpg") {
-                continue; // 캐시 .jpg만 대상(.tmp-* 등 제외).
+            if p.extension().and_then(|s| s.to_str()).map(|s| s.eq_ignore_ascii_case(ext)) != Some(true) {
+                continue;
             }
             if let Ok(m) = e.metadata() {
                 if m.is_file() {
