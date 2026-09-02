@@ -170,6 +170,38 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
             "Split into subfolders by label (/pick, /hold …)",
             "ラベル別サブフォルダに振り分け (/pick, /hold …)",
         ),
+        "폴더 나누기" => ("Folder Split", "フォルダ分け"),
+        "한 폴더로" => ("One folder", "1つのフォルダへ"),
+        "라벨별 (QWER)" => ("By label (QWER)", "ラベル別 (QWER)"),
+        "별점별 (12345)" => ("By rating (12345)", "評価別 (12345)"),
+        "색 태그별" => ("By color tag", "色タグ別"),
+        "선택한 사진을 대상 폴더 한곳에 둡니다. 지금 열린 폴더는 고를 수 없습니다." => (
+            "Puts selected photos in one destination folder. The currently open folder cannot be chosen.",
+            "選んだ写真を出力先フォルダ1つにまとめます。今開いているフォルダは選べません。",
+        ),
+        "pick / hold / reject 폴더를 만듭니다. 제외도 여기로 빠집니다." => (
+            "Creates pick / hold / reject folders. Rejects go there too.",
+            "pick / hold / reject フォルダを作ります。除外もここに入ります。",
+        ),
+        "1star … 5star 폴더를 만듭니다. 무별점은 unrated." => (
+            "Creates 1star … 5star folders. Unrated photos go to unrated.",
+            "1star … 5star フォルダを作ります。星なしは unrated。",
+        ),
+        "@teal 같은 색 태그 폴더를 만듭니다. 무태그는 @untagged." => (
+            "Creates color-tag folders like @teal. Untagged photos go to @untagged.",
+            "@teal などの色タグフォルダを作ります。タグなしは @untagged。",
+        ),
+        "지금 열린 폴더로는 보낼 수 없습니다. 다른 폴더를 고르세요." => (
+            "Can't send to the currently open folder. Choose another folder.",
+            "今開いているフォルダには送れません。別のフォルダを選んでください。",
+        ),
+        "전송 폴더 기본값" => ("Default transfer folder", "転送フォルダのデフォルト"),
+        "지금 보고 있는 폴더" => ("Current folder", "今見ているフォルダ"),
+        "지정된 폴더" => ("Chosen folder", "指定フォルダ"),
+        "전송(Ctrl/⌘E) 화면에서 폴더를 바꿀 수 있습니다. 다음 전송은 다시 이 기본값입니다. 한 폴더로 보낼 때 지금 열린 폴더는 고를 수 없고, 그때 기본값은 selected 하위폴더입니다." => (
+            "You can change the folder in Transfer (Ctrl/⌘E). The next transfer uses this default again. In one-folder mode the currently open folder can't be chosen; the default is the selected subfolder.",
+            "転送(Ctrl/⌘E)画面でフォルダを変えられます。次の転送はまたこのデフォルトです。1つのフォルダへ送るとき、今開いているフォルダは選べず、そのときのデフォルトは selected サブフォルダです。",
+        ),
         "라벨 또는 별점 중 하나라도 해당하면 전송됩니다(합집합)." => (
             "Files matching either the label or the rating are transferred (union).",
             "ラベルまたは評価のいずれかに該当すれば転送されます（和集合）。",
@@ -783,6 +815,9 @@ mod tests {
             "보기 필터", // 레일 Filter View
             "찾아보기…", // Browse 버튼
             "전송 대상", // 푸터 WILL TRANSFER
+            "전송 폴더 기본값",
+            "한 폴더로",
+            "폴더 나누기",
         ] {
             assert_ne!(tr(Lang::En, ko), ko, "En 번역 누락: {ko}");
             assert_ne!(tr(Lang::Ja, ko), ko, "Ja 번역 누락: {ko}");

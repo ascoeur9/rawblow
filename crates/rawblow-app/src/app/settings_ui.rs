@@ -110,6 +110,58 @@ impl RawBlowApp {
                         }
                     });
                     ui.label(egui::RichText::new(tr(lang, "「현재 보기 상태 유지」는 창맞춤에서도 ORIG를 계속 불러옵니다 — 넘김이 느려지고 메모리를 더 씁니다. 새 폴더는 두 방식 모두 프리뷰로 시작합니다.")).font(mono(10.0)).color(INK_HELP));
+                    // 전송 dest 기본값(#113). Cmd+E에서 바꿔도 다음 열기는 다시 이 값.
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.label(tr(lang, "전송 폴더 기본값"));
+                        if ui
+                            .selectable_label(
+                                self.cfg.transfer_dest_mode == TransferDestMode::CurrentFolder,
+                                tr(lang, "지금 보고 있는 폴더"),
+                            )
+                            .clicked()
+                        {
+                            self.cfg.transfer_dest_mode = TransferDestMode::CurrentFolder;
+                            let _ = config::save(&self.cfg);
+                        }
+                        if ui
+                            .selectable_label(
+                                self.cfg.transfer_dest_mode == TransferDestMode::Fixed,
+                                tr(lang, "지정된 폴더"),
+                            )
+                            .clicked()
+                        {
+                            self.cfg.transfer_dest_mode = TransferDestMode::Fixed;
+                            if self.cfg.transfer_dest_folder.trim().is_empty() {
+                                self.cfg.transfer_dest_folder =
+                                    config::pictures_dir().to_string_lossy().into_owned();
+                            }
+                            let _ = config::save(&self.cfg);
+                        }
+                    });
+                    if self.cfg.transfer_dest_mode == TransferDestMode::Fixed {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            let rest = (ui.available_width() - 96.0).max(120.0);
+                            if ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut self.cfg.transfer_dest_folder)
+                                        .font(mono(12.0))
+                                        .desired_width(rest),
+                                )
+                                .changed()
+                            {
+                                let _ = config::save(&self.cfg);
+                            }
+                            if toggle_btn(ui, tr(lang, "찾아보기…"), false).clicked() {
+                                if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                                    self.cfg.transfer_dest_folder = d.to_string_lossy().into_owned();
+                                    let _ = config::save(&self.cfg);
+                                }
+                            }
+                        });
+                    }
+                    ui.label(egui::RichText::new(tr(lang, "전송(Ctrl/⌘E) 화면에서 폴더를 바꿀 수 있습니다. 다음 전송은 다시 이 기본값입니다. 한 폴더로 보낼 때 지금 열린 폴더는 고를 수 없고, 그때 기본값은 selected 하위폴더입니다.")).font(mono(10.0)).color(INK_HELP));
                     // 언어 선택(#30): 시스템(자동)/한국어/English/日本語. 변경 즉시 적용·저장.
                     ui.horizontal(|ui| {
                         ui.label(tr(lang, "언어"));

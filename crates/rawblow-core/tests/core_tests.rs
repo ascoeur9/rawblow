@@ -540,10 +540,9 @@ fn transfer_copies_selected_with_conflict_rename() {
         action: transfer::Action::Copy,
         companions: transfer::Companions::Both,
         dest: dst.clone(),
-        split_by_label: false,
+        split: transfer::TransferSplit::None,
         conflict: transfer::ConflictPolicy::AutoIncrement,
         tags: vec![],
-        split_by_tag: false,
         rename: None,
     };
     let report = transfer::execute(&req);
@@ -578,10 +577,9 @@ fn transfer_split_by_label_subfolders() {
         action: transfer::Action::Copy,
         companions: transfer::Companions::Both,
         dest: dst.clone(),
-        split_by_label: true,
+        split: transfer::TransferSplit::Label,
         conflict: transfer::ConflictPolicy::AutoIncrement,
         tags: vec![],
-        split_by_tag: false,
         rename: None,
     };
     let report = transfer::execute(&req);
@@ -591,6 +589,44 @@ fn transfer_split_by_label_subfolders() {
     let a_in_pick = dst.join("pick").join("A.JPG").exists();
     let b_in_hold = dst.join("hold").join("B.JPG").exists();
     assert!(a_in_pick && b_in_hold, "라벨별 하위폴더 분기");
+}
+
+#[test]
+fn transfer_split_by_stars_subfolders() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("A.JPG"), b"a").unwrap();
+    std::fs::write(src.join("B.JPG"), b"b").unwrap();
+    std::fs::write(src.join("C.JPG"), b"c").unwrap();
+
+    let mut entries = scan::scan_folder(&src, false, rawblow_core::SortOrder::Name);
+    for e in &mut entries {
+        e.stars = match e.stem.as_str() {
+            "A" => 5,
+            "B" => 3,
+            _ => 0,
+        };
+        e.label = Label::Pick;
+    }
+    let req = transfer::TransferRequest {
+        entries: &entries,
+        labels: vec![Label::Pick],
+        stars: vec![],
+        tags: vec![],
+        action: transfer::Action::Copy,
+        companions: transfer::Companions::Both,
+        dest: dst.clone(),
+        split: transfer::TransferSplit::Stars,
+        conflict: transfer::ConflictPolicy::AutoIncrement,
+        rename: None,
+    };
+    let report = transfer::execute(&req);
+    assert_eq!(report.transferred, 3);
+    assert!(dst.join("5star").join("A.JPG").exists());
+    assert!(dst.join("3star").join("B.JPG").exists());
+    assert!(dst.join("unrated").join("C.JPG").exists());
 }
 
 #[test]
@@ -612,10 +648,9 @@ fn transfer_copy_leaves_remove_failed_empty() {
         action: transfer::Action::Copy,
         companions: transfer::Companions::Both,
         dest: dst.clone(),
-        split_by_label: false,
+        split: transfer::TransferSplit::None,
         conflict: transfer::ConflictPolicy::AutoIncrement,
         tags: vec![],
-        split_by_tag: false,
         rename: None,
     };
     let report = transfer::execute(&req);
@@ -649,10 +684,9 @@ fn transfer_move_records_source_when_delete_denied() {
         action: transfer::Action::Move,
         companions: transfer::Companions::Both,
         dest: dst.clone(),
-        split_by_label: false,
+        split: transfer::TransferSplit::None,
         conflict: transfer::ConflictPolicy::AutoIncrement,
         tags: vec![],
-        split_by_tag: false,
         rename: None,
     };
     let report = transfer::execute(&req);
@@ -712,10 +746,9 @@ fn transfer_by_stars_union_with_labels() {
         action: transfer::Action::Copy,
         companions: transfer::Companions::Both,
         dest: dst.clone(),
-        split_by_label: false,
+        split: transfer::TransferSplit::None,
         conflict: transfer::ConflictPolicy::AutoIncrement,
         tags: vec![],
-        split_by_tag: false,
         rename: None,
     };
     let report = transfer::execute(&req);
@@ -749,10 +782,9 @@ fn transfer_star_only_split_goes_to_star_folder_not_unrated() {
         action: transfer::Action::Copy,
         companions: transfer::Companions::Both,
         dest: dst.clone(),
-        split_by_label: true,
+        split: transfer::TransferSplit::Label,
         conflict: transfer::ConflictPolicy::AutoIncrement,
         tags: vec![],
-        split_by_tag: false,
         rename: None,
     };
     let report = transfer::execute(&req);
@@ -934,8 +966,7 @@ fn transfer_rename_grade_grouped_keeps_pairs() {
         action: transfer::Action::Copy,
         companions: transfer::Companions::Both,
         dest: dst.clone(),
-        split_by_label: false,
-        split_by_tag: false,
+        split: transfer::TransferSplit::None,
         conflict: transfer::ConflictPolicy::AutoIncrement,
         rename: Some(transfer::RenameRule {
             template: "{gradeseq}".into(),
@@ -972,8 +1003,7 @@ fn transfer_rename_order_padding_and_orig() {
         action: transfer::Action::Copy,
         companions: transfer::Companions::Both,
         dest: dst.clone(),
-        split_by_label: false,
-        split_by_tag: false,
+        split: transfer::TransferSplit::None,
         conflict: transfer::ConflictPolicy::AutoIncrement,
         rename: Some(transfer::RenameRule {
             template: "{seq:03}_{orig}".into(),
@@ -1012,8 +1042,7 @@ fn transfer_tag_union_and_split_subfolder() {
         action: transfer::Action::Copy,
         companions: transfer::Companions::Both,
         dest: dst.clone(),
-        split_by_label: false,
-        split_by_tag: true,
+        split: transfer::TransferSplit::Tag,
         conflict: transfer::ConflictPolicy::AutoIncrement,
         rename: None,
     };
@@ -1075,10 +1104,9 @@ fn transfer_progress_reports_and_completes() {
         action: transfer::Action::Copy,
         companions: transfer::Companions::Both,
         dest: dst.clone(),
-        split_by_label: false,
+        split: transfer::TransferSplit::None,
         conflict: transfer::ConflictPolicy::AutoIncrement,
         tags: vec![],
-        split_by_tag: false,
         rename: None,
     };
     let mut last_total = 0usize;
@@ -1114,10 +1142,9 @@ fn transfer_progress_cancel_stops_midway() {
         action: transfer::Action::Copy,
         companions: transfer::Companions::Both,
         dest: dst.clone(),
-        split_by_label: false,
+        split: transfer::TransferSplit::None,
         conflict: transfer::ConflictPolicy::AutoIncrement,
         tags: vec![],
-        split_by_tag: false,
         rename: None,
     };
     // 두 번째 파일 직전에 취소(첫 파일 전 호출에서 true, 그 다음 false).

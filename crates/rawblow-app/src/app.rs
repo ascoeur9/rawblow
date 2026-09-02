@@ -7,13 +7,13 @@ use crate::worker::{DecodeRequest, Worker};
 use eframe::egui;
 use egui::{Align, Align2, Color32, Layout, Pos2, Rect, Rounding, Sense, Stroke, Vec2};
 use rawblow_core::cache;
-use rawblow_core::config::{self, AiCullTarget, ClipIqaBackbone, Config, Lang, ViewCarry};
+use rawblow_core::config::{self, AiCullTarget, ClipIqaBackbone, Config, Lang, TransferDestMode, ViewCarry};
 use rawblow_core::quality::Verdict;
 use rawblow_core::meta::{read_exif, ExifInfo};
 use rawblow_core::organize::{self, OrganizeKey, OrganizeRequest};
 use rawblow_core::transfer::{
     self, Action, Companions, ConflictPolicy, Numbering, Progress, RenameRule, TransferReport,
-    TransferRequest,
+    TransferRequest, TransferSplit,
 };
 use rawblow_core::{
     scan, sidecar, ColorTag, Entry, Filter, Label, MatchMode, SortOrder, StarFilter, TagFilter,

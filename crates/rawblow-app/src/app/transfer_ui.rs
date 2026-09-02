@@ -2,9 +2,13 @@
 //! 진행/결과 모달(#35)과 그 상태 타입. app.rs에서 순수 이동 — 동작 변경 없음.
 
 use super::*;
+use std::path::Path;
 
 // 리네임 모드(#26)는 마지막 사용 옵션 저장(#57)을 위해 core config로 이동.
-use rawblow_core::config::{OrganizeDefaults, RenameMode, TransferDefaults};
+use rawblow_core::config::{
+    dest_is_open_folder, same_folder, OrganizeDefaults, RenameMode, TransferDefaults,
+    TRANSFER_FLAT_SUBFOLDER,
+};
 
 #[derive(Clone)]
 pub(super) struct TransferDialogState {
@@ -15,9 +19,8 @@ pub(super) struct TransferDialogState {
     tags: Vec<ColorTag>,
     action: Action,
     companions: Companions,
-    split_by_label: bool,
-    /// 태그별 하위폴더 분기(#27).
-    split_by_tag: bool,
+    /// 한 폴더 / 라벨 / 별점 / 색 태그 분기(#113/#89).
+    split: TransferSplit,
     conflict: ConflictPolicy,
     dest: String,
     /// 파일명 변경(#26).
@@ -41,8 +44,7 @@ impl TransferDialogState {
             tags: d.tags.clone(),
             action: d.action,
             companions: d.companions,
-            split_by_label: d.split_by_label,
-            split_by_tag: d.split_by_tag,
+            split: d.split(),
             conflict: d.conflict,
             dest: String::new(),
             rename_mode: d.rename_mode,
@@ -61,13 +63,13 @@ impl TransferDialogState {
             tags: self.tags.clone(),
             action: self.action,
             companions: self.companions,
-            split_by_label: self.split_by_label,
-            split_by_tag: self.split_by_tag,
+            split: self.split,
             conflict: self.conflict,
             rename_mode: self.rename_mode,
             rename_template: self.rename_template.clone(),
             rename_numbering: self.rename_numbering,
             scope_all: self.scope_all,
+            ..Default::default()
         }
     }
 
@@ -168,11 +170,14 @@ impl RawBlowApp {
             self.toast_info(tr(self.lang, "AI 컬링이 끝난 뒤 전송할 수 있습니다").into());
             return;
         }
-        // 마지막 사용 옵션을 기본값으로 로드(#57). dest만 현재 폴더 기준으로 새로 제안.
+        // 마지막 사용 옵션을 기본값으로 로드(#57). dest는 설정 기본값(#113) — 다이얼로그에서
+        // 바꿔도 다음 열기는 다시 이 값. 한 폴더 모드 + 지금 폴더면 `{폴더}/selected`.
         let mut st = TransferDialogState::from_defaults(&self.cfg.transfer_defaults);
-        if let Some(folder) = &self.folder {
-            st.dest = format!("{}_selected", folder.to_string_lossy());
-        }
+        st.dest = self
+            .cfg
+            .transfer_default_dest(self.folder.as_deref(), st.split)
+            .to_string_lossy()
+            .into_owned();
         self.transfer = Some(st);
     }
 
@@ -268,15 +273,19 @@ impl RawBlowApp {
             action: st.action,
             companions: st.companions,
             dest: PathBuf::from(&st.dest),
-            split_by_label: st.split_by_label,
-            split_by_tag: st.split_by_tag,
+            split: st.split,
             conflict: st.conflict,
             rename: st.rename_rule(),
         });
         let raw_n = plan.iter().filter(|(p, _, _)| rawblow_core::model::kind_of(p) == Some(rawblow_core::model::Kind::Raw)).count();
         let img_n = plan.len().saturating_sub(raw_n);
-        // 시작 가능 조건: 대상 0건이 아니고, 대상 폴더가 공백이 아닐 것(#63 — 정리와 일관되게 dest 검증 추가).
-        let can_start = !plan.is_empty() && !st.dest.trim().is_empty();
+        let dest_blocked = dest_is_open_folder(
+            Path::new(st.dest.trim()),
+            self.folder.as_deref(),
+            st.split,
+        );
+        // 시작 가능: 대상 있음, dest 비지 않음, 한 폴더 모드에서 원본 폴더가 아님(#113).
+        let can_start = !plan.is_empty() && !st.dest.trim().is_empty() && !dest_blocked;
 
         // 중앙 모달 카드. 너비 660 고정이라 left를 화면중앙-330으로 두면 가로 정중앙
         // (Area::anchor는 이전 프레임 크기 기반이라 수렴이 안 돼 fixed_pos로 직접 배치).
@@ -350,9 +359,6 @@ impl RawBlowApp {
                                     }
                                 });
                                 ui.add_space(8.0);
-                                if check_chip(ui, tr(lang, "라벨별 하위폴더로 분기 (/pick, /hold …)"), None, theme::ACCENT, st.split_by_label) {
-                                    st.split_by_label = !st.split_by_label;
-                                }
                                 ui.add_space(16.0);
 
                                 // 별점 기준(#23): 라벨과 합집합(OR). 각 별점 칸은 독립 체크.
@@ -391,9 +397,43 @@ impl RawBlowApp {
                                     }
                                 });
                                 ui.add_space(8.0);
-                                if check_chip(ui, tr(lang, "태그별 하위폴더로 분기 (@teal …)"), None, theme::ACCENT, st.split_by_tag) {
-                                    st.split_by_tag = !st.split_by_tag;
-                                }
+                                ui.add_space(16.0);
+
+                                section_label(ui, tr(lang, "폴더 나누기"));
+                                let splits: [(TransferSplit, &str); 4] = [
+                                    (TransferSplit::None, tr(lang, "한 폴더로")),
+                                    (TransferSplit::Label, tr(lang, "라벨별 (QWER)")),
+                                    (TransferSplit::Stars, tr(lang, "별점별 (12345)")),
+                                    (TransferSplit::Tag, tr(lang, "색 태그별")),
+                                ];
+                                ui.horizontal_wrapped(|ui| {
+                                    for (mode, label) in splits {
+                                        if check_chip(ui, label, None, theme::ACCENT, st.split == mode) {
+                                            if mode == TransferSplit::None {
+                                                if let Some(folder) = &self.folder {
+                                                    if same_folder(Path::new(st.dest.trim()), folder) {
+                                                        st.dest = folder
+                                                            .join(TRANSFER_FLAT_SUBFOLDER)
+                                                            .to_string_lossy()
+                                                            .into_owned();
+                                                    }
+                                                }
+                                            }
+                                            st.split = mode;
+                                        }
+                                    }
+                                });
+                                ui.add_space(6.0);
+                                ui.label(
+                                    egui::RichText::new(match st.split {
+                                        TransferSplit::None => tr(lang, "선택한 사진을 대상 폴더 한곳에 둡니다. 지금 열린 폴더는 고를 수 없습니다."),
+                                        TransferSplit::Label => tr(lang, "pick / hold / reject 폴더를 만듭니다. 제외도 여기로 빠집니다."),
+                                        TransferSplit::Stars => tr(lang, "1star … 5star 폴더를 만듭니다. 무별점은 unrated."),
+                                        TransferSplit::Tag => tr(lang, "@teal 같은 색 태그 폴더를 만듭니다. 무태그는 @untagged."),
+                                    })
+                                    .font(mono(10.0))
+                                    .color(theme::INK4),
+                                );
                                 ui.add_space(16.0);
 
                                 section_label(ui, tr(lang, "동작"));
@@ -418,10 +458,27 @@ impl RawBlowApp {
                                     ui.add(egui::TextEdit::singleline(&mut st.dest).font(mono(12.0)).desired_width(rest));
                                     if toggle_btn(ui, tr(lang, "찾아보기…"), false).clicked() {
                                         if let Some(d) = rfd::FileDialog::new().pick_folder() {
-                                            st.dest = d.to_string_lossy().to_string();
+                                            if dest_is_open_folder(&d, self.folder.as_deref(), st.split) {
+                                                self.toast_info(
+                                                    tr(lang, "지금 열린 폴더로는 보낼 수 없습니다. 다른 폴더를 고르세요.").into(),
+                                                );
+                                            } else {
+                                                st.dest = d.to_string_lossy().to_string();
+                                            }
                                         }
                                     }
                                 });
+                                if dest_blocked {
+                                    ui.add_space(4.0);
+                                    ui.label(
+                                        egui::RichText::new(tr(
+                                            lang,
+                                            "지금 열린 폴더로는 보낼 수 없습니다. 다른 폴더를 고르세요.",
+                                        ))
+                                        .font(mono(10.0))
+                                        .color(theme::REJECT),
+                                    );
+                                }
                                 ui.add_space(16.0);
 
                                 section_label(ui, tr(lang, "이름 충돌 시"));
@@ -467,8 +524,7 @@ impl RawBlowApp {
                                         action: st.action,
                                         companions: st.companions,
                                         dest: PathBuf::new(),
-                                        split_by_label: false,
-                                        split_by_tag: false,
+                                        split: st.split,
                                         conflict: st.conflict,
                                         rename: st.rename_rule(),
                                     };
@@ -610,6 +666,13 @@ impl RawBlowApp {
     /// 메인 스레드가 막히지 않게 별도 스레드에서 `execute_with_progress`를 돌리고,
     /// 진행 상황을 채널로 받는다(Move면 완료 후 폴더를 재스캔해 사라진 항목 정리, #24).
     pub(super) fn start_transfer(&mut self, st: &TransferDialogState) {
+        let dest = PathBuf::from(st.dest.trim());
+        if dest_is_open_folder(&dest, self.folder.as_deref(), st.split) {
+            self.toast_info(
+                tr(self.lang, "지금 열린 폴더로는 보낼 수 없습니다. 다른 폴더를 고르세요.").into(),
+            );
+            return;
+        }
         // 마지막 사용 옵션 저장(#57) — 다음 열기 때 기본값으로 복원된다.
         self.cfg.transfer_defaults = st.to_defaults();
         let _ = config::save(&self.cfg);
@@ -620,9 +683,7 @@ impl RawBlowApp {
         let tags = st.tags.clone();
         let action = st.action;
         let companions = st.companions;
-        let dest = PathBuf::from(&st.dest);
-        let split_by_label = st.split_by_label;
-        let split_by_tag = st.split_by_tag;
+        let split = st.split;
         let conflict = st.conflict;
         let rename = st.rename_rule();
 
@@ -639,8 +700,7 @@ impl RawBlowApp {
                 action,
                 companions,
                 dest: dest_t,
-                split_by_label,
-                split_by_tag,
+                split,
                 conflict,
                 rename,
             };
@@ -1204,8 +1264,7 @@ mod tests {
         assert!(st.tags.is_empty());
         assert_eq!(st.action, Action::Copy);
         assert_eq!(st.companions, Companions::Both);
-        assert!(!st.split_by_label);
-        assert!(!st.split_by_tag);
+        assert_eq!(st.split, TransferSplit::None);
         assert_eq!(st.conflict, ConflictPolicy::AutoIncrement);
         assert!(matches!(st.rename_mode, RenameMode::Off)); // RenameMode는 Debug 미구현이라 matches! 사용
         assert!(st.scope_all); // 전송 범위 기본값은 전체(#68)
@@ -1216,7 +1275,7 @@ mod tests {
         // #57: 옵션은 저장·복원되지만 dest(폴더 종속)는 매번 새로 제안하므로 저장하지 않는다.
         let st = TransferDialogState {
             action: Action::Move,
-            split_by_tag: true,
+            split: TransferSplit::Tag,
             rename_mode: RenameMode::Custom,
             rename_template: "{orig}_pick".into(),
             rename_numbering: Numbering::Order,
@@ -1226,7 +1285,7 @@ mod tests {
         };
         let st2 = TransferDialogState::from_defaults(&st.to_defaults());
         assert_eq!(st2.action, Action::Move);
-        assert!(st2.split_by_tag);
+        assert_eq!(st2.split, TransferSplit::Tag);
         assert_eq!(st2.rename_mode, RenameMode::Custom);
         assert_eq!(st2.rename_template, "{orig}_pick");
         assert_eq!(st2.rename_numbering, Numbering::Order);
