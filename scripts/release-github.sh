@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
-# RawBlow — macOS 에서 GitHub 릴리즈 생성 (scripts/release-all.ps1 의 GitHub 절반을 이식)
+# RawBlow — (비상용) 로컬에서 GitHub 릴리즈 생성.
 #
-# 왜 별도 스크립트인가: release-all.ps1 은 PowerShell + Windows 전용(NSIS 인스톨러
-# 빌드, dumpbin 검증, MSIX 스토어 제출)이라 macOS 에서 못 돈다. 이 스크립트는 Mac 에서
-# 할 수 있는 부분 — macOS 빌드 + 태그 + gh 릴리즈 — 만 담당한다.
-#
-# ⚠️ 이 스크립트는 Windows 인스톨러를 만들지 못한다. dist/ 에 Windows 에서 빌드한
-#    RawBlow-Setup-v<버전>.exe 를 미리 복사해 두면 함께 첨부하고, 없으면 경고 후
-#    macOS 에셋만 올린다. MS 스토어 제출은 Windows 에서 별도로 해야 한다.
+# 평소 GitHub 릴리즈(Windows exe + macOS zip)는 태그 v* 푸시 시
+# .github/workflows/release.yml 이 담당한다. 이 스크립트는 Actions 가 안 될 때
+# 맥에서 수동 게시하는 비상용이다. Windows 인스톨러는 dist/ 에 미리 넣어야 하고,
+# 없으면 macOS zip 만 올린다. MS 스토어는 Windows 에서 release-all.ps1.
 #
 # 사용법 (저장소 루트에서):
 #     bash scripts/release-github.sh              # 빌드 + 태그 푸시 + 릴리즈 게시

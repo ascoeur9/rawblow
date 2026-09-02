@@ -1,27 +1,27 @@
-﻿# RawBlow — 원커맨드 릴리즈: GitHub(빌드+릴리즈) + MS 스토어(제출) 한 번에
+﻿# RawBlow — MS 스토어 제출 (로컬 Windows). GitHub 릴리즈는 태그 푸시 → Actions.
 #
 # 전제:
 #   - Cargo.toml 의 version 이 이번 릴리즈 버전 (예: 0.5.9). 미리 버전 범프해 두세요.
 #   - scripts\release-notes\v<버전>.md 작성 (GitHub 본문 + 스토어 ko/ja/en). 템플릿: v0.5.9.md
 #   - 스토어 제출을 하려면 store-credentials(env) 세팅 (submit-msix-store.ps1 헤더 참조).
-#   - gh CLI 인증됨 (gh auth status).
 #
-# 하는 일 (순서):
-#   1) [GitHub] build-release-windows.ps1 → dist\RawBlow-Setup-v<버전>.exe (NSIS, 무서명)
-#   2) [GitHub] annotated 태그 v<버전> 생성·푸시(없으면) → gh release create + 에셋 업로드
-#              (dist 에 macOS zip 이 있으면 함께 첨부)
-#   3) [Store]  submit-msix-store.ps1 → MSIX 빌드 + 제출 API 커밋
+# 하는 일 (기본):
+#   [Store] submit-msix-store.ps1 → MSIX 빌드 + 제출 API 커밋
+#
+# GitHub (Windows exe + macOS zip) 은 `git push origin v<버전>` 하면
+# .github/workflows/release.yml 이 빌드·게시한다. 로컬에서 깃헙까지 하려면 -WithGitHub.
 #
 # 사용:
-#   .\scripts\release-all.ps1                 # 전체(깃헙 릴리즈 + 스토어 제출)
-#   .\scripts\release-all.ps1 -DryRun         # 빌드만, 태그 푸시/릴리즈 생성/스토어 커밋은 전부 생략
-#   .\scripts\release-all.ps1 -SkipStore      # 깃헙만
-#   .\scripts\release-all.ps1 -SkipGitHub     # 스토어만
-#   .\scripts\release-all.ps1 -Draft          # GitHub 릴리즈를 draft 로 생성(수동 게시)
+#   .\scripts\release-all.ps1                 # 스토어만 (권장)
+#   .\scripts\release-all.ps1 -DryRun         # 스토어 빌드만, 커밋 없음
+#   .\scripts\release-all.ps1 -WithGitHub     # 비상용: 로컬에서 깃헙 릴리즈까지
+#   .\scripts\release-all.ps1 -SkipStore      # (WithGitHub 와 함께) 깃헙만
+#   .\scripts\release-all.ps1 -Draft          # GitHub 릴리즈를 draft 로 (WithGitHub 시)
 
 [CmdletBinding()]
 param(
     [switch]$SkipGitHub,
+    [switch]$WithGitHub,
     [switch]$SkipStore,
     [switch]$Draft,
     [switch]$DryRun
@@ -40,7 +40,12 @@ try {
     $tag = "v$ver"
     $notesPath = Join-Path $PSScriptRoot ("release-notes\v{0}.md" -f $ver)
     $notes = Get-ReleaseNotes -Path $notesPath      # 없으면 즉시 throw — 릴리즈 전에 노트부터 강제
+    # GitHub 릴리즈는 태그 푸시 시 Actions가 담당. 기본은 스토어만.
+    if ($WithGitHub) { $SkipGitHub = $false }
+    elseif (-not $PSBoundParameters.ContainsKey("SkipGitHub")) { $SkipGitHub = $true }
+
     Write-Host "=== RawBlow 릴리즈 $tag ===" -ForegroundColor Cyan
+    if ($SkipGitHub) { Write-Host "GitHub 릴리즈는 Actions(태그 푸시) — 이 실행은 MS 스토어만. 로컬 깃헙: -WithGitHub" -ForegroundColor Yellow }
     if ($DryRun) { Write-Host "(DryRun — 게시/푸시/커밋 없음)" -ForegroundColor Yellow }
 
     # 태그 중복 방지: 이미 릴리즈된 태그면 중단(버전 범프 잊음 방지).
