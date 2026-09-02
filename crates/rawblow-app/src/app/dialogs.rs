@@ -259,9 +259,10 @@ impl RawBlowApp {
                 return;
             }
             let target = self.bulk_target;
+            let hits = self.bulk_hits.clone();
             let mut changed = 0usize;
-            self.push_undo(&self.bulk_hits);
-            for &idx in &self.bulk_hits {
+            self.push_undo(&hits);
+            for &idx in &hits {
                 if let Some(it) = self.items.get_mut(idx) {
                     if it.entry.label != target {
                         it.entry.label = target;
