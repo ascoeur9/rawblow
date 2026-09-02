@@ -1,39 +1,18 @@
-# 코어 테스트 + 앱 타입체크·테스트 + clippy(-D warnings).
-#
-# PR과 main 푸시에서 게이트한다(#104). ai/ort는 빌드 시 바이너리 다운로드가 커서 생략.
-# cargo fmt --check는 rustfmt 미적용 저장소라 넣지 않는다.
+# 테스트와 배포 빌드는 로컬에서 한다 (BUILD.md, scripts/).
+# GitHub Actions로 릴리즈를 만들지 않고, Linux 산출물도 없다.
+# PR/push 자동 실행 없음. 출하 OS에서 컴파일만 원격으로 보고 싶을 때
+# Actions 탭 → Run workflow.
 name: CI
 
 on:
-  pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  linux:
-    name: Linux · test + clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Test rawblow-core (color+fullraw)
-        run: cargo test -p rawblow-core
-      - name: Test rawblow-app (no ai)
-        run: cargo test -p rawblow-app --no-default-features --features update-check,model-download
-      - name: Clippy core (shipping features)
-        run: cargo clippy -p rawblow-core --all-targets -- -D warnings
-      - name: Clippy app (no ai)
-        run: cargo clippy -p rawblow-app --no-default-features --features update-check,model-download --all-targets -- -D warnings
-
   macos:
-    name: macOS · check app
+    name: macOS · check
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,17 +20,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Check rawblow-app (no ai)
         run: cargo check -p rawblow-app --no-default-features --features update-check,model-download
-      - name: Test rawblow-core
-        run: cargo test -p rawblow-core
 
   windows:
-    name: Windows · test + check
+    name: Windows · check
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Test rawblow-core
-        run: cargo test -p rawblow-core
       - name: Check rawblow-app (no ai)
         run: cargo check -p rawblow-app --no-default-features --features update-check,model-download
