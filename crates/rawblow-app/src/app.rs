@@ -1815,7 +1815,7 @@ fn item_capture_secs(it: &Item) -> Option<i64> {
 
 /// 항목의 표시 파일명(#56 정렬 키·동률 안정화용).
 fn item_file_name(it: &Item) -> String {
-    it.entry.display.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string()
+    nfc_file_name(&it.entry.display)
 }
 
 /// 사이드카 저장 재시도 간격(#62). 평소엔 300ms(라벨링 연타를 모아 쓰는 디바운스),

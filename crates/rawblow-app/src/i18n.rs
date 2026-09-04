@@ -171,6 +171,10 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
             "Copy/Move files by selected label and rating · handles RAW pairs",
             "選択したラベル・評価のファイルをコピー/移動 · RAWペア処理",
         ),
+        "범위 안 모든 사진을 나눠 복사/이동 · RAW 페어 처리" => (
+            "Copy/Move every photo in range into split folders · handles RAW pairs",
+            "範囲内のすべての写真を分けてコピー/移動 · RAWペア処理",
+        ),
         "라벨별 하위폴더로 분기 (/pick, /hold …)" => (
             "Split into subfolders by label (/pick, /hold …)",
             "ラベル別サブフォルダに振り分け (/pick, /hold …)",
@@ -202,10 +206,15 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         ),
         "전송 폴더 기본값" => ("Default transfer folder", "転送フォルダのデフォルト"),
         "지금 보고 있는 폴더" => ("Current folder", "今見ているフォルダ"),
+        "원래 폴더 아래" => ("Under original folder", "元フォルダの下"),
         "지정된 폴더" => ("Chosen folder", "指定フォルダ"),
         "전송(Ctrl/⌘E) 화면에서 폴더를 바꿀 수 있습니다. 다음 전송은 다시 이 기본값입니다. 한 폴더로 보낼 때 지금 열린 폴더는 고를 수 없고, 그때 기본값은 selected 하위폴더입니다." => (
             "You can change the folder in Transfer (Ctrl/⌘E). The next transfer uses this default again. In one-folder mode the currently open folder can't be chosen; the default is the selected subfolder.",
             "転送(Ctrl/⌘E)画面でフォルダを変えられます。次の転送はまたこのデフォルトです。1つのフォルダへ送るとき、今開いているフォルダは選べず、そのときのデフォルトは selected サブフォルダです。",
+        ),
+        "원래 폴더 아래: 한 폴더로 보낼 때는 selected 하위폴더, 나누기면 pick/hold 등. 지정된 폴더는 위 경로입니다. 전송(Ctrl/⌘E)에서 바꿔도 다음은 다시 이 기본값입니다." => (
+            "Under original folder: one-folder transfer uses the selected subfolder; split modes use pick/hold etc. Chosen folder is the path above. Changing it in Transfer (Ctrl/⌘E) does not keep it for the next time.",
+            "元フォルダの下: 1つのフォルダへ送るときは selected サブフォルダ、分けて送るときは pick/hold など。指定フォルダは上のパスです。転送(Ctrl/⌘E)で変えても次はまたこのデフォルトです。",
         ),
         "라벨 또는 별점 중 하나라도 해당하면 전송됩니다(합집합)." => (
             "Files matching either the label or the rating are transferred (union).",
@@ -821,8 +830,10 @@ mod tests {
             "찾아보기…", // Browse 버튼
             "전송 대상", // 푸터 WILL TRANSFER
             "전송 폴더 기본값",
+            "원래 폴더 아래",
             "한 폴더로",
             "폴더 나누기",
+            "범위 안 모든 사진을 나눠 복사/이동 · RAW 페어 처리",
             "폴더 스캔 중…",
             "원본 해상도를 못 구해 프리뷰로 표시합니다",
         ] {

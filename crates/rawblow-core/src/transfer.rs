@@ -120,8 +120,16 @@ pub fn select_members(entry: &Entry, companions: Companions) -> Vec<&PathBuf> {
     }
 }
 
-/// 전송 대상 여부: 라벨 OR 별점 OR 태그(합집합). 무별점(0)·무태그(None)는 매칭 대상이 아니다(#23/#27).
+/// 전송 대상 여부.
+///
+/// 한 폴더 모드(`split == None`): 라벨 OR 별점 OR 태그(합집합). 무별점(0)·무태그(None)는
+/// 매칭 대상이 아니다(#23/#27).
+/// 나누기 모드: 범위 안 항목을 전부 보낸다. 라벨/별점/태그는 폴더를 나누는 축이지
+/// 전송 여부를 고르는 필터가 아니다.
 fn is_selected(req: &TransferRequest, e: &Entry) -> bool {
+    if req.split != TransferSplit::None {
+        return true;
+    }
     let label_hit = req.labels.contains(&e.label);
     let star_hit = e.stars >= 1 && req.stars.contains(&e.stars);
     let tag_hit = e.tag != ColorTag::None && req.tags.contains(&e.tag);

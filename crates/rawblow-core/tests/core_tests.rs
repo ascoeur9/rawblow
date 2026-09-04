@@ -634,6 +634,41 @@ fn transfer_split_by_label_subfolders() {
 }
 
 #[test]
+fn transfer_split_sends_all_files_not_just_picked_labels() {
+    // 나누기 모드에서는 라벨 칩이 필터가 아니다. Pick만 선택돼 있어도 Hold도 간다.
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("A.JPG"), b"a").unwrap();
+    std::fs::write(src.join("B.JPG"), b"b").unwrap();
+    std::fs::write(src.join("C.JPG"), b"c").unwrap();
+
+    let mut entries = scan::scan_folder(&src, false, rawblow_core::SortOrder::Name);
+    entries[0].label = Label::Pick;
+    entries[1].label = Label::Hold;
+    entries[2].label = Label::Reject;
+
+    let req = transfer::TransferRequest {
+        entries: &entries,
+        labels: vec![Label::Pick],
+        stars: vec![],
+        action: transfer::Action::Copy,
+        companions: transfer::Companions::Both,
+        dest: dst.clone(),
+        split: transfer::TransferSplit::Label,
+        conflict: transfer::ConflictPolicy::AutoIncrement,
+        tags: vec![],
+        rename: None,
+    };
+    let report = transfer::execute(&req);
+    assert_eq!(report.transferred, 3);
+    assert!(dst.join("pick").join("A.JPG").exists());
+    assert!(dst.join("hold").join("B.JPG").exists());
+    assert!(dst.join("reject").join("C.JPG").exists());
+}
+
+#[test]
 fn transfer_split_by_stars_subfolders() {
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("src");
@@ -1057,12 +1092,12 @@ fn transfer_rename_order_padding_and_orig() {
     assert!(dst.join("002_ZP.JPG").exists(), "2번째 → 002_ZP");
 }
 
-/// #27: 컬러 태그를 전송 선택 기준(합집합)으로, 태그별 하위폴더(@green) 분기.
+/// #27: 컬러 태그의 두 역할. 한 폴더 모드에선 **선택 기준**(합집합)이고,
+/// 나누기 모드에선 전송 여부를 안 고르는 **분기 축**일 뿐이다(@teal … @untagged).
 #[test]
 fn transfer_tag_union_and_split_subfolder() {
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("src");
-    let dst = tmp.path().join("dst");
     std::fs::create_dir_all(&src).unwrap();
     std::fs::write(src.join("G.JPG"), b"g").unwrap();
     std::fs::write(src.join("R.JPG"), b"r").unwrap();
@@ -1076,22 +1111,33 @@ fn transfer_tag_union_and_split_subfolder() {
             _ => ColorTag::None,
         };
     }
-    let req = transfer::TransferRequest {
+    let req = |dest: &std::path::Path, split| transfer::TransferRequest {
         entries: &entries,
         labels: vec![],
         stars: vec![],
         tags: vec![ColorTag::Teal], // Teal만 선택
         action: transfer::Action::Copy,
         companions: transfer::Companions::Both,
-        dest: dst.clone(),
-        split: transfer::TransferSplit::Tag,
+        dest: dest.to_path_buf(),
+        split,
         conflict: transfer::ConflictPolicy::AutoIncrement,
         rename: None,
     };
-    let report = transfer::execute(&req);
-    assert_eq!(report.transferred, 1, "Teal만 전송");
-    assert!(dst.join("@teal").join("G.JPG").exists(), "태그별 하위폴더");
-    assert!(!dst.join("@orange").exists(), "선택 안 한 태그는 전송 안 됨");
+
+    // 한 폴더 모드: 태그 칩이 선택 기준이라 Teal만 간다.
+    let flat = tmp.path().join("flat");
+    let report = transfer::execute(&req(&flat, transfer::TransferSplit::None));
+    assert_eq!(report.transferred, 1, "한 폴더 모드에선 Teal만 전송");
+    assert!(flat.join("G.JPG").exists(), "Teal 항목");
+    assert!(!flat.join("R.JPG").exists(), "선택 안 한 태그는 전송 안 됨");
+
+    // 나누기 모드: 태그 칩은 폴더를 가르는 축일 뿐이라 범위 안 항목이 전부 간다.
+    let split = tmp.path().join("split");
+    let report = transfer::execute(&req(&split, transfer::TransferSplit::Tag));
+    assert_eq!(report.transferred, 3, "나누기 모드에선 태그 칩이 필터가 아니다");
+    assert!(split.join("@teal").join("G.JPG").exists(), "태그별 하위폴더");
+    assert!(split.join("@orange").join("R.JPG").exists(), "선택 안 한 태그도 자기 폴더로");
+    assert!(split.join("@untagged").join("N.JPG").exists(), "무태그는 @untagged");
 }
 
 /// #27: 사이드카가 태그를 보존(구버전 호환). 태그만 있는(라벨/별점 없는) 항목도 저장된다.

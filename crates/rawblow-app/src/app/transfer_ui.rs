@@ -173,11 +173,12 @@ impl RawBlowApp {
         // 마지막 사용 옵션을 기본값으로 로드(#57). dest는 설정 기본값(#113) — 다이얼로그에서
         // 바꿔도 다음 열기는 다시 이 값. 한 폴더 모드 + 지금 폴더면 `{폴더}/selected`.
         let mut st = TransferDialogState::from_defaults(&self.cfg.transfer_defaults);
-        st.dest = self
-            .cfg
-            .transfer_default_dest(self.folder.as_deref(), st.split)
-            .to_string_lossy()
-            .into_owned();
+        st.dest = nfc_hangul(
+            &self
+                .cfg
+                .transfer_default_dest(self.folder.as_deref(), st.split)
+                .to_string_lossy(),
+        );
         self.transfer = Some(st);
     }
 
@@ -190,7 +191,7 @@ impl RawBlowApp {
         // 마지막 사용 옵션을 기본값으로 로드(#57). dest만 현재 폴더로 새로 제안.
         let mut st = OrganizeDialogState::from_defaults(&self.cfg.organize_defaults);
         if let Some(folder) = &self.folder {
-            st.dest = folder.to_string_lossy().to_string();
+            st.dest = nfc_path_label(folder);
         }
         self.organize = Some(st);
     }
@@ -312,7 +313,14 @@ impl RawBlowApp {
                                     ui.add_space(9.0);
                                     ui.vertical(|ui| {
                                         ui.label(egui::RichText::new(tr(lang, "파일 전송")).font(prop(15.0)).color(theme::INK));
-                                        ui.label(egui::RichText::new(tr(lang, "선택한 라벨·별점의 파일을 복사/이동 · RAW 페어 처리")).font(mono(10.5)).color(theme::INK3));
+                                        ui.label(egui::RichText::new(tr(
+                                            lang,
+                                            if st.split == TransferSplit::None {
+                                                "선택한 라벨·별점의 파일을 복사/이동 · RAW 페어 처리"
+                                            } else {
+                                                "범위 안 모든 사진을 나눠 복사/이동 · RAW 페어 처리"
+                                            },
+                                        )).font(mono(10.5)).color(theme::INK3));
                                     });
                                     ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                                         let (xr, xresp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
@@ -330,8 +338,9 @@ impl RawBlowApp {
                         // 스크롤시켜 헤더·푸터(전송 시작 버튼)가 항상 보이게 한다(#41).
                         // 124 = 헤더(~68) + 푸터(~54) + 구분선 2.
                         let body_max = (screen.height() - card_pos.y - 8.0 - 124.0).max(140.0);
+                        // id를 바꿔 예전 스크롤 오프셋이 맨 위 폴더 나누기를 가리지 않게 한다.
                         egui::ScrollArea::vertical()
-                            .id_salt("transfer_body_scroll")
+                            .id_salt("transfer_body_scroll_v2")
                             .max_height(body_max)
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
@@ -349,6 +358,61 @@ impl RawBlowApp {
                                     st.scope_all = i == 0;
                                 }
                                 ui.add_space(16.0);
+
+                                // 폴더 나누기(#113/#89): 범위 바로 아래 — 스크롤 아래 칩으로 두면 모드 선택이 안 보인다.
+                                section_label(ui, tr(lang, "폴더 나누기"));
+                                let split_sel = match st.split {
+                                    TransferSplit::None => 0,
+                                    TransferSplit::Label => 1,
+                                    TransferSplit::Stars => 2,
+                                    TransferSplit::Tag => 3,
+                                };
+                                if let Some(i) = segmented(
+                                    ui,
+                                    &[
+                                        (tr(lang, "한 폴더로"), "selected"),
+                                        (tr(lang, "라벨별 (QWER)"), "pick/hold"),
+                                        (tr(lang, "별점별 (12345)"), "1–5star"),
+                                        (tr(lang, "색 태그별"), "@tag"),
+                                    ],
+                                    split_sel,
+                                ) {
+                                    let mode = [
+                                        TransferSplit::None,
+                                        TransferSplit::Label,
+                                        TransferSplit::Stars,
+                                        TransferSplit::Tag,
+                                    ][i];
+                                    if let Some(folder) = &self.folder {
+                                        let dest_n = nfc_hangul(st.dest.trim());
+                                        let folder_n = nfc_path_label(folder);
+                                        let selected_n = nfc_path_label(&folder.join(TRANSFER_FLAT_SUBFOLDER));
+                                        if mode == TransferSplit::None {
+                                            if same_folder(Path::new(&dest_n), folder) || dest_n == folder_n {
+                                                st.dest = selected_n;
+                                            }
+                                        } else if same_folder(Path::new(&dest_n), Path::new(&selected_n))
+                                            || dest_n == selected_n
+                                        {
+                                            st.dest = folder_n;
+                                        }
+                                    }
+                                    st.split = mode;
+                                }
+                                ui.add_space(6.0);
+                                ui.label(
+                                    egui::RichText::new(match st.split {
+                                        TransferSplit::None => tr(lang, "선택한 사진을 대상 폴더 한곳에 둡니다. 지금 열린 폴더는 고를 수 없습니다."),
+                                        TransferSplit::Label => tr(lang, "pick / hold / reject 폴더를 만듭니다. 제외도 여기로 빠집니다."),
+                                        TransferSplit::Stars => tr(lang, "1star … 5star 폴더를 만듭니다. 무별점은 unrated."),
+                                        TransferSplit::Tag => tr(lang, "@teal 같은 색 태그 폴더를 만듭니다. 무태그는 @untagged."),
+                                    })
+                                    .font(mono(10.0))
+                                    .color(theme::INK4),
+                                );
+                                ui.add_space(16.0);
+                                // 한 폴더로일 때만 무엇을 보낼지 고른다. 나누기면 범위 안 전부.
+                                if st.split == TransferSplit::None {
                                 section_label(ui, tr(lang, "원본 라벨"));
                                 ui.horizontal_wrapped(|ui| {
                                     for (label, n) in [(Label::Pick, pick), (Label::Hold, hold), (Label::Reject, reject), (Label::Unrated, unrated)] {
@@ -380,7 +444,7 @@ impl RawBlowApp {
                                 ui.label(egui::RichText::new(tr(lang, "라벨 또는 별점 중 하나라도 해당하면 전송됩니다(합집합).")).font(mono(10.0)).color(theme::INK4));
                                 ui.add_space(16.0);
 
-                                // 컬러 태그 기준(#27): 라벨·별점과 합집합(OR). 태그별 하위폴더 분기 옵션.
+                                // 컬러 태그 기준(#27): 라벨·별점과 합집합(OR).
                                 section_label(ui, tr(lang, "컬러 태그 기준"));
                                 ui.horizontal_wrapped(|ui| {
                                     for (i, tag) in ColorTag::ALL.iter().enumerate() {
@@ -398,43 +462,7 @@ impl RawBlowApp {
                                 });
                                 ui.add_space(8.0);
                                 ui.add_space(16.0);
-
-                                section_label(ui, tr(lang, "폴더 나누기"));
-                                let splits: [(TransferSplit, &str); 4] = [
-                                    (TransferSplit::None, tr(lang, "한 폴더로")),
-                                    (TransferSplit::Label, tr(lang, "라벨별 (QWER)")),
-                                    (TransferSplit::Stars, tr(lang, "별점별 (12345)")),
-                                    (TransferSplit::Tag, tr(lang, "색 태그별")),
-                                ];
-                                ui.horizontal_wrapped(|ui| {
-                                    for (mode, label) in splits {
-                                        if check_chip(ui, label, None, theme::ACCENT, st.split == mode) {
-                                            if mode == TransferSplit::None {
-                                                if let Some(folder) = &self.folder {
-                                                    if same_folder(Path::new(st.dest.trim()), folder) {
-                                                        st.dest = folder
-                                                            .join(TRANSFER_FLAT_SUBFOLDER)
-                                                            .to_string_lossy()
-                                                            .into_owned();
-                                                    }
-                                                }
-                                            }
-                                            st.split = mode;
-                                        }
-                                    }
-                                });
-                                ui.add_space(6.0);
-                                ui.label(
-                                    egui::RichText::new(match st.split {
-                                        TransferSplit::None => tr(lang, "선택한 사진을 대상 폴더 한곳에 둡니다. 지금 열린 폴더는 고를 수 없습니다."),
-                                        TransferSplit::Label => tr(lang, "pick / hold / reject 폴더를 만듭니다. 제외도 여기로 빠집니다."),
-                                        TransferSplit::Stars => tr(lang, "1star … 5star 폴더를 만듭니다. 무별점은 unrated."),
-                                        TransferSplit::Tag => tr(lang, "@teal 같은 색 태그 폴더를 만듭니다. 무태그는 @untagged."),
-                                    })
-                                    .font(mono(10.0))
-                                    .color(theme::INK4),
-                                );
-                                ui.add_space(16.0);
+                                }
 
                                 section_label(ui, tr(lang, "동작"));
                                 let act_sel = if st.action == Action::Copy { 0 } else { 1 };
@@ -463,7 +491,7 @@ impl RawBlowApp {
                                                     tr(lang, "지금 열린 폴더로는 보낼 수 없습니다. 다른 폴더를 고르세요.").into(),
                                                 );
                                             } else {
-                                                st.dest = d.to_string_lossy().to_string();
+                                                st.dest = nfc_path_label(&d);
                                             }
                                         }
                                     }
@@ -1119,7 +1147,7 @@ impl RawBlowApp {
                     ui.add(egui::TextEdit::singleline(&mut st.dest).font(mono(12.0)).desired_width(rest));
                     if toggle_btn(ui, tr(lang, "찾아보기…"), false).clicked() {
                         if let Some(d) = rfd::FileDialog::new().pick_folder() {
-                            st.dest = d.to_string_lossy().to_string();
+                            st.dest = nfc_path_label(&d);
                         }
                     }
                 });
