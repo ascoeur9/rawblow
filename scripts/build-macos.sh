@@ -95,14 +95,32 @@ rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
 # ── [6] 검증 ───────────────────────────────────────────────────────────
+# 판정 기준은 **빌드한 사람의 홈·저장소 경로 prefix**다. 사용자명 토큰 전수 검사(구버전)는
+# 애먼 걸 잡아 배포를 막았다:
+#   · 로컬 — 후원 링크 `https://toon.at/donate/hare` 가 USER=hare 에 걸린다.
+#   · CI   — ORT prebuilt 안에 박힌 `/Users/runner/work/ort-artifacts/…` 549건이
+#            USER=runner 에 걸린다. pyke 빌드머신 경로라 우리 정보도 아니고 우리가 지울 수도 없다.
+#            (v0.6.1 Actions macOS 잡이 이걸로 죽어 릴리즈 산출물이 안 올라갔다.)
+# 경로 prefix 로 보면 위 둘은 안 걸리면서, remap 누락이라는 진짜 사고는 그대로 잡힌다
+# (remap 없이 빌드하면 $HOME/.cargo 가 수백 건 박힌다 — 의존성 패닉 위치 문자열).
 echo "==> 검증"
-LEAK="$(strings "$APP/Contents/MacOS/rawblow" 2>/dev/null | grep -cE "(^|[^[:alnum:]_])${USER}([^[:alnum:]_]|$)" || true)"
+BIN_OUT="$APP/Contents/MacOS/rawblow"
+LEAK=0
+for pfx in "$HOME/.cargo" "$HOME/.rustup" "$REPO"; do
+    [ -n "$pfx" ] || continue
+    n="$(strings "$BIN_OUT" 2>/dev/null | grep -cF "$pfx" || true)"
+    if [ "$n" != "0" ]; then
+        echo "!! 바이너리에 빌드 경로 '$pfx' 가 ${n}건 남아 있음" >&2
+        strings "$BIN_OUT" 2>/dev/null | grep -F "$pfx" | head -3 >&2
+        LEAK=$((LEAK + n))
+    fi
+done
 if [ "$LEAK" != "0" ]; then
-    echo "!! 바이너리에 사용자명($USER) 토큰이 ${LEAK}건 남아 있음 — 배포 금지" >&2
+    echo "!! 빌드 경로 익명화 실패 — 배포 금지 (BUILD.md '배포용 클린 릴리스 빌드' 참조)" >&2
     exit 1
 fi
 codesign --verify --strict "$APP"
-echo "   서명 OK · 사용자명 미포함 OK"
+echo "   서명 OK · 빌드 경로 익명화 OK"
 
 echo "=== 완료 ==="
 echo "  $APP"

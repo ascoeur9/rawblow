@@ -70,10 +70,16 @@ RUSTFLAGS="--remap-path-prefix=$HOME=~" cargo build --release -p rawblow-app
 dumpbin /dependents dist\RawBlow-v*\RawBlow.exe
 ```
 
-### 확인 (사용자명이 안 박혔는지)
+### 확인 (빌드한 사람의 경로가 안 박혔는지)
 ```bash
-# 결과가 0이어야 함. 부분문자열(hare⊂share)이 아니라 토큰만 본다(#110).
-strings target/release/rawblow* | grep -cE "(^|[^[:alnum:]_])${USER}([^[:alnum:]_]|$)"
+# 셋 다 0이어야 함. 사용자명 토큰 전수 검사가 아니라 **경로 prefix**로 본다(#110 후속).
+#   토큰 검사는 후원 링크(toon.at/donate/<사용자명>)와 ORT prebuilt에 박힌
+#   /Users/runner/work/ort-artifacts/… 를 누출로 오인해 배포를 막았다.
+for pfx in "$HOME/.cargo" "$HOME/.rustup" "$PWD"; do
+    echo "$pfx → $(strings target/release/rawblow* | grep -cF "$pfx")"
+done
+# 반대로 remap이 걸렸다면 `~/.cargo/registry`가 수백 건 보인다(양성 대조).
+strings target/release/rawblow* | grep -c "~/.cargo/registry"
 ```
 
 ## 릴리즈 절차
