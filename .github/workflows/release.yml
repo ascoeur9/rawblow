@@ -1,5 +1,7 @@
 # GitHub 릴리즈 산출물: Windows NSIS 설치파일 + macOS arm64 zip.
-# 태그 v* 를 푸시하면 빌드해서 그 태그 릴리즈에 올린다.
+# 태그 v* 를 푸시하면 빌드해서 그 태그 릴리즈에 **드래프트**로 올린다.
+# 공개는 GitHub 릴리즈 페이지에서 "Publish release" 를 눌러 수동으로.
+# workflow_dispatch 로 다시 돌릴 때만 draft=false 로 바로 공개할 수 있다.
 # MS 스토어(MSIX)는 로컬 Windows 에서 scripts/release-all.ps1 (기본=스토어만).
 name: GitHub Release
 
@@ -12,6 +14,10 @@ on:
       tag:
         description: "다시 빌드할 태그 (예: v0.6.1). 이미 origin 에 있어야 함."
         required: true
+      draft:
+        description: "드래프트로 만들기 (false 면 바로 공개)"
+        type: boolean
+        default: true
 
 concurrency:
   group: github-release-${{ github.event.inputs.tag || github.ref }}
@@ -83,6 +89,11 @@ jobs:
           VER="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -1)"
           TAG="${{ github.event.inputs.tag }}"
           if [ -z "$TAG" ]; then TAG="${GITHUB_REF_NAME}"; fi
+          # 태그 푸시는 항상 드래프트. workflow_dispatch 는 draft 입력을 따른다.
+          DRAFT_FLAG="--draft"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.draft }}" = "false" ]; then
+            DRAFT_FLAG=""
+          fi
           if [ "$TAG" != "v${VER}" ]; then
             echo "!! 태그 $TAG 와 Cargo.toml version $VER 이 다릅니다" >&2
             exit 1
@@ -96,7 +107,9 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$SETUP" "$MAC" --clobber
             gh release edit "$TAG" --title "RawBlow $TAG" --notes-file "$BODY"
+            # draft=false 로 다시 돌리면 기존 드래프트를 공개한다. 이미 공개된 릴리즈는 그대로.
+            if [ -z "$DRAFT_FLAG" ]; then gh release edit "$TAG" --draft=false; fi
           else
-            gh release create "$TAG" --title "RawBlow $TAG" --notes-file "$BODY" "$SETUP" "$MAC"
+            gh release create "$TAG" $DRAFT_FLAG --title "RawBlow $TAG" --notes-file "$BODY" "$SETUP" "$MAC"
           fi
           echo "https://github.com/${{ github.repository }}/releases/tag/${TAG}"
