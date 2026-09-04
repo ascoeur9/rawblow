@@ -464,7 +464,7 @@ pub(super) fn nfc_hangul(s: &str) -> String {
                 }
             }
         }
-        if (0xAC00..=0xD7A3).contains(&cu) && (cu - 0xAC00) % 28 == 0 && i + 1 < chars.len() {
+        if (0xAC00..=0xD7A3).contains(&cu) && (cu - 0xAC00).is_multiple_of(28) && i + 1 < chars.len() {
             let t = chars[i + 1] as u32;
             if (0x11A8..=0x11C2).contains(&t) {
                 if let Some(ch) = char::from_u32(cu + (t - 0x11A8 + 1)) {

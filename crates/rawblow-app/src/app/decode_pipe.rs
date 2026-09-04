@@ -362,19 +362,15 @@ impl RawBlowApp {
             } else if res.thumb {
                 let n = self.decode_fails.entry(res.id).or_insert(0);
                 *n = n.saturating_add(1);
-                if *n == 1 {
-                    if self.retry_heic_as_raw(res.id, true) {
-                        continue;
-                    }
+                if *n == 1 && self.retry_heic_as_raw(res.id, true) {
+                    continue;
                 }
                 self.failed_thumb.insert(res.id);
             } else {
                 let n = self.decode_fails.entry(res.id).or_insert(0);
                 *n = n.saturating_add(1);
-                if *n == 1 {
-                    if self.retry_heic_as_raw(res.id, false) {
-                        continue;
-                    }
+                if *n == 1 && self.retry_heic_as_raw(res.id, false) {
+                    continue;
                 }
                 self.failed_preview.insert(res.id);
             }

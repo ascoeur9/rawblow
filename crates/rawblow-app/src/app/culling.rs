@@ -116,7 +116,7 @@ pub(super) fn save_cull_cache_to(path: &std::path::Path, map: &std::collections:
             Some(CullCacheDisk { path: p.to_string_lossy().into_owned(), mtime_nanos: nanos, sig: e.sig, report: e.report, dhash: e.dhash })
         })
         .collect();
-    list.sort_by(|a, b| b.mtime_nanos.cmp(&a.mtime_nanos));
+    list.sort_by_key(|c| std::cmp::Reverse(c.mtime_nanos));
     list.truncate(50_000);
     if let Ok(s) = serde_json::to_string(&list) {
         // 원자적 교체: 저장 도중 크래시에도 기존 캐시가 잘린 채 남지 않는다(재컬링 방지).
