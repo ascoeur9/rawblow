@@ -413,55 +413,55 @@ impl RawBlowApp {
                                 ui.add_space(16.0);
                                 // 한 폴더로일 때만 무엇을 보낼지 고른다. 나누기면 범위 안 전부.
                                 if st.split == TransferSplit::None {
-                                section_label(ui, tr(lang, "원본 라벨"));
-                                ui.horizontal_wrapped(|ui| {
-                                    for (label, n) in [(Label::Pick, pick), (Label::Hold, hold), (Label::Reject, reject), (Label::Unrated, unrated)] {
-                                        let on = st.labels.contains(&label);
-                                        if check_chip(ui, label.name(lang), Some(n), theme::label_color(label), on) {
-                                            if on { st.labels.retain(|l| *l != label); } else { st.labels.push(label); }
-                                        }
-                                    }
-                                });
-                                ui.add_space(8.0);
-                                ui.add_space(16.0);
-
-                                // 별점 기준(#23): 라벨과 합집합(OR). 각 별점 칸은 독립 체크.
-                                section_label(ui, tr(lang, "별점 기준"));
-                                ui.horizontal_wrapped(|ui| {
-                                    for n in 1..=5u8 {
-                                        let on = st.stars.contains(&n);
-                                        let glyph = "★".repeat(n as usize);
-                                        if check_chip(ui, &glyph, Some(star_cnt[n as usize]), theme::HOLD, on) {
-                                            if on {
-                                                st.stars.retain(|s| *s != n);
-                                            } else {
-                                                st.stars.push(n);
+                                    section_label(ui, tr(lang, "원본 라벨"));
+                                    ui.horizontal_wrapped(|ui| {
+                                        for (label, n) in [(Label::Pick, pick), (Label::Hold, hold), (Label::Reject, reject), (Label::Unrated, unrated)] {
+                                            let on = st.labels.contains(&label);
+                                            if check_chip(ui, label.name(lang), Some(n), theme::label_color(label), on) {
+                                                if on { st.labels.retain(|l| *l != label); } else { st.labels.push(label); }
                                             }
                                         }
-                                    }
-                                });
-                                ui.add_space(6.0);
-                                ui.label(egui::RichText::new(tr(lang, "라벨 또는 별점 중 하나라도 해당하면 전송됩니다(합집합).")).font(mono(10.0)).color(theme::INK4));
-                                ui.add_space(16.0);
+                                    });
+                                    ui.add_space(8.0);
+                                    ui.add_space(16.0);
 
-                                // 컬러 태그 기준(#27): 라벨·별점과 합집합(OR).
-                                section_label(ui, tr(lang, "컬러 태그 기준"));
-                                ui.horizontal_wrapped(|ui| {
-                                    for (i, tag) in ColorTag::ALL.iter().enumerate() {
-                                        let on = st.tags.contains(tag);
-                                        let rgb = tag.color_rgb().unwrap_or([0x6b, 0x72, 0x80]);
-                                        let col = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
-                                        if check_chip(ui, &tag_names[i], Some(tag_cnt[i]), col, on) {
-                                            if on {
-                                                st.tags.retain(|t| t != tag);
-                                            } else {
-                                                st.tags.push(*tag);
+                                    // 별점 기준(#23): 라벨과 합집합(OR). 각 별점 칸은 독립 체크.
+                                    section_label(ui, tr(lang, "별점 기준"));
+                                    ui.horizontal_wrapped(|ui| {
+                                        for n in 1..=5u8 {
+                                            let on = st.stars.contains(&n);
+                                            let glyph = "★".repeat(n as usize);
+                                            if check_chip(ui, &glyph, Some(star_cnt[n as usize]), theme::HOLD, on) {
+                                                if on {
+                                                    st.stars.retain(|s| *s != n);
+                                                } else {
+                                                    st.stars.push(n);
+                                                }
                                             }
                                         }
-                                    }
-                                });
-                                ui.add_space(8.0);
-                                ui.add_space(16.0);
+                                    });
+                                    ui.add_space(6.0);
+                                    ui.label(egui::RichText::new(tr(lang, "라벨 또는 별점 중 하나라도 해당하면 전송됩니다(합집합).")).font(mono(10.0)).color(theme::INK4));
+                                    ui.add_space(16.0);
+
+                                    // 컬러 태그 기준(#27): 라벨·별점과 합집합(OR).
+                                    section_label(ui, tr(lang, "컬러 태그 기준"));
+                                    ui.horizontal_wrapped(|ui| {
+                                        for (i, tag) in ColorTag::ALL.iter().enumerate() {
+                                            let on = st.tags.contains(tag);
+                                            let rgb = tag.color_rgb().unwrap_or([0x6b, 0x72, 0x80]);
+                                            let col = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                                            if check_chip(ui, &tag_names[i], Some(tag_cnt[i]), col, on) {
+                                                if on {
+                                                    st.tags.retain(|t| t != tag);
+                                                } else {
+                                                    st.tags.push(*tag);
+                                                }
+                                            }
+                                        }
+                                    });
+                                    ui.add_space(8.0);
+                                    ui.add_space(16.0);
                                 }
 
                                 section_label(ui, tr(lang, "동작"));
