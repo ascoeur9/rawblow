@@ -42,7 +42,7 @@ pub fn compose(lat: f64, lon: f64, z: u8, w: u32, h: u32, cache: &Path) -> Optio
     let y1 = ((top + h as f64 - 1.0) / TILE).floor() as i64;
     // 배경: 타일 실패 시 보이는 어두운 회색.
     let mut out = vec![0u8; (w * h * 4) as usize];
-    for px in out.chunks_exact_mut(4) {
+    for px in out.as_chunks_mut::<4>().0 {
         px.copy_from_slice(&[0x14, 0x17, 0x1c, 0xff]);
     }
     let mut any = false;
@@ -159,7 +159,7 @@ mod tests {
         assert_eq!((img.w, img.h), (220, 150));
         // 단색 배경이 아니라 실제 타일 픽셀이 박혔는지(색 다양성).
         let mut distinct = std::collections::HashSet::new();
-        for px in img.rgba.chunks_exact(4) {
+        for px in img.rgba.as_chunks::<4>().0 {
             distinct.insert([px[0], px[1], px[2]]);
         }
         assert!(distinct.len() > 16, "지도 픽셀 다양성 {}", distinct.len());

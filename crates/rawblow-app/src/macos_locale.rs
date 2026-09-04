@@ -6,6 +6,11 @@
 //! `AppleLanguages` 키에 써 두면 AppKit이 자기 프레임워크의 `.lproj`에서 올바른 로캘을
 //! 고른다. rfd가 NSOpenPanel을 호출하기 **전에** 한 번만 부르면 된다.
 
+// objc 0.2 의 msg_send!/sel_impl! 매크로가 확장 중 `cfg(feature = "cargo-clippy")` 를 쓴다.
+// 우리 크레이트에 없는 feature 라 rustc 가 unexpected_cfgs 로 경고하지만, 외부 매크로라
+// 우리 쪽에서 고칠 수 없다. 이 모듈에서만 끈다.
+#![allow(unexpected_cfgs)]
+
 use objc::runtime::Object;
 use objc::{class, msg_send, sel, sel_impl};
 
@@ -15,7 +20,7 @@ pub fn align_with_system() {
         if langs.is_null() {
             return;
         }
-        let key_cstr = b"AppleLanguages\0".as_ptr() as *const std::os::raw::c_char;
+        let key_cstr: *const std::os::raw::c_char = c"AppleLanguages".as_ptr();
         let key: *mut Object = msg_send![class!(NSString), stringWithUTF8String: key_cstr];
         let defaults: *mut Object = msg_send![class!(NSUserDefaults), standardUserDefaults];
         let _: () = msg_send![defaults, setObject:langs forKey:key];

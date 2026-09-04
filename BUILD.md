@@ -4,7 +4,7 @@ RawBlow를 빌드하고 배포용 바이너리를 만드는 방법, 그리고 �
 
 ## 요구 사항
 
-- **Rust** 1.80+ (`rustup`)
+- **Rust** 1.88+ (`rustup`) — `slice::as_chunks`(1.88) · `is_multiple_of`(1.87) 사용
 - C 링커
   - Windows: **MSVC Build Tools** (VCTools 워크로드 + Windows SDK)
   - macOS: Xcode Command Line Tools (`xcode-select --install`)

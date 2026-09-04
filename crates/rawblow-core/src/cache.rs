@@ -107,7 +107,7 @@ pub fn store(cache_dir: &Path, key: &str, img: &DecodedImage) {
     }
     // RGBA → RGB. 썸네일은 불투명 사진이라 알파 제거는 무손실 의미다.
     let mut rgb = Vec::with_capacity((img.width as usize) * (img.height as usize) * 3);
-    for px in img.rgba.chunks_exact(4) {
+    for px in img.rgba.as_chunks::<4>().0 {
         rgb.extend_from_slice(&px[..3]);
     }
     let mut buf = Vec::new();

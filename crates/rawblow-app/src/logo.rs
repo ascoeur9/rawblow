@@ -43,6 +43,8 @@ pub fn draw_mark(painter: &egui::Painter, rect: Rect) {
 pub const MACOS_ICON_MARGIN: f32 = 100.0 / 1024.0;
 
 /// 창 아이콘용 RGBA8(straight alpha) 버퍼. 마크를 캔버스에 꽉 채운다(풀블리드).
+// macOS 창 아이콘은 여백본(icon_rgba_inset)을 쓴다 — 풀블리드는 다른 OS와 MSIX 생성기 전용.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn icon_rgba(size: u32) -> Vec<u8> {
     icon_rgba_inset(size, 0.0)
 }

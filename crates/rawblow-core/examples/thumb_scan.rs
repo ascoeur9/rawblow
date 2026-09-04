@@ -48,7 +48,7 @@ fn main() {
                 let mut s = 0.0f64;
                 let mut s2 = 0.0f64;
                 let mut k = 0.0f64;
-                for px in img.rgba.chunks_exact(4).step_by(11) {
+                for px in img.rgba.as_chunks::<4>().0.iter().step_by(11) {
                     let y = 0.299 * px[0] as f64 + 0.587 * px[1] as f64 + 0.114 * px[2] as f64;
                     s += y;
                     s2 += y * y;

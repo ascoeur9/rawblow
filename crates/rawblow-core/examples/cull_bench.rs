@@ -14,7 +14,7 @@ use std::time::Instant;
 /// 결정적 합성 RGBA 이미지(그래디언트+노이즈). 추론 비용은 내용 무관이라 OK.
 fn synth(w: u32, h: u32) -> DecodedImage {
     let mut rgba = vec![0u8; (w as usize) * (h as usize) * 4];
-    for (i, px) in rgba.chunks_exact_mut(4).enumerate() {
+    for (i, px) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let v = ((i * 97) % 251) as u8;
         px[0] = v;
         px[1] = v.wrapping_add(40);

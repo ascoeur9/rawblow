@@ -426,7 +426,7 @@ mod tests {
 
     fn solid(w: u32, h: u32, rgb: [u8; 3]) -> DecodedImage {
         let mut rgba = vec![0u8; (w * h * 4) as usize];
-        for px in rgba.chunks_exact_mut(4) {
+        for px in rgba.as_chunks_mut::<4>().0 {
             px[0] = rgb[0];
             px[1] = rgb[1];
             px[2] = rgb[2];

@@ -75,7 +75,7 @@ mod detail {
             let (_, d) = outputs[0].try_extract_tensor::<f32>().ok()?;
             // (1,300,6) = [x1,y1,x2,y2,conf,cls]. NMS-free라 그대로 임계만.
             let mut set: Vec<u8> = Vec::new();
-            for det in d.chunks_exact(6) {
+            for det in d.as_chunks::<6>().0 {
                 if det[4] >= OBJ_CONF_THRESH {
                     let cls = det[5].round();
                     if (0.0..80.0).contains(&cls) {

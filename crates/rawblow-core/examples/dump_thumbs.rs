@@ -29,7 +29,7 @@ fn main() {
                 let mut sum = 0u64;
                 let mut mn = 255u8;
                 let mut mx = 0u8;
-                for px in img.rgba.chunks_exact(4) {
+                for px in img.rgba.as_chunks::<4>().0 {
                     let l = ((px[0] as u32 + px[1] as u32 + px[2] as u32) / 3) as u8;
                     sum += l as u64;
                     mn = mn.min(l);

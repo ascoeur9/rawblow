@@ -129,7 +129,7 @@ fn luma(r: u8, g: u8, b: u8) -> u32 {
 fn exposure_report(img: &DecodedImage) -> ExposureReport {
     let px = (img.width as usize) * (img.height as usize);
     let mut hist = [0u32; 256];
-    for c in img.rgba.chunks_exact(4) {
+    for c in img.rgba.as_chunks::<4>().0 {
         hist[luma(c[0], c[1], c[2]) as usize] += 1;
     }
     let total = px as f64;
