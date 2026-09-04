@@ -4,13 +4,15 @@
 # 개인 테스트 사진 (공유 금지)
 /sample/
 /z5ii_sample/
-/docs/d850 sample/
+/d850 sample/
 # 전송(복사/이동) 테스트 산출물 (개인 사진)
 /sample_selected/
 
 # OS / 에디터
 .DS_Store
 *.swp
+# Claude Code 로컬 설정(머신별 권한 등). 공유용 .claude/settings.json 은 추적한다.
+.claude/settings.local.json
 
 # 임시 스크린샷 (저장소 루트에 떨어뜨린 캡처)
 /스크린샷*.png
