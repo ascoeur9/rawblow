@@ -24,6 +24,12 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+thread_local! {
+    static SUPPRESS_CFG_SAVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PERSIST_CFG_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 mod ui_helpers;
 use ui_helpers::*;
 mod update_check;
@@ -471,6 +477,147 @@ impl RawBlowApp {
         }
         // 시작 시 한 번 캐시 상한 정리(폴더를 안 열어도 지난 세션 누적분을 회수).
         app.schedule_cache_trim();
+        if std::env::var("RB_OPEN_SETTINGS").ok().as_deref() == Some("1") {
+            app.show_settings = true;
+        }
+        app
+    }
+
+    /// 설정 화면·정렬 변경이 쓰는 즉시 저장. 테스트에서는 사용자 config.json을 건드리지 않는다.
+    fn persist_cfg(&self) {
+        #[cfg(test)]
+        {
+            PERSIST_CFG_COUNT.with(|c| c.set(c.get() + 1));
+            if SUPPRESS_CFG_SAVE.with(|c| c.get()) {
+                return;
+            }
+        }
+        let _ = config::save(&self.cfg);
+    }
+
+    #[cfg(test)]
+    pub(super) fn settings_qa_begin() {
+        SUPPRESS_CFG_SAVE.with(|c| c.set(true));
+        PERSIST_CFG_COUNT.with(|c| c.set(0));
+    }
+
+    #[cfg(test)]
+    pub(super) fn settings_qa_persist_count() -> usize {
+        PERSIST_CFG_COUNT.with(|c| c.get())
+    }
+
+    /// 설정 QA용 최소 앱. 사용자 설정·마지막 폴더를 읽지 않고, 캐시 trim도 끈다.
+    #[cfg(test)]
+    pub(super) fn for_settings_qa() -> Self {
+        let cfg = Config {
+            cache_limit_mb: 0,
+            ..Config::default()
+        };
+        let lang = Lang::Ko;
+        let (meta_tx, meta_rx) = crossbeam_channel::unbounded();
+        let mut app = RawBlowApp {
+            lang,
+            view: ViewMode::Single,
+            fullscreen: false,
+            fs_applied: false,
+            size_clamped: false,
+            filter: Filter::All,
+            star_filter: StarFilter::Any,
+            tag_filter: TagFilter::Any,
+            show_exif: cfg.show_exif,
+            show_hist: cfg.show_histogram,
+            full_raw: false,
+            fit: true,
+            zoom: 1.0,
+            pan: Vec2::ZERO,
+            zoom_for: None,
+            last_view_size: None,
+            view_mag: ViewMag::default(),
+            view_ref_long: 0.0,
+            one_to_one_pending: false,
+            af_zoom_pending: false,
+            keep_zoom: None,
+            zoom_restore: false,
+            grid_cols: cfg.grid_cols.clamp(4, 12),
+            sort: cfg.sort,
+            sort_scan_gen: None,
+            sort_rx: None,
+            scan_rx: None,
+            scanning: false,
+            selected: std::collections::HashSet::new(),
+            sel_anchor: None,
+            grid_scroll_to: None,
+            grid_visible_rows: 0..0,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            folder: None,
+            items: Vec::new(),
+            index: 0,
+            worker: Worker::new(1, PathBuf::from("target/settings-qa-thumb-cache")),
+            cache: TexCache::new(8, 4),
+            thumbs: TexCache::new(8, 4),
+            pending_preview: std::collections::HashSet::new(),
+            pending_thumb: std::collections::HashSet::new(),
+            pending_thumb_prio: std::collections::HashSet::new(),
+            pending_prefetch: std::collections::HashSet::new(),
+            failed_preview: std::collections::HashSet::new(),
+            failed_thumb: std::collections::HashSet::new(),
+            decode_fails: std::collections::HashMap::new(),
+            histo: std::collections::HashMap::new(),
+            generation: 0,
+            sidecar_dirty: false,
+            last_save: Instant::now(),
+            save_error: None,
+            save_fail_count: 0,
+            transfer: None,
+            organize: None,
+            ai_cull_open: false,
+            ai_cull: None,
+            ai_cull_cancel_confirm: false,
+            ai_cull_folder_confirm: None,
+            cull_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            #[cfg(feature = "model-download")]
+            model_dl: None,
+            progress: None,
+            result: None,
+            result_organize: false,
+            show_settings: true,
+            settings_reset_armed: false,
+            licenses: None,
+            last_dest: None,
+            cache_size: None,
+            last_trim: Instant::now(),
+            jump_open: false,
+            jump_text: String::new(),
+            jump_by_number: true,
+            bulk_open: false,
+            bulk_text: String::new(),
+            bulk_exact: false,
+            bulk_target: Label::Pick,
+            bulk_hits: Vec::new(),
+            bulk_searched: false,
+            show_help: false,
+            toast: None,
+            last_frame: Instant::now(),
+            frame_ms: 0.0,
+            bg_hex: String::new(),
+            update_checked: false,
+            update_rx: None,
+            update_available: None,
+            show_map: cfg.show_map,
+            show_af: cfg.show_af,
+            map_state: None,
+            map_zoom: 13,
+            meta_rx,
+            meta_tx,
+            meta_inflight: false,
+            cull_meta_cameras: Vec::new(),
+            cull_meta_lenses: Vec::new(),
+            cull_meta_gen: None,
+            cull_meta_rx: None,
+            cfg,
+        };
+        app.bg_hex = hex_str(app.photo_bg_rgb());
         app
     }
 
@@ -713,7 +860,7 @@ impl RawBlowApp {
             return;
         }
         self.cfg.sort = sort;
-        let _ = config::save(&self.cfg);
+        self.persist_cfg();
         self.sort = sort;
         match sort {
             SortOrder::Name | SortOrder::Modified => {

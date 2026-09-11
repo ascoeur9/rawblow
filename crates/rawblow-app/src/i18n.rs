@@ -683,6 +683,23 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "캐시" => ("CACHE", "キャッシュ"),
         "초기화" => ("RESET", "リセット"), // 기존 "복원"(Reset, 버튼)과 별개 키(섹션 캡션용).
         "정보" => ("ABOUT", "情報"),
+        // 설정 행: 짧은 라벨(문장형 금지). 긴 설명은 호버로.
+        "자동 전진" => ("Auto-advance", "自動送り"),
+        "하위 폴더" => ("Subfolders", "サブフォルダ"),
+        "업데이트" => ("Updates", "更新"),
+        "프리로드" => ("Preload", "プリロード"),
+        "그리드" => ("Grid", "グリッド"),
+        "배지" => ("Badges", "バッジ"),
+        "정렬" => ("Sort", "並び"),
+        "ORIG" => ("ORIG", "ORIG"),
+        "전송 폴더" => ("Transfer to", "転送先"),
+        "확대 시" => ("When zoomed", "拡大時"),
+        "유지" => ("Keep", "維持"),
+        "릴리스" => ("Releases", "リリース"),
+        "이슈" => ("Issues", "Issues"),
+        "라이선스" => ("Licenses", "ライセンス"),
+        "후원" => ("Donate", "支援"),
+        "기본값" => ("Defaults", "デフォルト"),
         _ => return None,
     })
 }
