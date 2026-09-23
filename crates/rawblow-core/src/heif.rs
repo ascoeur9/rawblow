@@ -47,10 +47,12 @@ pub(crate) fn decode_bytes(
     want_orig: bool,
 ) -> Result<DecodedImage, DecodeError> {
     let preview = matches!(max_edge, Some(e) if e <= 1024);
-    if let Some(idx) = crate::heif_index::index(bytes) {
+    let thumb = matches!(max_edge, Some(e) if e <= 384);
+    let index = crate::heif_index::index(bytes);
+    if let Some(idx) = &index {
         // heif-oxide는 JPEG primary를 거절한다 — 그 JPEG가 곧 본 이미지.
         if idx.is_jpeg(idx.primary) {
-            if let Some(mut img) = jpeg_item(bytes, &idx, idx.primary, max_edge) {
+            if let Some(mut img) = jpeg_item(bytes, idx, idx.primary, max_edge) {
                 img.full_raw = want_orig;
                 return Ok(img);
             }
@@ -58,21 +60,23 @@ pub(crate) fn decode_bytes(
         if preview {
             // 요청 크기에 충분히 가까운 항목만 쓴다. 그리드(≤384)는 iPhone thmb(~320)로 충분하지만,
             // 컬링(1024)을 320px 썸네일로 재면 초점·기울기 임계가 다른 포맷과 어긋난다 — 그땐 본 이미지.
+            // 그리드 썸네일(≤384)은 160px 이상이면 충분(예전 스캔 경로와 같은 기준).
             let enough = |img: &DecodedImage| {
-                let want = max_edge.unwrap_or(u32::MAX) as f32 * 0.75;
+                let want = if thumb { 160.0 } else { max_edge.unwrap_or(u32::MAX) as f32 * 0.75 };
                 img.width.max(img.height) as f32 >= want
             };
-            if let Some(img) = jpeg_thumb_items(bytes, &idx, max_edge).filter(enough) {
+            if let Some(img) = jpeg_thumb_items(bytes, idx, max_edge).filter(enough) {
                 return Ok(img);
             }
-            if let Some(img) = hevc_thumb_item(bytes, &idx, max_edge).filter(enough) {
+            if let Some(img) = hevc_thumb_item(bytes, idx, max_edge).filter(enough) {
                 return Ok(img);
             }
         }
     }
 
-    let thumb = matches!(max_edge, Some(e) if e <= 384);
-    if thumb {
+    // 색인을 못 읽은(깨진) 컨테이너만 바이트 스캔으로 JPEG를 찾는다. 색인이 있으면 JPEG 항목은
+    // 위에서 회전까지 적용해 이미 시도했다 — 스캔은 회전 정보를 몰라 눕힌 썸네일을 낼 수 있다.
+    if thumb && index.is_none() {
         if let Some(jpeg) = crate::decode::extract_embedded_jpeg_sized(bytes, Some(160)) {
             if let Ok(img) = crate::decode::decode_jpeg_scaled(jpeg, 1, max_edge) {
                 return Ok(img);
@@ -80,7 +84,8 @@ pub(crate) fn decode_bytes(
         }
     }
 
-    let mut img = decode_hevc(bytes, max_edge)?;
+    let fix = index.as_ref().map(|i| i.hevc_orientation_fix(i.primary)).unwrap_or(1);
+    let mut img = decode_hevc(bytes, max_edge, fix)?;
     img.full_raw = want_orig;
     Ok(img)
 }
@@ -129,10 +134,11 @@ fn hevc_thumb_item(
     if !idx.patch_pitm(&mut patched, thumb) {
         return None;
     }
-    decode_hevc(&patched, max_edge).ok()
+    decode_hevc(&patched, max_edge, idx.hevc_orientation_fix(thumb)).ok()
 }
 
-fn decode_hevc(bytes: &[u8], max_edge: Option<u32>) -> Result<DecodedImage, DecodeError> {
+/// `orient_fix`: heif-oxide 결과에 추가로 걸 EXIF 방향(imir 축 해석 보정, 보통 1).
+fn decode_hevc(bytes: &[u8], max_edge: Option<u32>, orient_fix: u16) -> Result<DecodedImage, DecodeError> {
     let guard = HEIC_DECODE.lock().unwrap_or_else(|e| e.into_inner());
     let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| heif_oxide::decode_bytes(bytes)))
         .map_err(|_| DecodeError::Decode("heic decoder panic".into()))?
@@ -143,8 +149,8 @@ fn decode_hevc(bytes: &[u8], max_edge: Option<u32>) -> Result<DecodedImage, Deco
     let dynimg = image::RgbaImage::from_raw(decoded.width, decoded.height, rgba)
         .map(DynamicImage::ImageRgba8)
         .ok_or_else(|| DecodeError::Decode("heic rgba size mismatch".into()))?;
-    // heif-oxide가 irot/Display P3→sRGB를 이미 적용. 이중 회전 금지(orient=1).
-    Ok(crate::decode::finish(dynimg, None, false, 1, max_edge))
+    // heif-oxide가 irot/imir/Display P3→sRGB를 이미 적용. imir 축만 규격과 반대라 그 차이만 보정.
+    Ok(crate::decode::finish(dynimg, None, false, orient_fix, max_edge))
 }
 
 fn walk_boxes(data: &[u8], f: &mut dyn FnMut(&[u8; 4], &[u8])) {

@@ -577,9 +577,9 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
             "AIが構図・雰囲気を採点して良いカットを選びます（モデルが必要）",
         ),
         "높일수록 더 엄격하게 흐림으로 판정합니다" => ("Higher = stricter blur judgment", "高くするほど厳しくブレと判定します"),
-        "초점을 사진 전체가 아니라 카메라가 맞춘 AF 지점에서만 봅니다" => (
-            "Checks focus only at the camera's AF points, not the whole frame",
-            "フォーカスを写真全体ではなくカメラが合わせたAF点だけで判定します",
+        "초점을 사진 전체가 아니라 카메라가 맞춘 AF 지점에서만 봅니다. 합초 AF 지점 기록이 없으면(수동 초점 등) 사진 전체로 봅니다" => (
+            "Checks focus only at the camera's AF points, not the whole frame. Without in-focus AF points (e.g. manual focus) the whole frame is used",
+            "フォーカスを写真全体ではなくカメラが合わせたAF点だけで判定します。合焦AF点の記録がない場合（MFなど）は写真全体で判定します",
         ),
         "그래픽카드로 미적 채점을 가속합니다" => ("Accelerates aesthetic scoring on the GPU", "GPUで美的採点を高速化します"),
         "미적 채점에 쓸 AI 모델 — 클수록 정확하지만 느립니다" => (

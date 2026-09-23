@@ -613,13 +613,15 @@ fn e2e_jpeg_in_heif_applies_irot_and_imir() {
     assert_eq!((cw.width, cw.height), (32, 64));
     assert_eq!(red_corner(&cw), (true, false));
 
-    // imir axis=0(세로축): 좌우 반전 → 우상단.
-    let mir = dec("mir.heic", &[bx(b"imir", &[0])]);
+    // imir axis=1: 좌우 반전 → 우상단. axis=0: 상하 반전 → 좌하단(23008-12:2022).
+    let mir = dec("mir.heic", &[bx(b"imir", &[1])]);
     assert_eq!((mir.width, mir.height), (64, 32));
     assert_eq!(red_corner(&mir), (true, false));
+    let mirv = dec("mirv.heic", &[bx(b"imir", &[0])]);
+    assert_eq!(red_corner(&mirv), (false, true));
 
     // 순서: 반시계 90 후 좌우 반전 → 좌하단이 우하단으로.
-    let both = dec("both.heic", &[bx(b"irot", &[1]), bx(b"imir", &[0])]);
+    let both = dec("both.heic", &[bx(b"irot", &[1]), bx(b"imir", &[1])]);
     assert_eq!((both.width, both.height), (32, 64));
     assert_eq!(red_corner(&both), (true, true));
 }

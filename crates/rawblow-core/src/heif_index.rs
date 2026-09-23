@@ -15,8 +15,9 @@ const MAX_REFS: usize = 4096;
 const MAX_PROPS: usize = 4096;
 const MAX_ASSOC_PER_ITEM: u8 = 64;
 
-/// HEIF 변환 속성(표시 전에 적용). `irot`는 반시계 90° 단위, `imir`는 축(0=세로축 → 좌우 반전,
-/// 1=가로축 → 상하 반전). ipma에 나열된 순서대로 적용한다(ISO/IEC 23008-12).
+/// HEIF 변환 속성(표시 전에 적용). `irot`는 반시계 90° 단위. `imir` 축은 ISO/IEC 23008-12:2022
+/// §6.5.12 기준 **0 = 위아래 교환(상하 반전, EXIF 4), 1 = 좌우 교환(좌우 반전, EXIF 2)** —
+/// libheif·libavif와 같은 해석. ipma에 나열된 순서대로 적용한다.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Transform {
     RotCcw(u8),
@@ -63,6 +64,11 @@ impl HeifIndex {
     /// heif-oxide가 HEVC에 해 주는 것과 같은 방향으로 선다.
     pub fn exif_orientation(&self, id: u32) -> u16 {
         self.transforms.get(&id).map(|t| compose_to_exif(t)).unwrap_or(1)
+    }
+
+    /// 이 항목을 heif-oxide로 풀었을 때 규격 방향으로 맞추는 보정(imir 축 해석 차이, [`hevc_mirror_fix`]).
+    pub fn hevc_orientation_fix(&self, id: u32) -> u16 {
+        self.transforms.get(&id).map(|t| hevc_mirror_fix(t)).unwrap_or(1)
     }
 
     pub fn is_hevc_image(&self, id: u32) -> bool {
@@ -381,8 +387,9 @@ fn parse_iprp(data: &[u8], start: usize, end: usize) -> Option<HashMap<u32, Vec<
                 let mut p = bs;
                 while let Some((_, pc, pbs, pbe)) = next_box(data, p, be) {
                     let t = match &pc {
-                        b"irot" => data.get(pbs).map(|b| Transform::RotCcw(b & 3)),
-                        b"imir" => data.get(pbs).map(|b| Transform::Mirror(b & 1)),
+                        // 본문 없는 빈 박스는 다음 박스 바이트를 읽지 않게 건너뛴다.
+                        b"irot" if pbs < pbe => Some(Transform::RotCcw(data[pbs] & 3)),
+                        b"imir" if pbs < pbe => Some(Transform::Mirror(data[pbs] & 1)),
                         _ => None,
                     };
                     props.push(t);
@@ -431,64 +438,86 @@ fn parse_iprp(data: &[u8], start: usize, end: usize) -> Option<HashMap<u32, Vec<
     Some(out)
 }
 
+type Grid = (usize, usize, Vec<u8>); // (w, h, row-major) 표식 격자
+
+fn grid_at(g: &Grid, x: usize, y: usize) -> u8 {
+    g.2[y * g.0 + x]
+}
+fn grid_rot_cw(g: &Grid) -> Grid {
+    let (w, h) = (g.0, g.1);
+    let mut v = Vec::with_capacity(w * h);
+    for y in 0..w {
+        for x in 0..h {
+            v.push(grid_at(g, y, h - 1 - x));
+        }
+    }
+    (h, w, v)
+}
+fn grid_fliph(g: &Grid) -> Grid {
+    let mut v = Vec::with_capacity(g.2.len());
+    for y in 0..g.1 {
+        for x in 0..g.0 {
+            v.push(grid_at(g, g.0 - 1 - x, y));
+        }
+    }
+    (g.0, g.1, v)
+}
+fn grid_flipv(g: &Grid) -> Grid {
+    let mut v = Vec::with_capacity(g.2.len());
+    for y in 0..g.1 {
+        for x in 0..g.0 {
+            v.push(grid_at(g, x, g.1 - 1 - y));
+        }
+    }
+    (g.0, g.1, v)
+}
+/// decode.rs `apply_orientation`과 같은 EXIF 정의(image `rotate90` = 시계 방향).
+fn grid_exif(g: &Grid, o: u16) -> Grid {
+    match o {
+        2 => grid_fliph(g),
+        3 => grid_rot_cw(&grid_rot_cw(g)),
+        4 => grid_flipv(g),
+        5 => grid_fliph(&grid_rot_cw(g)),
+        6 => grid_rot_cw(g),
+        7 => grid_fliph(&grid_rot_cw(&grid_rot_cw(&grid_rot_cw(g)))),
+        8 => grid_rot_cw(&grid_rot_cw(&grid_rot_cw(g))),
+        _ => g.clone(),
+    }
+}
+fn grid_base() -> Grid {
+    (3, 2, vec![0, 1, 2, 3, 4, 5])
+}
+/// 변환을 차례로 적용. `spec_mirror`면 규격(imir 0=상하), 아니면 heif-oxide 0.1 해석(imir 0=좌우).
+fn grid_apply(ts: &[Transform], spec_mirror: bool) -> Grid {
+    ts.iter().fold(grid_base(), |g, t| match *t {
+        // 반시계 k번 = 시계 (4-k)번.
+        Transform::RotCcw(k) => (0..(4 - k as usize % 4) % 4).fold(g, |acc, _| grid_rot_cw(&acc)),
+        Transform::Mirror(axis) => {
+            if (axis == 0) == spec_mirror {
+                grid_flipv(&g)
+            } else {
+                grid_fliph(&g)
+            }
+        }
+    })
+}
+
 /// 변환 목록을 EXIF Orientation 하나로 합성한다. 3×2 표식 격자에 변환을 차례로 적용한 결과를
-/// EXIF 8가지(decode.rs `apply_orientation`과 같은 정의)와 대조 — 합성 규칙을 손으로 외우지 않는다.
+/// EXIF 8가지와 대조 — 합성 규칙을 손으로 외우지 않는다.
 pub fn compose_to_exif(ts: &[Transform]) -> u16 {
-    type G = (usize, usize, Vec<u8>); // (w, h, row-major)
-    fn at(g: &G, x: usize, y: usize) -> u8 {
-        g.2[y * g.0 + x]
+    let want = grid_apply(ts, true);
+    (1..=8).find(|&o| grid_exif(&grid_base(), o) == want).unwrap_or(1)
+}
+
+/// heif-oxide 0.1은 imir 축을 규격과 반대로(0=좌우) 적용한다. 그 결과에 추가로 걸면 규격대로
+/// 서게 되는 EXIF 보정값. imir가 없으면 1(보정 없음).
+pub fn hevc_mirror_fix(ts: &[Transform]) -> u16 {
+    if !ts.iter().any(|t| matches!(t, Transform::Mirror(_))) {
+        return 1;
     }
-    fn rot_cw(g: &G) -> G {
-        let (w, h) = (g.0, g.1);
-        let mut v = Vec::with_capacity(w * h);
-        for y in 0..w {
-            for x in 0..h {
-                v.push(at(g, y, h - 1 - x));
-            }
-        }
-        (h, w, v)
-    }
-    fn fliph(g: &G) -> G {
-        let mut v = Vec::with_capacity(g.2.len());
-        for y in 0..g.1 {
-            for x in 0..g.0 {
-                v.push(at(g, g.0 - 1 - x, y));
-            }
-        }
-        (g.0, g.1, v)
-    }
-    fn flipv(g: &G) -> G {
-        let mut v = Vec::with_capacity(g.2.len());
-        for y in 0..g.1 {
-            for x in 0..g.0 {
-                v.push(at(g, x, g.1 - 1 - y));
-            }
-        }
-        (g.0, g.1, v)
-    }
-    fn exif(g: &G, o: u16) -> G {
-        match o {
-            2 => fliph(g),
-            3 => rot_cw(&rot_cw(g)),
-            4 => flipv(g),
-            5 => fliph(&rot_cw(g)),
-            6 => rot_cw(g),
-            7 => fliph(&rot_cw(&rot_cw(&rot_cw(g)))),
-            8 => rot_cw(&rot_cw(&rot_cw(g))),
-            _ => g.clone(),
-        }
-    }
-    let base: G = (3, 2, vec![0, 1, 2, 3, 4, 5]);
-    let mut g = base.clone();
-    for t in ts {
-        g = match *t {
-            // 반시계 k번 = 시계 (4-k)번.
-            Transform::RotCcw(k) => (0..(4 - k as usize % 4) % 4).fold(g, |acc, _| rot_cw(&acc)),
-            Transform::Mirror(0) => fliph(&g),
-            Transform::Mirror(_) => flipv(&g),
-        };
-    }
-    (1..=8).find(|&o| exif(&base, o) == g).unwrap_or(1)
+    let got = grid_apply(ts, false);
+    let want = grid_apply(ts, true);
+    (1..=8).find(|&o| grid_exif(&got, o) == want).unwrap_or(1)
 }
 
 fn next_box(data: &[u8], pos: usize, limit: usize) -> Option<(usize, [u8; 4], usize, usize)> {
@@ -760,11 +789,71 @@ mod tests {
         assert_eq!(compose_to_exif(&[RotCcw(1)]), 8, "반시계 90 = EXIF 8");
         assert_eq!(compose_to_exif(&[RotCcw(2)]), 3);
         assert_eq!(compose_to_exif(&[RotCcw(3)]), 6, "반시계 270 = 시계 90 = EXIF 6");
-        assert_eq!(compose_to_exif(&[Mirror(0)]), 2);
-        assert_eq!(compose_to_exif(&[Mirror(1)]), 4);
-        // 회전 후 좌우 반전: 시계 90 → 좌우 = EXIF 5(transpose 계열)
-        assert_eq!(compose_to_exif(&[RotCcw(3), Mirror(0)]), 5);
-        assert_eq!(compose_to_exif(&[RotCcw(1), Mirror(0)]), 7);
+        // 규격(23008-12:2022): axis 0 = 상하(EXIF 4), axis 1 = 좌우(EXIF 2).
+        assert_eq!(compose_to_exif(&[Mirror(0)]), 4);
+        assert_eq!(compose_to_exif(&[Mirror(1)]), 2);
+        // 시계 90 후 좌우 반전 = EXIF 5, 반시계 90 후 좌우 반전 = EXIF 7.
+        assert_eq!(compose_to_exif(&[RotCcw(3), Mirror(1)]), 5);
+        assert_eq!(compose_to_exif(&[RotCcw(1), Mirror(1)]), 7);
+    }
+
+    #[test]
+    fn hevc_mirror_fix_turns_heif_oxide_result_into_spec_result() {
+        use Transform::*;
+        assert_eq!(hevc_mirror_fix(&[]), 1);
+        assert_eq!(hevc_mirror_fix(&[RotCcw(1)]), 1, "회전만 있으면 보정 없음");
+        for ts in [vec![Mirror(0)], vec![Mirror(1)], vec![RotCcw(1), Mirror(0)], vec![Mirror(1), RotCcw(3)]] {
+            let fixed = grid_exif(&grid_apply(&ts, false), hevc_mirror_fix(&ts));
+            assert_eq!(fixed, grid_apply(&ts, true), "{ts:?}");
+        }
+        // 단일 imir는 좌우↔상하 바꿈 = 180° 회전(EXIF 3).
+        assert_eq!(hevc_mirror_fix(&[Mirror(0)]), 3);
+    }
+
+    /// ipma 한 항목(id 2)에 `assoc` 번호들을 붙이고 ipco에 `props`를 넣은 iprp 본문.
+    fn iprp(props: &[Vec<u8>], ver: u8, flags: u8, assoc: &[u16]) -> Vec<u8> {
+        let mut ipma = vec![ver, 0, 0, flags];
+        ipma.extend_from_slice(&1u32.to_be_bytes());
+        if ver < 1 {
+            ipma.extend_from_slice(&2u16.to_be_bytes());
+        } else {
+            ipma.extend_from_slice(&2u32.to_be_bytes());
+        }
+        ipma.push(assoc.len() as u8);
+        for &a in assoc {
+            if flags & 1 != 0 {
+                ipma.extend_from_slice(&(0x8000 | a).to_be_bytes());
+            } else {
+                ipma.push(0x80 | a as u8);
+            }
+        }
+        let mut body = bx(b"ipco", &props.concat());
+        body.extend_from_slice(&bx(b"ipma", &ipma));
+        body
+    }
+
+    fn transforms_of(body: &[u8]) -> Option<Vec<Transform>> {
+        parse_iprp(body, 0, body.len()).map(|m| m.get(&2).cloned().unwrap_or_default())
+    }
+
+    #[test]
+    fn ipma_variants_and_bad_indices() {
+        use Transform::*;
+        let rot = bx(b"irot", &[1]);
+        let mir = bx(b"imir", &[1]);
+        let other = bx(b"pixi", &[0, 0, 0, 0, 3, 8, 8, 8]);
+        // 기본(ver 0, 1바이트 번호), 속성 순서 유지, 비변환 속성은 무시.
+        assert_eq!(transforms_of(&iprp(&[other.clone(), rot.clone(), mir.clone()], 0, 0, &[1, 2, 3])), Some(vec![RotCcw(1), Mirror(1)]));
+        // ver 1(u32 id) + flags&1(2바이트 번호).
+        assert_eq!(transforms_of(&iprp(std::slice::from_ref(&rot), 1, 1, &[1])), Some(vec![RotCcw(1)]));
+        // 번호 0(= 속성 없음)·범위 밖 번호는 건너뛴다.
+        assert_eq!(transforms_of(&iprp(std::slice::from_ref(&rot), 0, 0, &[0, 9, 1])), Some(vec![RotCcw(1)]));
+        // 본문 없는 irot 박스는 다음 박스 바이트를 각도로 읽지 않는다.
+        assert_eq!(transforms_of(&iprp(&[bx(b"irot", &[]), bx(b"irot", &[3])], 0, 0, &[1, 2])), Some(vec![RotCcw(3)]));
+        // 항목 수만 있고 내용이 잘린 ipma는 None → 호출부는 회전 없음으로 색인을 유지.
+        let mut cut = bx(b"ipco", &rot);
+        cut.extend_from_slice(&bx(b"ipma", &[0, 0, 0, 0, 0, 0, 0, 1]));
+        assert_eq!(transforms_of(&cut), None);
     }
 
     #[test]

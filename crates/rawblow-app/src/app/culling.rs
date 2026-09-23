@@ -8,9 +8,11 @@ use super::*;
 /// 2: CR3(ISO BMFF) Orientation 검출 — 세로 컷이 이제 바로 선 채로 채점된다. dhash는
 ///    회전 불변이 아니고(cull_ext.rs `dhash`), 얼굴·미적·CLIP 모델 입력도 정사각 리사이즈라
 ///    회전 전후 점수가 달라진다 → 한 폴더에 옛 점수와 새 점수가 섞이는 것을 막는다.
-/// 3: AF 초점 모드에서 합초 측거점이 없는 사진의 초점이 0으로 캐시되던 버그 수정 — 전체 프레임
-///    초점으로 폴백한다. 옛 캐시의 0점 보고서를 버려야 수동 초점 사진이 다시 제대로 채점된다.
-const CULL_SIG_EPOCH: u32 = 3;
+const CULL_SIG_EPOCH: u32 = 2;
+
+/// AF 측거점 모드 전용 세대. 이 모드에서만 서명에 섞어 AF를 끈 사용자의 캐시는 그대로 둔다.
+/// 1: 합초 측거점이 없는 사진의 초점이 0으로 캐시되던 버그 수정(전체 프레임 폴백) — 옛 0점 보고서 폐기.
+const AF_FOCUS_EPOCH: u32 = 1;
 
 /// AI 컬링(#50) 백그라운드 채점 완료 메시지. 진행률은 공유 원자 카운터(`AiCullJob::progress`)로
 /// 전달하므로(워커가 여러 개라 메시지 순서가 뒤섞이지 않게), 채널은 최종 결과만 보낸다.
@@ -917,7 +919,7 @@ impl RawBlowApp {
                                 .on_hover_text(tr(lang, "높일수록 더 엄격하게 흐림으로 판정합니다"));
                             ui.end_row();
                             if check_chip_resp(ui, tr(lang, "AF 측거점만"), None, theme::ACCENT, c.use_af_focus)
-                                .on_hover_text(tr(lang, "초점을 사진 전체가 아니라 카메라가 맞춘 AF 지점에서만 봅니다"))
+                                .on_hover_text(tr(lang, "초점을 사진 전체가 아니라 카메라가 맞춘 AF 지점에서만 봅니다. 합초 AF 지점 기록이 없으면(수동 초점 등) 사진 전체로 봅니다"))
                                 .clicked()
                             {
                                 c.use_af_focus = !c.use_af_focus;
@@ -1600,6 +1602,9 @@ impl RawBlowApp {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             CULL_SIG_EPOCH.hash(&mut h);
             (criteria.use_focus, criteria.use_exposure, criteria.use_tilt, use_af, cull_edge).hash(&mut h);
+            if use_af {
+                AF_FOCUS_EPOCH.hash(&mut h);
+            }
             model_id.hash(&mut h);
             // 얼굴·sharp·객체 검사 여부는 보고서를 바꾸므로 캐시 네임스페이스를 분리한다.
             need_face.hash(&mut h);
@@ -2150,6 +2155,19 @@ impl RawBlowApp {
     }
 }
 
+/// AF 측거점 모드의 초점 측정 영역(표시 좌표). 합초 표시된 측거점만 — 비어 있으면(수동 초점,
+/// MF 렌즈, AF를 기록하지 않는 바디, 합초 실패로 기록된 컷) 호출부가 전체 프레임으로 잰다.
+pub(super) fn af_focus_regions(af: &rawblow_core::af::AfInfo, orient: u16) -> Vec<(f32, f32, f32, f32)> {
+    af.points
+        .iter()
+        .filter(|p| p.in_focus)
+        .map(|p| {
+            let (cx, cy, w, h) = af_display_coords(p, orient);
+            (cx as f32, cy as f32, w as f32, h as f32)
+        })
+        .collect()
+}
+
 /// 컬링 1장: 디코딩 + 켜진 CV 신호 채점(+AF 영역 초점) + CV 판정(미적 제외)(#50).
 /// 디코드 이미지를 함께 돌려줘 호출부가 단장/배치 미적 추론에 재사용한다. 손상·실패 시 None.
 pub(super) fn cull_decode_cv(
@@ -2177,17 +2195,7 @@ pub(super) fn cull_decode_cv(
     );
     if use_af {
         let regions: Vec<(f32, f32, f32, f32)> = rawblow_core::af::parse_af(path)
-            .map(|af| {
-                let orient = rawblow_core::meta::orientation(path);
-                af.points
-                    .iter()
-                    .filter(|p| p.in_focus)
-                    .map(|p| {
-                        let (cx, cy, w, h) = af_display_coords(p, orient);
-                        (cx as f32, cy as f32, w as f32, h as f32)
-                    })
-                    .collect()
-            })
+            .map(|af| af_focus_regions(&af, rawblow_core::meta::orientation(path)))
             .unwrap_or_default();
         q.focus = if regions.is_empty() {
             // 합초 측거점 정보가 없으면(수동 초점·MF 렌즈·AF 기록 없는 바디) 전체 프레임으로 잰다.
@@ -2415,5 +2423,15 @@ mod tests {
         assert!(af.focus.sharpness > 0.0, "AF 정보 없으면 0점이 되면 안 됨");
         assert_eq!(af.focus, whole.focus);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn af_regions_only_in_focus_points_and_empty_means_whole_frame() {
+        use rawblow_core::af::{AfInfo, AfPoint};
+        let pt = |in_focus| AfPoint { cx: 0.5, cy: 0.5, w: 0.1, h: 0.1, in_focus, selected: true };
+        // 측거점은 기록됐지만 합초 표시가 하나도 없음(MF·합초 실패) → 영역 없음 → 전체 프레임 폴백 대상.
+        let none = AfInfo { points: vec![pt(false), pt(false)], source: "test" };
+        assert!(super::af_focus_regions(&none, 1).is_empty());
+        let one = AfInfo { points: vec![pt(false), pt(true)], source: "test" };
+        assert_eq!(super::af_focus_regions(&one, 1).len(), 1);
     }
 }
