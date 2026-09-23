@@ -653,9 +653,6 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         // #72 툴바 툴팁 보완(Single/Grid 토글·⚙ 설정 버튼).
         "T 키로 전환" => ("Press T to switch", "Tキーで切替"),
         "설정" => ("Settings", "設定"),
-        // #74 설정 화면 헤더 전용 캡션 — 재사용 키("설정")의 En이 "Settings"라 영어 UI에서
-        // 기존 "Settings — Keyboard & General"이 축약됐던 문제. 헤더 전용 키로 전체 제목을 복원한다.
-        "설정 — 키보드 · 일반" => ("Settings — Keyboard & General", "設定 — キーボードと一般"),
         // #75 디코드 실패 고착 회복 — ⚠ 상태에서 수동 재시도 안내.
         "클릭하여 재시도" => ("Click to retry", "クリックで再試行"),
         // #78 컬링 되돌리기(Undo/Redo) 토스트 피드백.
