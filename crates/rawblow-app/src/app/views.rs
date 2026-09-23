@@ -710,9 +710,7 @@ impl RawBlowApp {
         };
         self.photo_view(ui, rect, real);
         if !self.has_modal() {
-            // 본 이미지 디코딩이 끝내 실패했는데 썸네일만 있으면, 확대된 썸네일이 사진처럼 보이지 않게
-            // 알린다(#114 — 본 화면을 작은 썸네일로 조용히 대체하지 않는다).
-            let thumb_only = !self.cache.contains(real) && self.thumbs.contains(real) && self.decode_dead(real);
+            let thumb_only = self.thumb_only(real);
             let suffix = if thumb_only {
                 tr(self.lang, "썸네일 · 본 이미지 열기 실패")
             } else if !self.full_raw {
@@ -723,15 +721,39 @@ impl RawBlowApp {
                 "ORIG · sRGB"
             };
             self.paint_hud(ui, rect, real, suffix);
-            if thumb_only {
-                let msg = tr(self.lang, "⚠ 본 이미지를 열 수 없어 썸네일을 확대해 보여 주고 있습니다");
-                let pos = Pos2::new(rect.center().x, rect.top() + 28.0);
-                let galley = ui.painter().layout_no_wrap(msg.to_string(), mono(12.0), theme::WARN);
-                let bg = Rect::from_center_size(pos, galley.size() + Vec2::new(24.0, 12.0));
-                ui.painter().rect_filled(bg, Rounding::same(6.0), Color32::from_black_alpha(200));
-                ui.painter().galley(bg.center() - galley.size() / 2.0, galley, theme::WARN);
-            }
+            self.paint_thumb_only_banner(ui, rect, real);
             self.ui_map_overlay(ui, rect, real);
+        }
+    }
+
+    /// 본 이미지 디코딩이 끝내 실패했는데 썸네일만 있는 상태(#114). 이때 photo_view는 썸네일을
+    /// 확대해 그리므로, 사진처럼 조용히 보이지 않게 알려야 한다.
+    fn thumb_only(&self, real: usize) -> bool {
+        !self.cache.contains(real) && self.thumbs.contains(real) && self.decode_dead(real)
+    }
+
+    /// thumb_only면 상단(HUD 파일명·카운터 줄 아래)에 경고 배너. 클릭하면 재시도(#75와 같은 수단).
+    fn paint_thumb_only_banner(&mut self, ui: &mut egui::Ui, rect: Rect, real: usize) {
+        if !self.thumb_only(real) {
+            return;
+        }
+        let msg = format!(
+            "{} · {}",
+            tr(self.lang, "⚠ 본 이미지를 열 수 없어 썸네일을 확대해 보여 주고 있습니다"),
+            tr(self.lang, "클릭하여 재시도")
+        );
+        let pos = Pos2::new(rect.center().x, rect.top() + 72.0);
+        let galley = ui.painter().layout_no_wrap(msg, mono(12.0), theme::WARN);
+        let bg = Rect::from_center_size(pos, galley.size() + Vec2::new(24.0, 12.0));
+        ui.painter().rect_filled(bg, Rounding::same(6.0), Color32::from_black_alpha(210));
+        ui.painter().galley(bg.center() - galley.size() / 2.0, galley, theme::WARN);
+        let resp = ui.interact(bg, ui.id().with(("retry_thumb_only", real)), Sense::click());
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if resp.clicked() {
+            self.retry_decode(real);
+            ui.ctx().request_repaint();
         }
     }
 
@@ -1386,6 +1408,7 @@ impl RawBlowApp {
                 if let Some(real) = self.current_real() {
                     self.photo_view(ui, rect, real);
                     self.paint_hud(ui, rect, real, "FULLSCREEN · ESC");
+                    self.paint_thumb_only_banner(ui, rect, real);
                     self.ui_map_overlay(ui, rect, real);
                 }
             });
