@@ -430,5 +430,31 @@ impl TexCache {
         self.tick = self.tick.wrapping_add(1);
         self.gen.insert(id, self.tick);
         self.order.push_back((id, self.tick));
+        // 캐시가 cap 아래면 insert가 order를 비우지 않으므로, 보이는 셀을 매 프레임 touch하는
+        // 것만으로 order가 끝없이 자란다(프레임당 셀 수만큼 누수). 죽은 항목이 살아 있는 항목의
+        // 몇 배가 되면 한 번에 걸러 낸다 — 분할 상환 O(1).
+        if self.order.len() > self.gen.len().saturating_mul(4) + 256 {
+            compact_lru(&mut self.order, &self.gen);
+        }
+    }
+}
+
+/// LRU 큐에서 최신 touch가 아닌(=gen이 안 맞는) 죽은 항목을 걸러 낸다. 순서는 유지.
+fn compact_lru(order: &mut VecDeque<(usize, u32)>, gen: &HashMap<usize, u32>) {
+    order.retain(|(id, t)| gen.get(id) == Some(t));
+}
+
+#[cfg(test)]
+mod tex_cache_tests {
+    use super::*;
+
+    #[test]
+    fn compact_lru_keeps_only_latest_touch_in_order() {
+        // 같은 셀을 반복 touch한 흔적(죽은 항목)은 버리고, 각 id의 최신 항목만 LRU 순서대로 남긴다.
+        let mut order: VecDeque<(usize, u32)> =
+            [(1, 1), (2, 2), (1, 3), (3, 4), (2, 5), (1, 6)].into_iter().collect();
+        let gen: HashMap<usize, u32> = [(1, 6), (2, 5), (3, 4)].into_iter().collect();
+        compact_lru(&mut order, &gen);
+        assert_eq!(order.into_iter().collect::<Vec<_>>(), vec![(3, 4), (2, 5), (1, 6)]);
     }
 }

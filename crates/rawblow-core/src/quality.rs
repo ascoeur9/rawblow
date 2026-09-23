@@ -424,22 +424,84 @@ impl Default for CullCriteria {
 /// 기울기 판정에 필요한 최소 신뢰도. 이보다 낮으면(평탄·텍스처 부족 장면) 기울기로 거르지 않는다.
 const TILT_MIN_CONFIDENCE: f32 = 0.2;
 
+/// 판정 근거(#91)에 쓰는 개별 검사 종류.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckKind {
+    Focus,
+    Exposure,
+    /// `value`는 부호 있는 기울기(도), `limit`은 허용 절댓값.
+    Tilt,
+    Aesthetic,
+}
+
+/// 켜진 검사 하나의 실제 값·임계값·결과(#91). [`CullCriteria::verdict`]가 이것만으로 판정하므로
+/// 표시되는 근거가 실제 판정과 어긋나지 않는다.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CriterionCheck {
+    pub kind: CheckKind,
+    pub value: f32,
+    pub limit: f32,
+    pub fail: bool,
+}
+
 impl CullCriteria {
     /// 켜진 검사 중 하나라도 실패하면 `Bad`, 전부 통과면 `Good`.
     pub fn verdict(&self, q: &QualityReport) -> Verdict {
-        let focus_fail = self.use_focus && q.focus.sharpness < self.focus_thresh;
-        let expo_fail = self.use_exposure && q.exposure.score < self.exposure_min;
-        let tilt_fail = self.use_tilt
-            && q.tilt.confidence >= TILT_MIN_CONFIDENCE
-            && q.tilt.degrees.abs() > self.tilt_max_deg;
-        let aesthetic_fail = self.use_aesthetic
-            && q.aesthetic.is_some_and(|a| a < self.aesthetic_min);
-        if focus_fail || expo_fail || tilt_fail || aesthetic_fail {
+        if self.checks(q).iter().any(|c| c.fail) {
             Verdict::Bad
         } else {
             Verdict::Good
         }
     }
+
+    /// 실제로 평가된 검사 목록(#91). 꺼진 검사, 신뢰도가 낮아 건너뛴 기울기, 점수가 없는 미적
+    /// 검사는 넣지 않는다 — 평가하지 않은 항목을 근거처럼 보이지 않게.
+    pub fn checks(&self, q: &QualityReport) -> Vec<CriterionCheck> {
+        let mut v = Vec::with_capacity(4);
+        if self.use_focus {
+            v.push(CriterionCheck {
+                kind: CheckKind::Focus,
+                value: q.focus.sharpness,
+                limit: self.focus_thresh,
+                fail: q.focus.sharpness < self.focus_thresh,
+            });
+        }
+        if self.use_exposure {
+            v.push(CriterionCheck {
+                kind: CheckKind::Exposure,
+                value: q.exposure.score,
+                limit: self.exposure_min,
+                fail: q.exposure.score < self.exposure_min,
+            });
+        }
+        if self.use_tilt && q.tilt.confidence >= TILT_MIN_CONFIDENCE {
+            v.push(CriterionCheck {
+                kind: CheckKind::Tilt,
+                value: q.tilt.degrees,
+                limit: self.tilt_max_deg,
+                fail: q.tilt.degrees.abs() > self.tilt_max_deg,
+            });
+        }
+        if self.use_aesthetic {
+            if let Some(a) = q.aesthetic {
+                v.push(CriterionCheck {
+                    kind: CheckKind::Aesthetic,
+                    value: a,
+                    limit: self.aesthetic_min,
+                    fail: a < self.aesthetic_min,
+                });
+            }
+        }
+        v
+    }
+}
+
+/// 미적 점수 순위(1부터, 높은 점수가 1위)(#91). 점수 없는 항목은 빠진다.
+/// [`finalize_cull_verdicts`]의 상위 N 선택과 **같은 정렬**이라 "상위 N 밖" 근거와 판정이 일치한다.
+pub fn aesthetic_ranks(results: &[(usize, Verdict, Option<f32>)]) -> std::collections::HashMap<usize, usize> {
+    let mut scored: Vec<(usize, f32)> = results.iter().filter_map(|(i, _, a)| a.map(|s| (*i, s))).collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.into_iter().enumerate().map(|(rank, (i, _))| (i, rank + 1)).collect()
 }
 
 /// 컬링 결과의 **최종 Good/Bad 조합**(#50). 워커가 낸 `(인덱스, CV판정, CLIP-IQA점수)` 목록을
@@ -455,13 +517,9 @@ pub fn finalize_cull_verdicts(
     aesthetic_min: f32,
 ) {
     if use_aesthetic && top_n > 0 {
-        let mut scored: Vec<(usize, f32)> =
-            results.iter().filter_map(|(i, _, a)| a.map(|s| (*i, s))).collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let good: std::collections::HashSet<usize> =
-            scored.iter().take(top_n).map(|(i, _)| *i).collect();
+        let ranks = aesthetic_ranks(results);
         for (i, v, _) in results.iter_mut() {
-            *v = if good.contains(i) { Verdict::Good } else { Verdict::Bad };
+            *v = if ranks.get(i).is_some_and(|&r| r <= top_n) { Verdict::Good } else { Verdict::Bad };
         }
     } else if use_aesthetic {
         for (_, v, a) in results.iter_mut() {

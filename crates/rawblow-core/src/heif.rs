@@ -1,5 +1,5 @@
 //! HEIC/HEIF 디코드(#97). `heif-oxide`(순수 Rust HEVC)로 본 이미지를 풀고,
-//! 썸네일은 컨테이너 안 JPEG이 있으면 그걸 먼저 쓴다(#114).
+//! 그리드·컬링은 컨테이너의 `jpeg`/`thmb` 항목을 먼저 쓴다(#114, 색인은 `heif_index`).
 
 use crate::decode::{DecodedImage, DecodeError};
 use crate::model::ext_lower;
@@ -28,29 +28,129 @@ pub fn orig_long_edge(path: &Path) -> Option<u32> {
     (best > 0).then_some(best)
 }
 
-pub fn decode(path: &Path, max_edge: Option<u32>) -> Result<DecodedImage, DecodeError> {
+/// HEIC/HEIF 디코드. `want_orig`는 ORIG(원본 보기) 요청 여부 — 본 이미지를 푼 경로만
+/// `full_raw=true`로 표시해 UI가 원본 성공과 썸네일 폴백을 구분하게 한다(#109).
+///
+/// 순서(#114): JPEG-in-HEIF primary → (≤1024 요청이고 항목이 요청 크기의 75% 이상일 때만)
+/// `jpeg`/`thmb` 항목 →
+/// 컨테이너 안 JPEG 스캔(≤384) → primary HEVC. 본 화면에서는 작은 썸네일 항목을 쓰지 않는다
+/// (12MP 사진 자리에 수백 px 썸네일이 뜨는 것 방지).
+pub fn decode(path: &Path, max_edge: Option<u32>, want_orig: bool) -> Result<DecodedImage, DecodeError> {
     let bytes = std::fs::read(path).map_err(|e| DecodeError::Io(e.to_string()))?;
     crate::decode::count_read(bytes.len());
+    decode_bytes(&bytes, max_edge, want_orig)
+}
 
+pub(crate) fn decode_bytes(
+    bytes: &[u8],
+    max_edge: Option<u32>,
+    want_orig: bool,
+) -> Result<DecodedImage, DecodeError> {
+    let preview = matches!(max_edge, Some(e) if e <= 1024);
     let thumb = matches!(max_edge, Some(e) if e <= 384);
-    if thumb {
-        if let Some(jpeg) = crate::decode::extract_embedded_jpeg_sized(&bytes, Some(160)) {
+    let index = crate::heif_index::index(bytes);
+    if let Some(idx) = &index {
+        // heif-oxide는 JPEG primary를 거절한다 — 그 JPEG가 곧 본 이미지.
+        if idx.is_jpeg(idx.primary) {
+            if let Some(mut img) = jpeg_item(bytes, idx, idx.primary, max_edge) {
+                img.full_raw = want_orig;
+                return Ok(img);
+            }
+        }
+        if preview {
+            // 요청 크기에 충분히 가까운 항목만 쓴다. 그리드(≤384)는 iPhone thmb(~320)로 충분하지만,
+            // 컬링(1024)을 320px 썸네일로 재면 초점·기울기 임계가 다른 포맷과 어긋난다 — 그땐 본 이미지.
+            // 그리드 썸네일(≤384)은 160px 이상이면 충분(예전 스캔 경로와 같은 기준).
+            let enough = |img: &DecodedImage| {
+                let want = if thumb { 160.0 } else { max_edge.unwrap_or(u32::MAX) as f32 * 0.75 };
+                img.width.max(img.height) as f32 >= want
+            };
+            if let Some(img) = jpeg_thumb_items(bytes, idx, max_edge).filter(enough) {
+                return Ok(img);
+            }
+            if let Some(img) = hevc_thumb_item(bytes, idx, max_edge).filter(enough) {
+                return Ok(img);
+            }
+        }
+    }
+
+    // 색인을 못 읽은(깨진) 컨테이너만 바이트 스캔으로 JPEG를 찾는다. 색인이 있으면 JPEG 항목은
+    // 위에서 회전까지 적용해 이미 시도했다 — 스캔은 회전 정보를 몰라 눕힌 썸네일을 낼 수 있다.
+    if thumb && index.is_none() {
+        if let Some(jpeg) = crate::decode::extract_embedded_jpeg_sized(bytes, Some(160)) {
             if let Ok(img) = crate::decode::decode_jpeg_scaled(jpeg, 1, max_edge) {
                 return Ok(img);
             }
         }
     }
 
-    let _guard = HEIC_DECODE.lock().unwrap_or_else(|e| e.into_inner());
-    let decoded = heif_oxide::decode_bytes(&bytes).map_err(|e| DecodeError::Decode(e.to_string()))?;
-    drop(_guard);
+    let fix = index.as_ref().map(|i| i.hevc_orientation_fix(i.primary)).unwrap_or(1);
+    let mut img = decode_hevc(bytes, max_edge, fix)?;
+    img.full_raw = want_orig;
+    Ok(img)
+}
+
+/// 항목 하나를 JPEG로 디코딩(SOI 확인). 컨테이너의 `irot`/`imir`를 적용해 HEVC 경로
+/// (heif-oxide가 적용)와 같은 방향으로 세운다.
+fn jpeg_item(
+    bytes: &[u8],
+    idx: &crate::heif_index::HeifIndex,
+    id: u32,
+    max_edge: Option<u32>,
+) -> Option<DecodedImage> {
+    let data = idx.item_bytes(bytes, id)?;
+    if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+        return None;
+    }
+    crate::decode::decode_jpeg_scaled(&data, idx.exif_orientation(id), max_edge).ok()
+}
+
+fn jpeg_thumb_items(
+    bytes: &[u8],
+    idx: &crate::heif_index::HeifIndex,
+    max_edge: Option<u32>,
+) -> Option<DecodedImage> {
+    let mut ids: Vec<u32> = idx.thumb_ids.iter().copied().filter(|&id| idx.is_jpeg(id)).collect();
+    let mut rest: Vec<u32> = idx.jpeg_ids.iter().copied().filter(|id| !ids.contains(id)).collect();
+    rest.sort_unstable(); // HashMap 순회 순서에 결과가 흔들리지 않게
+    ids.extend(rest);
+    ids.into_iter()
+        .filter(|&id| id != idx.primary)
+        .find_map(|id| jpeg_item(bytes, idx, id, max_edge))
+}
+
+/// `thmb`가 가리키는 작은 HEVC 항목을 `pitm` 패치로 primary 삼아 푼다.
+fn hevc_thumb_item(
+    bytes: &[u8],
+    idx: &crate::heif_index::HeifIndex,
+    max_edge: Option<u32>,
+) -> Option<DecodedImage> {
+    let thumb = idx
+        .thumb_ids
+        .iter()
+        .copied()
+        .find(|&id| id != idx.primary && idx.is_hevc_image(id))?;
+    let mut patched = bytes.to_vec();
+    if !idx.patch_pitm(&mut patched, thumb) {
+        return None;
+    }
+    decode_hevc(&patched, max_edge, idx.hevc_orientation_fix(thumb)).ok()
+}
+
+/// `orient_fix`: heif-oxide 결과에 추가로 걸 EXIF 방향(imir 축 해석 보정, 보통 1).
+fn decode_hevc(bytes: &[u8], max_edge: Option<u32>, orient_fix: u16) -> Result<DecodedImage, DecodeError> {
+    let guard = HEIC_DECODE.lock().unwrap_or_else(|e| e.into_inner());
+    let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| heif_oxide::decode_bytes(bytes)))
+        .map_err(|_| DecodeError::Decode("heic decoder panic".into()))?
+        .map_err(|e| DecodeError::Decode(e.to_string()))?;
+    drop(guard);
 
     let rgba = decoded.to_rgba8();
     let dynimg = image::RgbaImage::from_raw(decoded.width, decoded.height, rgba)
         .map(DynamicImage::ImageRgba8)
         .ok_or_else(|| DecodeError::Decode("heic rgba size mismatch".into()))?;
-    // heif-oxide가 irot/Display P3→sRGB를 이미 적용. 이중 회전 금지(orient=1).
-    Ok(crate::decode::finish(dynimg, None, false, 1, max_edge))
+    // heif-oxide가 irot/imir/Display P3→sRGB를 이미 적용. imir 축만 규격과 반대라 그 차이만 보정.
+    Ok(crate::decode::finish(dynimg, None, false, orient_fix, max_edge))
 }
 
 fn walk_boxes(data: &[u8], f: &mut dyn FnMut(&[u8; 4], &[u8])) {

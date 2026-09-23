@@ -35,6 +35,9 @@ pub struct DecodeResult {
     pub id: usize,
     pub generation: u64,
     pub full_raw: bool,
+    /// 요청이 ORIG(원본)였는지(#109). `requested_full && !full_raw`만 "원본 없음" 폴백이다 —
+    /// ORIG 모드에서도 이웃 프리로드는 일반 프리뷰로 요청하므로 앱 상태만으론 구분할 수 없다.
+    pub requested_full: bool,
     pub thumb: bool,
     /// 프리페치 완료 통지(픽셀 없음). UI는 pending만 정리하고 업로드하지 않는다.
     pub prefetch: bool,
@@ -179,6 +182,7 @@ impl Worker {
                     }
                     let _ = res_tx.send(DecodeResult {
                         id: req.id,
+                        requested_full: req.full_raw,
                         generation: req.generation,
                         full_raw,
                         thumb: req.thumb,
@@ -203,6 +207,7 @@ impl Worker {
                     if let Some(img) = cached {
                         let _ = res_tx.send(DecodeResult {
                             id: req.id,
+                            requested_full: req.full_raw,
                             generation: req.generation,
                             full_raw: req.full_raw,
                             thumb: req.thumb,
@@ -240,6 +245,7 @@ impl Worker {
                 let decoded_full = image.as_ref().map(|img| img.full_raw).unwrap_or(false);
                 let _ = res_tx.send(DecodeResult {
                     id: req.id,
+                    requested_full: req.full_raw,
                     generation: req.generation,
                     full_raw: decoded_full, // 폴백 프리뷰를 ORIG 성공으로 올리지 않음(#109)
                     thumb: req.thumb,
@@ -282,6 +288,7 @@ impl Worker {
                 id: d.id,
                 generation: d.generation,
                 full_raw: d.full_raw,
+                requested_full: d.full_raw,
                 thumb: d.thumb,
                 prefetch: d.prefetch,
                 dropped: true,

@@ -384,8 +384,8 @@ impl RawBlowApp {
                 });
                 if let Some(sf) = new_star {
                     // 같은 별점 칩 재클릭 = 토글 해제(전체로). 그 외엔 해당 별점만.
-                    self.star_filter = if sf == self.star_filter { StarFilter::Any } else { sf };
-                    self.index = 0;
+                    let sf = if sf == self.star_filter { StarFilter::Any } else { sf };
+                    self.apply_star_filter(sf);
                 }
 
                 // 컬러 태그 필터(#27): 라벨·별점 필터와 독립 AND. 특정 색만 표시. `전체`=태그 무시.
@@ -431,8 +431,7 @@ impl RawBlowApp {
                     }
                 });
                 if let Some(tf) = new_tag_filter {
-                    self.tag_filter = tf;
-                    self.index = 0;
+                    self.apply_tag_filter(tf);
                 }
 
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
@@ -711,9 +710,50 @@ impl RawBlowApp {
         };
         self.photo_view(ui, rect, real);
         if !self.has_modal() {
-            let suffix = if self.full_raw { "ORIG · sRGB" } else { "FIT · sRGB" };
+            let thumb_only = self.thumb_only(real);
+            let suffix = if thumb_only {
+                tr(self.lang, "썸네일 · 본 이미지 열기 실패")
+            } else if !self.full_raw {
+                "FIT · sRGB"
+            } else if self.orig_fallback.contains(&real) {
+                tr(self.lang, "PREVIEW · 원본 없음")
+            } else {
+                "ORIG · sRGB"
+            };
             self.paint_hud(ui, rect, real, suffix);
+            self.paint_thumb_only_banner(ui, rect, real);
             self.ui_map_overlay(ui, rect, real);
+        }
+    }
+
+    /// 본 이미지 디코딩이 끝내 실패했는데 썸네일만 있는 상태(#114). 이때 photo_view는 썸네일을
+    /// 확대해 그리므로, 사진처럼 조용히 보이지 않게 알려야 한다.
+    fn thumb_only(&self, real: usize) -> bool {
+        !self.cache.contains(real) && self.thumbs.contains(real) && self.decode_dead(real)
+    }
+
+    /// thumb_only면 상단(HUD 파일명·카운터 줄 아래)에 경고 배너. 클릭하면 재시도(#75와 같은 수단).
+    fn paint_thumb_only_banner(&mut self, ui: &mut egui::Ui, rect: Rect, real: usize) {
+        if !self.thumb_only(real) {
+            return;
+        }
+        let msg = format!(
+            "{} · {}",
+            tr(self.lang, "⚠ 본 이미지를 열 수 없어 썸네일을 확대해 보여 주고 있습니다"),
+            tr(self.lang, "클릭하여 재시도")
+        );
+        let pos = Pos2::new(rect.center().x, rect.top() + 72.0);
+        let galley = ui.painter().layout_no_wrap(msg, mono(12.0), theme::WARN);
+        let bg = Rect::from_center_size(pos, galley.size() + Vec2::new(24.0, 12.0));
+        ui.painter().rect_filled(bg, Rounding::same(6.0), Color32::from_black_alpha(210));
+        ui.painter().galley(bg.center() - galley.size() / 2.0, galley, theme::WARN);
+        let resp = ui.interact(bg, ui.id().with(("retry_thumb_only", real)), Sense::click());
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if resp.clicked() {
+            self.retry_decode(real);
+            ui.ctx().request_repaint();
         }
     }
 
@@ -1072,15 +1112,31 @@ impl RawBlowApp {
         hud_text(ui, tr, Align2::RIGHT_TOP, &format!("{:03} / {}", (self.index + 1).min(f.len().max(1)), f.len()), mono(30.0), theme::INK);
         hud_text(ui, tr + Vec2::new(0.0, 34.0), Align2::RIGHT_TOP, counter_suffix, mono(10.0), theme::INK3);
 
-        // BL: EXIF.
+        // BL: AI 컬링 판정 근거(#91) + EXIF. 근거는 판정·핵심 사유를 늘 보이고,
+        // EXIF 오버레이(I)를 켜면 참고 사유(통과 점수·그룹 순위)까지 펼친다.
+        let mut y = area.bottom() - 16.0;
         if self.show_exif {
             if let Some(ex) = &it.exif {
-                let mut y = area.bottom() - 16.0;
                 let lines = exif_lines(ex);
                 for line in lines.iter().rev() {
                     hud_text(ui, Pos2::new(area.left() + 16.0, y), Align2::LEFT_BOTTOM, line, mono(12.0), theme::INK2);
                     y -= 18.0;
                 }
+                y -= 8.0;
+            }
+        }
+        if let Some(note) = &it.cull_note {
+            let hint = if self.show_exif {
+                crate::i18n::tr(lang, "AI 제안일 뿐 확정 판정이 아닙니다 — 최종 선택은 직접 확인하세요")
+            } else {
+                crate::i18n::tr(lang, "I: 판정 근거 자세히")
+            };
+            hud_text(ui, Pos2::new(area.left() + 16.0, y), Align2::LEFT_BOTTOM, hint, mono(10.0), theme::INK3);
+            y -= 16.0;
+            let lines = culling::cull_note_lines(lang, note, self.show_exif);
+            for line in lines.iter().rev() {
+                hud_text(ui, Pos2::new(area.left() + 16.0, y), Align2::LEFT_BOTTOM, line, mono(12.0), theme::INK2);
+                y -= 18.0;
             }
         }
 
@@ -1352,6 +1408,7 @@ impl RawBlowApp {
                 if let Some(real) = self.current_real() {
                     self.photo_view(ui, rect, real);
                     self.paint_hud(ui, rect, real, "FULLSCREEN · ESC");
+                    self.paint_thumb_only_banner(ui, rect, real);
                     self.ui_map_overlay(ui, rect, real);
                 }
             });

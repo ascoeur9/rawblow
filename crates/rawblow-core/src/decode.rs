@@ -112,6 +112,11 @@ pub struct DecodeOptions {
 
 /// 경로를 종류에 따라 디코딩한다.
 pub fn decode_file(path: &Path, opts: DecodeOptions) -> Result<DecodedImage, DecodeError> {
+    // HEIC는 heif-oxide가 irot를 이미 적용하므로 EXIF orientation 파싱(파일 한 번 더 읽기)을
+    // 건너뛰고 바로 분기한다(#97).
+    if crate::heif::is_heic_path(path) {
+        return crate::heif::decode(path, opts.max_edge, opts.full_raw);
+    }
     let orient = crate::meta::orientation(path);
     match kind_of(path) {
         Some(Kind::Image) => {
@@ -143,11 +148,16 @@ pub fn decode_file(path: &Path, opts: DecodeOptions) -> Result<DecodedImage, Dec
                     }
                 }
                 let bytes = read_whole(path)?;
-                decode_jpeg_scaled(&bytes, orient, opts.max_edge)
-            } else if crate::heif::is_heic_path(path) {
-                crate::heif::decode(path, opts.max_edge)
+                let mut img = decode_jpeg_scaled(&bytes, orient, opts.max_edge)?;
+                // 본 이미지 전체를 푼 경로 = 원본 그 자체. ORIG 요청이면 성공으로 표시한다(#109).
+                // (ORIG_EDGE=8192 GPU 한계로 축소됐더라도 "가진 최대 해상도"라는 의미에서 원본이다.) —
+                // 안 그러면 캐시가 "원본 아님"으로 기록해 매 프레임 재요청·토스트가 반복된다.
+                img.full_raw = opts.full_raw;
+                Ok(img)
             } else {
-                decode_other_image(path, orient, opts.max_edge)
+                let mut img = decode_other_image(path, orient, opts.max_edge)?;
+                img.full_raw = opts.full_raw;
+                Ok(img)
             }
         }
         Some(Kind::Raw) => {

@@ -1207,11 +1207,13 @@ mod tests {
     fn run_settings_chrome(mut paint: impl FnMut(&mut egui::Ui)) -> Vec<(Color32, Stroke)> {
         let ctx = egui::Context::default();
         theme::apply(&ctx);
-        let mut input = egui::RawInput::default();
-        input.screen_rect = Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(800.0, 600.0),
-        ));
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            ..Default::default()
+        };
         let out = ctx.run(input, |ctx| {
             egui::CentralPanel::default()
                 .frame(egui::Frame::none().fill(theme::BG1))
@@ -1682,7 +1684,10 @@ mod tests {
         );
         let sections: Vec<egui::Rect> = painted
             .iter()
-            .filter(|(f, r)| *f == SETTINGS_SECTION_FILL && r.width() > 200.0)
+            // 상단 바(settings_top, 52px)도 BG2로 칠해 창 전체 폭이다 — 카드가 아니므로 제외.
+            .filter(|(f, r)| {
+                *f == SETTINGS_SECTION_FILL && r.width() > 200.0 && r.top() >= 52.0
+            })
             .map(|(_, r)| *r)
             .collect();
         assert!(!sections.is_empty(), "섹션 카드가 그려지지 않았다");
@@ -1730,12 +1735,14 @@ mod tests {
             String::new(),
             "x".into(),
         ];
-        let mut input = egui::RawInput::default();
-        input.screen_rect = Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(1100.0, 4200.0),
-        ));
-        input.max_texture_side = Some(4096);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1100.0, 4200.0),
+            )),
+            max_texture_side: Some(4096),
+            ..Default::default()
+        };
         let out = ctx.run(input, |ctx| app.ui_settings(ctx));
         let texts = texts_from(&out);
         let y0 = texts

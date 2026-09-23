@@ -1711,18 +1711,21 @@ fn cr3_bmff_orientation_applies_on_every_decode_path() {
 }
 
 #[test]
-fn pairing_does_not_merge_same_number_in_unrelated_date_folders() {
-    // 다른 날짜 폴더의 같은 번호는 별개 촬영(#107).
-    let root = std::env::temp_dir().join("rb_date_pair_test");
+fn pairing_merges_split_sibling_folders_regardless_of_name() {
+    // 하위 폴더 이름과 무관하게 같은 번호의 RAW만/JPG만 폴더는 한 항목(jpg/ · 원본/).
+    let root = std::env::temp_dir().join("rb_sibling_pair_test");
     let _ = std::fs::remove_dir_all(&root);
-    let d1 = root.join("2024-01-01");
-    let d2 = root.join("2024-06-01");
-    std::fs::create_dir_all(&d1).unwrap();
-    std::fs::create_dir_all(&d2).unwrap();
-    std::fs::write(d1.join("P1000001.RW2"), b"x").unwrap();
-    std::fs::write(d2.join("P1000001.JPG"), b"x").unwrap();
+    let jpg = root.join("jpg");
+    let raw = root.join("원본");
+    std::fs::create_dir_all(&jpg).unwrap();
+    std::fs::create_dir_all(&raw).unwrap();
+    for n in 4..=7 {
+        std::fs::write(jpg.join(format!("DAZ_000{n}.JPG")), b"x").unwrap();
+        std::fs::write(raw.join(format!("DAZ_000{n}.NEF")), b"x").unwrap();
+    }
     let entries = scan::scan_folder(&root, true, rawblow_core::SortOrder::Name);
-    assert_eq!(entries.len(), 2, "날짜가 다른 폴더는 RAW+JPG로 합치지 않음");
+    assert_eq!(entries.len(), 4, "폴더 분리 RAW+JPG는 폴더명과 무관하게 한 항목");
+    assert!(entries.iter().all(|e| e.shows_raw_badge()));
     let _ = std::fs::remove_dir_all(&root);
 }
 

@@ -10,6 +10,10 @@ use super::*;
 ///    회전 전후 점수가 달라진다 → 한 폴더에 옛 점수와 새 점수가 섞이는 것을 막는다.
 const CULL_SIG_EPOCH: u32 = 2;
 
+/// AF 측거점 모드 전용 세대. 이 모드에서만 서명에 섞어 AF를 끈 사용자의 캐시는 그대로 둔다.
+/// 1: 합초 측거점이 없는 사진의 초점이 0으로 캐시되던 버그 수정(전체 프레임 폴백) — 옛 0점 보고서 폐기.
+const AF_FOCUS_EPOCH: u32 = 1;
+
 /// AI 컬링(#50) 백그라운드 채점 완료 메시지. 진행률은 공유 원자 카운터(`AiCullJob::progress`)로
 /// 전달하므로(워커가 여러 개라 메시지 순서가 뒤섞이지 않게), 채널은 최종 결과만 보낸다.
 pub(super) enum AiCullMsg {
@@ -34,6 +38,197 @@ pub(super) struct CullExtra {
     pub(super) sharp_ai: Option<f32>,
     /// 설정 객체 클래스 포함 여부(YOLO). "객체 포함" 하드필터에 사용. 미검사면 None.
     pub(super) object_match: Option<bool>,
+    /// 채점 보고서 전체(#91 판정 근거 — 초점·노출·기울기·미적 실제 값).
+    pub(super) report: Option<rawblow_core::quality::QualityReport>,
+}
+
+/// AI 컬링 한 장의 판정 근거(#91). 시스템이 실제로 산출한 점수·규칙·순위만 담는다.
+/// 결과 토스트를 닫아도 사진마다 남아 HUD에서 다시 볼 수 있다(폴더를 다시 열면 사라짐).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct CullNote {
+    pub(super) outcome: CullOutcome,
+    /// 판정을 만든 핵심 사유(탈락 사유). 좋음이면 비어 있다.
+    pub(super) primary: Vec<CullFact>,
+    /// 참고 사유 — 통과한 검사 점수, 그룹 내 순위 등.
+    pub(super) secondary: Vec<CullFact>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum CullOutcome {
+    Good,
+    Bad,
+    /// 촬영 정보 조건(메타 필터) 밖이라 판정하지 않고 분류를 건드리지 않았다.
+    Excluded,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum CullFact {
+    Check(rawblow_core::quality::CriterionCheck),
+    /// 상위 N장 모드. `rank=None`은 미적 점수가 없어 순위에 못 든 경우.
+    TopN { rank: Option<usize>, n: usize },
+    Burst(rawblow_core::cull_ext::GroupRank),
+    Dedup(rawblow_core::cull_ext::GroupRank),
+    FaceMissing,
+    FaceInLandscape,
+    SharpAi { score: f32, min: f32 },
+    ObjectMissing,
+}
+
+/// 한 장의 판정 근거를 만든다(#91). `apply_cull_verdicts`와 같은 입력·같은 규칙으로 계산하므로
+/// 표시되는 사유가 실제 판정과 일치한다. 확인할 수 없는 값(점수 없음)은 넣지 않는다.
+pub(super) fn build_cull_note(
+    c: &config::AiCullConfig,
+    ex: Option<&CullExtra>,
+    aesthetic_rank: Option<usize>,
+    group: Option<rawblow_core::cull_ext::GroupOutcome>,
+    is_good: bool,
+) -> CullNote {
+    let mut primary = Vec::new();
+    let mut secondary = Vec::new();
+    if group.is_some_and(|g| !g.included) {
+        return CullNote { outcome: CullOutcome::Excluded, primary, secondary };
+    }
+    let top_n_mode = c.use_aesthetic && c.top_n > 0;
+    if top_n_mode {
+        let n = c.top_n;
+        let fact = CullFact::TopN { rank: aesthetic_rank, n };
+        if aesthetic_rank.is_some_and(|r| r <= n) {
+            secondary.push(fact);
+        } else {
+            primary.push(fact);
+        }
+    }
+    if let Some(report) = ex.and_then(|e| e.report.as_ref()) {
+        for chk in c.criteria().checks(report) {
+            // 상위 N 모드에선 미적 임계값이 판정에 쓰이지 않는다 — "미달"로 보이면 오해를 산다.
+            if top_n_mode && chk.kind == rawblow_core::quality::CheckKind::Aesthetic {
+                continue;
+            }
+            // 상위 N 모드는 CV 판정을 순위로 덮어쓰므로 검사 결과는 참고로만 보인다.
+            if chk.fail && !top_n_mode {
+                primary.push(CullFact::Check(chk));
+            } else {
+                secondary.push(CullFact::Check(chk));
+            }
+        }
+    }
+    if let Some(g) = group {
+        if let Some(r) = g.burst {
+            if r.demoted() {
+                primary.push(CullFact::Burst(r));
+            } else {
+                secondary.push(CullFact::Burst(r));
+            }
+        }
+        if let Some(r) = g.dedup {
+            if r.demoted() {
+                primary.push(CullFact::Dedup(r));
+            } else {
+                secondary.push(CullFact::Dedup(r));
+            }
+        }
+    }
+    if let Some(ex) = ex {
+        if let Some(has) = ex.face {
+            if (c.use_face || (c.use_genre && c.genre_portrait)) && !has {
+                primary.push(CullFact::FaceMissing);
+            }
+            if c.use_genre && !c.genre_portrait && has {
+                primary.push(CullFact::FaceInLandscape);
+            }
+        }
+        if c.use_sharp_ai {
+            if let Some(s) = ex.sharp_ai {
+                let f = CullFact::SharpAi { score: s, min: c.sharp_min };
+                if s < c.sharp_min {
+                    primary.push(f);
+                } else {
+                    secondary.push(f);
+                }
+            }
+        }
+        if c.use_object && ex.object_match == Some(false) {
+            primary.push(CullFact::ObjectMissing);
+        }
+    }
+    if is_good {
+        // 좋음인데 탈락 사유가 남는 경우는 없어야 하지만, 있더라도 참고로 내린다(허위 탈락 사유 방지).
+        let moved = std::mem::take(&mut primary);
+        secondary.splice(0..0, moved);
+    }
+    let outcome = if is_good { CullOutcome::Good } else { CullOutcome::Bad };
+    CullNote { outcome, primary, secondary }
+}
+
+/// 판정 근거 한 줄 텍스트(#91).
+pub(super) fn cull_fact_text(lang: Lang, f: &CullFact) -> String {
+    use rawblow_core::quality::CheckKind;
+    let f2 = |v: f32| format!("{v:.2}");
+    // 반올림하면 0이 되는 작은 음수가 "-0.0°"로 찍히지 않게 +0.0을 더한다.
+    let f1 = |v: f32| format!("{:.1}", (v * 10.0).round() / 10.0 + 0.0);
+    match *f {
+        CullFact::Check(chk) => {
+            let (a, b) = if chk.kind == CheckKind::Tilt { (f1(chk.value), f1(chk.limit)) } else { (f2(chk.value), f2(chk.limit)) };
+            let tpl = match (chk.kind, chk.fail) {
+                (CheckKind::Focus, true) => "초점 미달 ({} < {})",
+                (CheckKind::Focus, false) => "초점 {} (기준 {})",
+                (CheckKind::Exposure, true) => "노출 미달 ({} < {})",
+                (CheckKind::Exposure, false) => "노출 {} (기준 {})",
+                (CheckKind::Tilt, true) => "기울기 초과 (|{}°| > {}°)",
+                (CheckKind::Tilt, false) => "기울기 {}° (허용 {}°)",
+                (CheckKind::Aesthetic, true) => "미적 점수 미달 ({} < {})",
+                (CheckKind::Aesthetic, false) => "미적 점수 {} (기준 {})",
+            };
+            trf(lang, tpl, &[&a, &b])
+        }
+        CullFact::TopN { rank: Some(r), n } if r <= n => {
+            trf(lang, "미적 순위 {}위 (상위 {}장 안)", &[&r.to_string(), &n.to_string()])
+        }
+        CullFact::TopN { rank: Some(r), n } => {
+            trf(lang, "미적 순위 {}위 — 상위 {}장 밖", &[&r.to_string(), &n.to_string()])
+        }
+        CullFact::TopN { rank: None, n } => {
+            trf(lang, "미적 점수 없음 — 상위 {}장 순위에서 빠짐", &[&n.to_string()])
+        }
+        CullFact::Burst(r) | CullFact::Dedup(r) => {
+            let burst = matches!(f, CullFact::Burst(_));
+            let tpl = match (burst, r.demoted()) {
+                (true, true) => "연사 {}장 중 {}위 — 상위 {}장만 유지",
+                (true, false) => "연사 {}장 중 {}위 (상위 {}장 유지)",
+                (false, true) => "유사 사진 {}장 중 {}위 — 상위 {}장만 유지",
+                (false, false) => "유사 사진 {}장 중 {}위 (상위 {}장 유지)",
+            };
+            trf(lang, tpl, &[&r.size.to_string(), &r.rank.to_string(), &r.keep.to_string()])
+        }
+        CullFact::FaceMissing => tr(lang, "얼굴 없음 (얼굴 조건)").to_string(),
+        CullFact::FaceInLandscape => tr(lang, "얼굴 있음 (풍경 장르)").to_string(),
+        CullFact::SharpAi { score, min } if score < min => {
+            trf(lang, "AI 선명도 미달 ({} < {})", &[&f2(score), &f2(min)])
+        }
+        CullFact::SharpAi { score, min } => trf(lang, "AI 선명도 {} (기준 {})", &[&f2(score), &f2(min)]),
+        CullFact::ObjectMissing => tr(lang, "지정 객체 없음").to_string(),
+    }
+}
+
+/// HUD용 판정 근거 줄(#91). 첫 줄은 판정, 이어서 핵심 사유, `detail`이면 참고 사유까지.
+pub(super) fn cull_note_lines(lang: Lang, note: &CullNote, detail: bool) -> Vec<String> {
+    let head = match note.outcome {
+        CullOutcome::Good => tr(lang, "AI 제안: 좋음"),
+        CullOutcome::Bad => tr(lang, "AI 제안: 탈락"),
+        CullOutcome::Excluded => tr(lang, "AI 컬링: 촬영 정보 조건 밖이라 판정하지 않음"),
+    };
+    let mut out = vec![head.to_string()];
+    if note.outcome == CullOutcome::Excluded {
+        return out;
+    }
+    if note.outcome == CullOutcome::Bad && note.primary.is_empty() {
+        out.push(tr(lang, "상세 근거를 산출하지 못했습니다").to_string());
+    }
+    out.extend(note.primary.iter().map(|f| format!("• {}", cull_fact_text(lang, f))));
+    if detail {
+        out.extend(note.secondary.iter().map(|f| format!("· {}", cull_fact_text(lang, f))));
+    }
+    out
 }
 
 /// 진행 중인 AI 컬링 채점(#50). 워커 풀(여러 스레드)이 디코딩+채점을 병렬로 수행하고,
@@ -52,6 +247,9 @@ pub(super) struct AiCullJob {
     pub(super) generation: u64,
     /// 이 작업이 결과를 배정할 분류축. 채점 중 이 축의 수동 편집을 막는다.
     pub(super) target: AiCullTarget,
+    /// 작업 시작 시점의 컬링 설정 스냅샷. 채점은 이 설정으로 했으므로 최종 판정·판정 근거(#91)도
+    /// 같은 설정으로 계산한다 — 진행 중 설정 화면에서 임계값을 바꿔도 근거가 판정과 어긋나지 않게.
+    pub(super) cfg: config::AiCullConfig,
 }
 
 /// 컬링 결과 캐시 항목(#50). 같은 파일을 같은 설정으로 재컬링할 때 디코드+채점을 건너뛴다.
@@ -142,7 +340,16 @@ pub(super) fn cull_extra(
     } else {
         (None, Default::default())
     };
-    CullExtra { sharp: report.focus.sharpness, dhash, shot_time, meta, face: report.face, sharp_ai: report.sharp_ai, object_match: report.object_match }
+    CullExtra {
+        sharp: report.focus.sharpness,
+        dhash,
+        shot_time,
+        meta,
+        face: report.face,
+        sharp_ai: report.sharp_ai,
+        object_match: report.object_match,
+        report: Some(*report),
+    }
 }
 
 /// CLIP-IQA 모델 자동 다운로드(#50) 진행 메시지.
@@ -713,7 +920,7 @@ impl RawBlowApp {
                                 .on_hover_text(tr(lang, "높일수록 더 엄격하게 흐림으로 판정합니다"));
                             ui.end_row();
                             if check_chip_resp(ui, tr(lang, "AF 측거점만"), None, theme::ACCENT, c.use_af_focus)
-                                .on_hover_text(tr(lang, "초점을 사진 전체가 아니라 카메라가 맞춘 AF 지점에서만 봅니다"))
+                                .on_hover_text(tr(lang, "초점을 사진 전체가 아니라 카메라가 맞춘 AF 지점에서만 봅니다. 합초 AF 지점 기록이 없으면(수동 초점 등) 사진 전체로 봅니다"))
                                 .clicked()
                             {
                                 c.use_af_focus = !c.use_af_focus;
@@ -1396,6 +1603,9 @@ impl RawBlowApp {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             CULL_SIG_EPOCH.hash(&mut h);
             (criteria.use_focus, criteria.use_exposure, criteria.use_tilt, use_af, cull_edge).hash(&mut h);
+            if use_af {
+                AF_FOCUS_EPOCH.hash(&mut h);
+            }
             model_id.hash(&mut h);
             // 얼굴·sharp·객체 검사 여부는 보고서를 바꾸므로 캐시 네임스페이스를 분리한다.
             need_face.hash(&mut h);
@@ -1494,11 +1704,10 @@ impl RawBlowApp {
                             if let Ok(mut g) = results.lock() {
                                 g.push((*real, cv, report.aesthetic));
                             }
-                            if need_meta || need_dhash || need_face || need_sharp || need_object {
-                                let ex = cull_extra(&report, dh, path, need_meta);
-                                if let Ok(mut m) = extras.lock() {
-                                    m.insert(*real, ex);
-                                }
+                            // 판정 근거(#91)에 보고서가 필요하므로 항상 기록한다(need_meta 아니면 EXIF 안 읽음).
+                            let ex = cull_extra(&report, dh, path, need_meta);
+                            if let Ok(mut m) = extras.lock() {
+                                m.insert(*real, ex);
                             }
                             cache_hits.fetch_add(1, Ordering::Relaxed);
                             progress.fetch_add(1, Ordering::Relaxed);
@@ -1578,12 +1787,11 @@ impl RawBlowApp {
                             g.push((*real, *cv, q.aesthetic));
                         }
                     }
-                    if need_meta || need_dhash || need_face || need_sharp || need_object {
-                        if let Ok(mut m) = extras.lock() {
-                            for (k, (real, q, _)) in metas.iter().enumerate() {
-                                let path = &miss_keys[k].0;
-                                m.insert(*real, cull_extra(q, dhashes.get(k).copied().flatten(), path, need_meta));
-                            }
+                    // 판정 근거(#91)용으로 항상 기록한다.
+                    if let Ok(mut m) = extras.lock() {
+                        for (k, (real, q, _)) in metas.iter().enumerate() {
+                            let path = &miss_keys[k].0;
+                            m.insert(*real, cull_extra(q, dhashes.get(k).copied().flatten(), path, need_meta));
                         }
                     }
                     // 4단계: 미스 보고서를 캐시에 저장(다음 재컬링에서 디코드/추론 생략).
@@ -1625,6 +1833,7 @@ impl RawBlowApp {
             total,
             generation: self.generation,
             target: cfg.target,
+            cfg: cfg.clone(),
         });
     }
 
@@ -1649,7 +1858,7 @@ impl RawBlowApp {
             // 폴더가 바뀌면 캡처한 real 인덱스가 다른 사진을 가리킨다 → 결과 폐기(오염 방지).
             if job.generation == self.generation {
                 let hits = job.cache_hits.load(Ordering::Relaxed);
-                self.apply_cull_verdicts(v, ex, hits);
+                self.apply_cull_verdicts(v, ex, hits, job.cfg.clone());
                 // 갱신된 캐시를 디스크에 저장(다음 세션 재컬링 즉시화). 메인 스레드 I/O 히치를 피해
                 // 스냅샷만 잠금 안에서 뜨고(빠른 memcpy) 직렬화·쓰기는 백그라운드에서.
                 let cache = self.cull_cache.clone();
@@ -1810,10 +2019,17 @@ impl RawBlowApp {
         mut results: Vec<(usize, Verdict, Option<f32>)>,
         extras: std::collections::HashMap<usize, CullExtra>,
         cache_hits: usize,
+        c: config::AiCullConfig,
     ) {
         let lang = self.lang;
-        let c = self.cfg.ai_cull.clone();
+        // 지난 실행의 근거는 지운다(#91) — 이번에 판정하지 않은 사진(디코드 실패·범위 밖)에
+        // 다른 설정으로 낸 옛 근거가 남아 보이지 않게.
+        for it in &mut self.items {
+            it.cull_note = None;
+        }
 
+        // 판정 근거(#91)용 미적 순위 — finalize와 같은 정렬.
+        let aesthetic_ranks = rawblow_core::quality::aesthetic_ranks(&results);
         // 미적 설정에 따른 최종 Good/Bad 조합(top-N 랭킹 또는 임계). 코어의 테스트된 함수에 위임.
         rawblow_core::quality::finalize_cull_verdicts(&mut results, c.use_aesthetic, c.top_n, c.aesthetic_min);
 
@@ -1836,7 +2052,7 @@ impl RawBlowApp {
             || !c.camera_contains.trim().is_empty()
             || !c.lens_contains.trim().is_empty();
         let group_active = meta_active || c.use_burst || c.use_dedup;
-        let group_verdicts: Vec<Option<bool>> = if group_active {
+        let group_verdicts: Vec<rawblow_core::cull_ext::GroupOutcome> = if group_active {
             use rawblow_core::cull_ext::{CullItem, GroupCullParams};
             let items: Vec<CullItem> = results
                 .iter()
@@ -1861,7 +2077,7 @@ impl RawBlowApp {
                 dedup_hamming: c.dedup_hamming,
                 dedup_keep: c.dedup_keep as usize,
             };
-            rawblow_core::cull_ext::apply_group_culling(&items, &p)
+            rawblow_core::cull_ext::explain_group_culling(&items, &p)
         } else {
             Vec::new()
         };
@@ -1896,20 +2112,24 @@ impl RawBlowApp {
 
         for (i, (real, v, _)) in results.iter().enumerate() {
             // 그룹 컬링 결과가 본 판정을 덮어쓴다(None=제외, 손대지 않음).
-            let is_good = if group_active {
-                match group_verdicts.get(i).copied().flatten() {
-                    Some(g) => g,
-                    None => {
-                        skipped += 1;
-                        continue;
+            // 그룹 컬링 결과가 본 판정을 덮어쓴다(included=false는 메타 제외 — 손대지 않음).
+            let group = group_verdicts.get(i).copied();
+            let is_good = match group {
+                Some(g) if !g.included => {
+                    skipped += 1;
+                    if let Some(it) = self.items.get_mut(*real) {
+                        it.cull_note = Some(build_cull_note(&c, None, None, group, false));
                     }
+                    continue;
                 }
-            } else {
-                matches!(v, Verdict::Good)
+                Some(g) => g.good,
+                None => matches!(v, Verdict::Good),
             };
             // 얼굴/장르 하드필터로 강등.
             let is_good = is_good && !face_excluded(real);
+            let note = build_cull_note(&c, extras.get(real), aesthetic_ranks.get(real).copied(), group, is_good);
             let Some(it) = self.items.get_mut(*real) else { continue };
+            it.cull_note = Some(note);
             if is_good { good += 1; } else { bad += 1; }
             match c.target {
                 AiCullTarget::Label => {
@@ -1934,6 +2154,19 @@ impl RawBlowApp {
             cache_info
         ));
     }
+}
+
+/// AF 측거점 모드의 초점 측정 영역(표시 좌표). 합초 표시된 측거점만 — 비어 있으면(수동 초점,
+/// MF 렌즈, AF를 기록하지 않는 바디, 합초 실패로 기록된 컷) 호출부가 전체 프레임으로 잰다.
+pub(super) fn af_focus_regions(af: &rawblow_core::af::AfInfo, orient: u16) -> Vec<(f32, f32, f32, f32)> {
+    af.points
+        .iter()
+        .filter(|p| p.in_focus)
+        .map(|p| {
+            let (cx, cy, w, h) = af_display_coords(p, orient);
+            (cx as f32, cy as f32, w as f32, h as f32)
+        })
+        .collect()
 }
 
 /// 컬링 1장: 디코딩 + 켜진 CV 신호 채점(+AF 영역 초점) + CV 판정(미적 제외)(#50).
@@ -1962,21 +2195,16 @@ pub(super) fn cull_decode_cv(
         criteria.use_tilt,
     );
     if use_af {
-        if let Some(af) = rawblow_core::af::parse_af(path) {
-            let orient = rawblow_core::meta::orientation(path);
-            let regions: Vec<(f32, f32, f32, f32)> = af
-                .points
-                .iter()
-                .filter(|p| p.in_focus)
-                .map(|p| {
-                    let (cx, cy, w, h) = af_display_coords(p, orient);
-                    (cx as f32, cy as f32, w as f32, h as f32)
-                })
-                .collect();
-            if !regions.is_empty() {
-                q.focus = rawblow_core::quality::focus_report_regions(&img, &regions);
-            }
-        }
+        let regions: Vec<(f32, f32, f32, f32)> = rawblow_core::af::parse_af(path)
+            .map(|af| af_focus_regions(&af, rawblow_core::meta::orientation(path)))
+            .unwrap_or_default();
+        q.focus = if regions.is_empty() {
+            // 합초 측거점 정보가 없으면(수동 초점·MF 렌즈·AF 기록 없는 바디) 전체 프레임으로 잰다.
+            // 예전엔 초점 점수가 0으로 남아, 초점이 맞은 수동 초점 사진까지 전부 "초점 미달"이었다.
+            rawblow_core::quality::focus_report(&img)
+        } else {
+            rawblow_core::quality::focus_report_regions(&img, &regions)
+        };
     }
     let mut cv_only = criteria;
     cv_only.use_aesthetic = false;
@@ -2097,5 +2325,121 @@ mod tests {
             "경로가 models/<file>로 끝나야 함: {}",
             p.display()
         );
+    }
+
+    // ── #91 판정 근거 ──
+    fn note_cfg() -> rawblow_core::config::AiCullConfig {
+        rawblow_core::config::AiCullConfig {
+            use_focus: true,
+            use_exposure: true,
+            use_tilt: true,
+            use_aesthetic: false,
+            top_n: 0,
+            use_face: false,
+            use_genre: false,
+            use_sharp_ai: false,
+            use_object: false,
+            ..Default::default()
+        }
+    }
+
+    fn extra_with(report: rawblow_core::quality::QualityReport) -> super::CullExtra {
+        super::cull_extra(&report, None, std::path::Path::new("Z:/none.JPG"), false)
+    }
+
+    #[test]
+    fn cull_note_bad_lists_failed_check_as_primary() {
+        use super::{build_cull_note, CullFact, CullOutcome};
+        let mut c = note_cfg();
+        c.focus_thresh = 0.9; // 0.73 < 0.9 → 초점 탈락
+        let mut r = sample_report();
+        r.face = None;
+        let note = build_cull_note(&c, Some(&extra_with(r)), None, None, false);
+        assert_eq!(note.outcome, CullOutcome::Bad);
+        assert!(matches!(note.primary.as_slice(), [CullFact::Check(chk)] if chk.fail
+            && chk.kind == rawblow_core::quality::CheckKind::Focus));
+        // 통과한 노출·기울기는 참고 사유로만.
+        assert_eq!(note.secondary.len(), 2);
+    }
+
+    #[test]
+    fn cull_note_top_n_rank_is_the_only_primary_reason() {
+        use super::{build_cull_note, CullFact};
+        let mut c = note_cfg();
+        c.use_aesthetic = true;
+        c.top_n = 3;
+        c.focus_thresh = 0.9; // CV 실패여도 상위 N 모드는 순위가 판정 — 검사는 참고로만
+        let note = build_cull_note(&c, Some(&extra_with(sample_report())), Some(7), None, false);
+        assert_eq!(note.primary, vec![CullFact::TopN { rank: Some(7), n: 3 }]);
+        assert!(note.secondary.iter().all(|f| matches!(f, CullFact::Check(_))));
+        let none = build_cull_note(&c, Some(&extra_with(sample_report())), None, None, false);
+        assert_eq!(none.primary, vec![CullFact::TopN { rank: None, n: 3 }], "점수 없음은 정직하게");
+    }
+
+    #[test]
+    fn cull_note_group_demotion_and_exclusion() {
+        use super::{build_cull_note, CullFact, CullOutcome};
+        use rawblow_core::cull_ext::{GroupOutcome, GroupRank};
+        let c = note_cfg();
+        let r = GroupRank { rank: 2, size: 4, keep: 1 };
+        let g = GroupOutcome { included: true, good: false, burst: Some(r), dedup: None };
+        let note = build_cull_note(&c, Some(&extra_with(sample_report())), None, Some(g), false);
+        assert_eq!(note.primary, vec![CullFact::Burst(r)]);
+        let ex = GroupOutcome { included: false, good: true, burst: None, dedup: None };
+        let note = build_cull_note(&c, None, None, Some(ex), false);
+        assert_eq!(note.outcome, CullOutcome::Excluded);
+        assert!(note.primary.is_empty() && note.secondary.is_empty());
+    }
+
+    #[test]
+    fn cull_note_good_has_no_rejection_reasons_and_lines_are_honest() {
+        use super::{build_cull_note, cull_note_lines, CullOutcome};
+        use rawblow_core::config::Lang;
+        let c = note_cfg();
+        let good = build_cull_note(&c, Some(&extra_with(sample_report())), None, None, true);
+        assert_eq!(good.outcome, CullOutcome::Good);
+        assert!(good.primary.is_empty());
+        // 근거가 없는 탈락은 지어내지 않고 "산출하지 못함"으로 표시.
+        let bare = build_cull_note(&c, None, None, None, false);
+        let lines = cull_note_lines(Lang::Ko, &bare, true);
+        assert_eq!(lines, vec!["AI 제안: 탈락".to_string(), "상세 근거를 산출하지 못했습니다".to_string()]);
+        // 간략 모드는 참고 사유를 숨긴다.
+        assert_eq!(cull_note_lines(Lang::Ko, &good, false).len(), 1);
+        assert_eq!(cull_note_lines(Lang::Ko, &good, true).len(), 1 + good.secondary.len());
+    }
+    #[test]
+    fn af_mode_without_af_points_falls_back_to_whole_frame_focus() {
+        // 수동 초점·AF 기록 없는 사진: AF 측거점 모드여도 초점이 0점이면 안 된다(초점 맞은 MF 사진이
+        // 전부 탈락하던 버그). 전체 프레임 초점과 같은 값이어야 한다.
+        let dir = std::env::temp_dir().join(format!("rb_af_fallback_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("mf_sharp.jpg");
+        let img = image::RgbImage::from_fn(640, 480, |x, y| {
+            if (x / 4 + y / 4) % 2 == 0 { image::Rgb([240, 240, 240]) } else { image::Rgb([15, 15, 15]) }
+        });
+        img.save(&p).unwrap();
+        let crit = rawblow_core::quality::CullCriteria::default();
+        let (_, af, _) = super::cull_decode_cv(&p, crit, true, 1024).expect("decode");
+        let (_, whole, _) = super::cull_decode_cv(&p, crit, false, 1024).expect("decode");
+        assert!(af.focus.sharpness > 0.0, "AF 정보 없으면 0점이 되면 안 됨");
+        assert_eq!(af.focus, whole.focus);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn af_regions_only_in_focus_points_and_empty_means_whole_frame() {
+        use rawblow_core::af::{AfInfo, AfPoint};
+        let pt = |in_focus| AfPoint { cx: 0.5, cy: 0.5, w: 0.1, h: 0.1, in_focus, selected: true };
+        // 측거점은 기록됐지만 합초 표시가 하나도 없음(MF·합초 실패) → 영역 없음 → 전체 프레임 폴백 대상.
+        let none = AfInfo { points: vec![pt(false), pt(false)], source: "test" };
+        assert!(super::af_focus_regions(&none, 1).is_empty());
+        let one = AfInfo { points: vec![pt(false), pt(true)], source: "test" };
+        assert_eq!(super::af_focus_regions(&one, 1).len(), 1);
+    }
+    #[test]
+    fn tilt_text_never_shows_negative_zero() {
+        use rawblow_core::config::Lang;
+        use rawblow_core::quality::{CheckKind, CriterionCheck};
+        let f = super::CullFact::Check(CriterionCheck { kind: CheckKind::Tilt, value: -0.04, limit: 3.0, fail: false });
+        assert_eq!(super::cull_fact_text(Lang::Ko, &f), "기울기 0.0° (허용 3.0°)");
     }
 }

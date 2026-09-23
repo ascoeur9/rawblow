@@ -367,56 +367,101 @@ pub struct GroupCullParams {
     pub dedup_keep: usize,
 }
 
-fn keep_top(orig: &[usize], ranks: &[f32], keep: usize) -> HashSet<usize> {
+/// rank 내림차순(동점은 인덱스 오름차순)으로 정렬한 그룹. 앞의 keep개가 살아남는다.
+fn sorted_by_rank(orig: &[usize], ranks: &[f32]) -> Vec<usize> {
     let mut v = orig.to_vec();
     v.sort_by(|&a, &b| {
         ranks[b].partial_cmp(&ranks[a]).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(&b))
     });
-    v.into_iter().take(keep.max(1)).collect()
+    v
+}
+
+/// 그룹 안에서 한 컷의 위치(#91). `rank`는 1부터, `rank > keep`이면 이 그룹 때문에 탈락.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupRank {
+    pub rank: usize,
+    pub size: usize,
+    pub keep: usize,
+}
+
+impl GroupRank {
+    pub fn demoted(&self) -> bool {
+        self.rank > self.keep
+    }
+}
+
+/// 한 컷의 그룹 컬링 결과와 근거(#91). 2장 이상인 그룹에 속했을 때만 `burst`/`dedup`이 채워진다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupOutcome {
+    /// false면 메타 필터에 걸려 판정 대상에서 빠졌다(라벨을 건드리지 않음).
+    pub included: bool,
+    pub good: bool,
+    pub burst: Option<GroupRank>,
+    pub dedup: Option<GroupRank>,
 }
 
 /// 메타 필터로 대상을 좁히고(불통과=제외, 손대지 않음), 연사·시각중복 그룹마다 rank 상위 keep만
 /// Good 유지(나머지는 Bad로 강등). 반환: 각 인덱스별 `None`=제외, `Some(true/false)`=Good/Bad.
 pub fn apply_group_culling(items: &[CullItem], p: &GroupCullParams) -> Vec<Option<bool>> {
+    explain_group_culling(items, p)
+        .into_iter()
+        .map(|o| o.included.then_some(o.good))
+        .collect()
+}
+
+/// [`apply_group_culling`]과 같은 판정에 그룹 내 순위를 함께 돌려준다(#91 판정 근거).
+pub fn explain_group_culling(items: &[CullItem], p: &GroupCullParams) -> Vec<GroupOutcome> {
     let n = items.len();
-    let mut incl_mask = vec![true; n];
+    let mut out: Vec<GroupOutcome> = items
+        .iter()
+        .map(|it| GroupOutcome { included: true, good: it.good, burst: None, dedup: None })
+        .collect();
     if p.use_meta {
         for (i, it) in items.iter().enumerate() {
-            incl_mask[i] = p.meta_filter.passes(&it.meta);
+            out[i].included = p.meta_filter.passes(&it.meta);
         }
     }
-    let included: Vec<usize> = (0..n).filter(|&i| incl_mask[i]).collect();
+    let included: Vec<usize> = (0..n).filter(|&i| out[i].included).collect();
     let ranks: Vec<f32> = items.iter().map(|it| it.rank).collect();
-    let mut good: Vec<bool> = items.iter().map(|it| it.good).collect();
 
     // 연사: included를 원래(촬영) 순서대로 시각 간격 그룹핑.
     if p.use_burst {
+        let keep = p.burst_keep.max(1);
         let times: Vec<Option<i64>> = included.iter().map(|&i| items[i].shot_time).collect();
         for g in group_bursts(&times, p.burst_gap_secs) {
             let orig: Vec<usize> = g.iter().map(|&k| included[k]).collect();
-            let keep = keep_top(&orig, &ranks, p.burst_keep);
-            for &oi in &orig {
-                if !keep.contains(&oi) {
-                    good[oi] = false;
+            let sorted = sorted_by_rank(&orig, &ranks);
+            for (pos, &oi) in sorted.iter().enumerate() {
+                let r = GroupRank { rank: pos + 1, size: sorted.len(), keep };
+                if r.demoted() {
+                    out[oi].good = false;
+                }
+                if sorted.len() > 1 {
+                    out[oi].burst = Some(r);
                 }
             }
         }
     }
     // 시각중복: dhash 있는 included만 클러스터(없으면 단독 취급).
     if p.use_dedup {
+        let keep = p.dedup_keep.max(1);
         let valid: Vec<usize> = included.iter().cloned().filter(|&i| items[i].dhash.is_some()).collect();
         let vhash: Vec<u64> = valid.iter().map(|&i| items[i].dhash.unwrap()).collect();
         for c in cluster_near_dups(&vhash, p.dedup_hamming) {
             let orig: Vec<usize> = c.iter().map(|&k| valid[k]).collect();
-            let keep = keep_top(&orig, &ranks, p.dedup_keep);
-            for &oi in &orig {
-                if !keep.contains(&oi) {
-                    good[oi] = false;
+            let sorted = sorted_by_rank(&orig, &ranks);
+            for (pos, &oi) in sorted.iter().enumerate() {
+                let r = GroupRank { rank: pos + 1, size: sorted.len(), keep };
+                if r.demoted() {
+                    out[oi].good = false;
+                }
+                if sorted.len() > 1 {
+                    out[oi].dedup = Some(r);
                 }
             }
         }
     }
-    (0..n).map(|i| incl_mask[i].then_some(good[i])).collect()
+    out
 }
 
 #[cfg(test)]

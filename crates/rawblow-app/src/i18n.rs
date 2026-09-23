@@ -50,6 +50,24 @@ pub fn trf(lang: Lang, ko: &'static str, args: &[&str]) -> String {
 fn fmt_lookup(ko: &str) -> Option<(&'static str, &'static str)> {
     Some(match ko {
         "{} 항목 로드" => ("Loaded {} items", "{} 項目を読み込み"),
+        // #91 AI 컬링 판정 근거
+        "초점 미달 ({} < {})" => ("Focus below threshold ({} < {})", "ピント不足 ({} < {})"),
+        "초점 {} (기준 {})" => ("Focus {} (threshold {})", "ピント {} (基準 {})"),
+        "노출 미달 ({} < {})" => ("Exposure below threshold ({} < {})", "露出不足 ({} < {})"),
+        "노출 {} (기준 {})" => ("Exposure {} (threshold {})", "露出 {} (基準 {})"),
+        "기울기 초과 (|{}°| > {}°)" => ("Tilt too large (|{}°| > {}°)", "傾き超過 (|{}°| > {}°)"),
+        "기울기 {}° (허용 {}°)" => ("Tilt {}° (allowed {}°)", "傾き {}° (許容 {}°)"),
+        "미적 점수 미달 ({} < {})" => ("Aesthetic score below threshold ({} < {})", "美的スコア不足 ({} < {})"),
+        "미적 점수 {} (기준 {})" => ("Aesthetic score {} (threshold {})", "美的スコア {} (基準 {})"),
+        "미적 순위 {}위 (상위 {}장 안)" => ("Aesthetic rank #{} (within top {})", "美的順位 {}位 (上位 {}枚以内)"),
+        "미적 순위 {}위 — 상위 {}장 밖" => ("Aesthetic rank #{} — outside top {}", "美的順位 {}位 — 上位 {}枚の圏外"),
+        "미적 점수 없음 — 상위 {}장 순위에서 빠짐" => ("No aesthetic score — left out of top {} ranking", "美的スコアなし — 上位 {}枚の順位対象外"),
+        "연사 {}장 중 {}위 — 상위 {}장만 유지" => ("Burst of {}: ranked #{} — only top {} kept", "連写 {}枚中 {}位 — 上位 {}枚のみ残す"),
+        "연사 {}장 중 {}위 (상위 {}장 유지)" => ("Burst of {}: ranked #{} (top {} kept)", "連写 {}枚中 {}位 (上位 {}枚を残す)"),
+        "유사 사진 {}장 중 {}위 — 상위 {}장만 유지" => ("{} similar shots: ranked #{} — only top {} kept", "類似写真 {}枚中 {}位 — 上位 {}枚のみ残す"),
+        "유사 사진 {}장 중 {}위 (상위 {}장 유지)" => ("{} similar shots: ranked #{} (top {} kept)", "類似写真 {}枚中 {}位 (上位 {}枚を残す)"),
+        "AI 선명도 미달 ({} < {})" => ("AI sharpness below threshold ({} < {})", "AI シャープネス不足 ({} < {})"),
+        "AI 선명도 {} (기준 {})" => ("AI sharpness {} (threshold {})", "AI シャープネス {} (基準 {})"),
         "✓ {} 파일 전송 · {} 리네임 · {} 실패" => (
             "✓ {} files transferred · {} renamed · {} failed",
             "✓ {} ファイル転送 · {} リネーム · {} 失敗",
@@ -151,6 +169,16 @@ pub fn detect_os_lang() -> Lang {
 fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
     Some(match ko {
         "사진 셀렉 뷰어" => ("Photo Culling Viewer", "写真セレクトビューア"),
+        // #91 AI 컬링 판정 근거
+        "AI 제안: 좋음" => ("AI suggestion: Good", "AI 提案: 良い"),
+        "AI 제안: 탈락" => ("AI suggestion: Reject", "AI 提案: 不採用"),
+        "AI 컬링: 촬영 정보 조건 밖이라 판정하지 않음" => ("AI culling: outside shooting-info conditions — not judged", "AI カリング: 撮影情報の条件外のため判定なし"),
+        "상세 근거를 산출하지 못했습니다" => ("No detailed reason available", "詳細な根拠を算出できませんでした"),
+        "얼굴 없음 (얼굴 조건)" => ("No face (face condition)", "顔なし (顔の条件)"),
+        "얼굴 있음 (풍경 장르)" => ("Face present (landscape genre)", "顔あり (風景ジャンル)"),
+        "지정 객체 없음" => ("Selected object not found", "指定オブジェクトなし"),
+        "AI 제안일 뿐 확정 판정이 아닙니다 — 최종 선택은 직접 확인하세요" => ("AI suggestion, not a final verdict — review before deciding", "AI の提案であり確定判定ではありません — 最終判断はご自身で"),
+        "I: 판정 근거 자세히" => ("I: reason details", "I: 判定根拠の詳細"),
         "폴더 열기" => ("Open Folder", "フォルダを開く"),
         "해제" => ("Clear", "解除"),
         "전체" => ("All", "すべて"),
@@ -162,6 +190,12 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "디코딩 중…" => ("Decoding…", "デコード中…"),
         "이 파일을 열 수 없습니다" => ("Can't open this file", "このファイルを開けません"), // #64
         "파일 전송" => ("Transfer Files", "ファイル転送"),
+        "PREVIEW · 원본 없음" => ("PREVIEW · no original", "PREVIEW · 原寸なし"),
+        "썸네일 · 본 이미지 열기 실패" => ("THUMBNAIL · image failed to open", "サムネイル · 本画像を開けません"),
+        "⚠ 본 이미지를 열 수 없어 썸네일을 확대해 보여 주고 있습니다" => (
+            "⚠ Couldn't open the image — showing an enlarged thumbnail",
+            "⚠ 本画像を開けないため、サムネイルを拡大して表示しています",
+        ),
         "원본 해상도를 못 구해 프리뷰로 표시합니다" => (
             "Couldn't get original resolution — showing preview",
             "原寸解像度が取れずプレビューで表示します",
@@ -548,9 +582,9 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
             "AIが構図・雰囲気を採点して良いカットを選びます（モデルが必要）",
         ),
         "높일수록 더 엄격하게 흐림으로 판정합니다" => ("Higher = stricter blur judgment", "高くするほど厳しくブレと判定します"),
-        "초점을 사진 전체가 아니라 카메라가 맞춘 AF 지점에서만 봅니다" => (
-            "Checks focus only at the camera's AF points, not the whole frame",
-            "フォーカスを写真全体ではなくカメラが合わせたAF点だけで判定します",
+        "초점을 사진 전체가 아니라 카메라가 맞춘 AF 지점에서만 봅니다. 합초 AF 지점 기록이 없으면(수동 초점 등) 사진 전체로 봅니다" => (
+            "Checks focus only at the camera's AF points, not the whole frame. Without in-focus AF points (e.g. manual focus) the whole frame is used",
+            "フォーカスを写真全体ではなくカメラが合わせたAF点だけで判定します。合焦AF点の記録がない場合（MFなど）は写真全体で判定します",
         ),
         "그래픽카드로 미적 채점을 가속합니다" => ("Accelerates aesthetic scoring on the GPU", "GPUで美的採点を高速化します"),
         "미적 채점에 쓸 AI 모델 — 클수록 정확하지만 느립니다" => (
@@ -710,6 +744,27 @@ mod tests {
     use rawblow_core::config::Lang;
 
     #[test]
+    fn issue91_cull_reason_strings_translated() {
+        // #91 판정 근거 문구가 En/Ja에서 한국어로 폴백되지 않는지, 서식 슬롯 수가 같은지.
+        for ko in ["AI 제안: 좋음", "AI 제안: 탈락", "AI 컬링: 촬영 정보 조건 밖이라 판정하지 않음", "상세 근거를 산출하지 못했습니다", "얼굴 없음 (얼굴 조건)", "얼굴 있음 (풍경 장르)", "지정 객체 없음", "AI 제안일 뿐 확정 판정이 아닙니다 — 최종 선택은 직접 확인하세요", "I: 판정 근거 자세히"] {
+            assert_ne!(tr(Lang::En, ko), ko, "En 번역 누락: {ko}");
+            assert_ne!(tr(Lang::Ja, ko), ko, "Ja 번역 누락: {ko}");
+        }
+        for ko in ["초점 미달 ({} < {})", "초점 {} (기준 {})", "노출 미달 ({} < {})", "노출 {} (기준 {})", "기울기 초과 (|{}°| > {}°)", "기울기 {}° (허용 {}°)", "미적 점수 미달 ({} < {})", "미적 점수 {} (기준 {})", "미적 순위 {}위 (상위 {}장 안)", "미적 순위 {}위 — 상위 {}장 밖", "미적 점수 없음 — 상위 {}장 순위에서 빠짐", "연사 {}장 중 {}위 — 상위 {}장만 유지", "연사 {}장 중 {}위 (상위 {}장 유지)", "유사 사진 {}장 중 {}위 — 상위 {}장만 유지", "유사 사진 {}장 중 {}위 (상위 {}장 유지)", "AI 선명도 미달 ({} < {})", "AI 선명도 {} (기준 {})"] {
+            let slots = ko.matches("{}").count();
+            for lang in [Lang::En, Lang::Ja] {
+                let args: Vec<String> = (0..slots).map(|i| format!("<{i}>")).collect();
+                let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                let out = trf(lang, ko, &refs);
+                assert_ne!(out, trf(Lang::Ko, ko, &refs), "{lang:?} 번역 누락: {ko}");
+                for a in &refs {
+                    assert!(out.contains(a), "{lang:?} 슬롯 누락: {ko} -> {out}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn tr_picks_language_and_falls_back_to_ko() {
         assert_eq!(tr(Lang::Ko, "폴더 열기"), "폴더 열기");
         assert_eq!(tr(Lang::En, "폴더 열기"), "Open Folder");
@@ -853,6 +908,9 @@ mod tests {
             "범위 안 모든 사진을 나눠 복사/이동 · RAW 페어 처리",
             "폴더 스캔 중…",
             "원본 해상도를 못 구해 프리뷰로 표시합니다",
+            "PREVIEW · 원본 없음",
+            "썸네일 · 본 이미지 열기 실패",
+            "⚠ 본 이미지를 열 수 없어 썸네일을 확대해 보여 주고 있습니다",
         ] {
             assert_ne!(tr(Lang::En, ko), ko, "En 번역 누락: {ko}");
             assert_ne!(tr(Lang::Ja, ko), ko, "Ja 번역 누락: {ko}");
