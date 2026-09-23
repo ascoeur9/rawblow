@@ -1207,11 +1207,13 @@ mod tests {
     fn run_settings_chrome(mut paint: impl FnMut(&mut egui::Ui)) -> Vec<(Color32, Stroke)> {
         let ctx = egui::Context::default();
         theme::apply(&ctx);
-        let mut input = egui::RawInput::default();
-        input.screen_rect = Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(800.0, 600.0),
-        ));
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            ..Default::default()
+        };
         let out = ctx.run(input, |ctx| {
             egui::CentralPanel::default()
                 .frame(egui::Frame::none().fill(theme::BG1))
@@ -1730,12 +1732,14 @@ mod tests {
             String::new(),
             "x".into(),
         ];
-        let mut input = egui::RawInput::default();
-        input.screen_rect = Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(1100.0, 4200.0),
-        ));
-        input.max_texture_side = Some(4096);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1100.0, 4200.0),
+            )),
+            max_texture_side: Some(4096),
+            ..Default::default()
+        };
         let out = ctx.run(input, |ctx| app.ui_settings(ctx));
         let texts = texts_from(&out);
         let y0 = texts
