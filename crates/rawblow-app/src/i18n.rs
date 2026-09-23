@@ -717,6 +717,56 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "캐시" => ("CACHE", "キャッシュ"),
         "초기화" => ("RESET", "リセット"), // 기존 "복원"(Reset, 버튼)과 별개 키(섹션 캡션용).
         "정보" => ("ABOUT", "情報"),
+        "폴더" => ("FOLDER", "フォルダ"),
+        "표시" => ("OVERLAYS", "オーバーレイ"),
+        "셀렉" => ("CULLING", "セレクト"),
+        "앱" => ("APP", "アプリ"),
+        // 설정 행 설명(제목 아래 항상 표시).
+        "항상 원본보기" => ("Always original", "常に原寸表示"),
+        "미니 지도" => ("Mini map", "ミニマップ"),
+        "캐시 삭제" => ("Delete Cache", "キャッシュを削除"),
+        "썸네일 캐시를 삭제했습니다" => ("Thumbnail cache deleted", "サムネイルキャッシュを削除しました"),
+        "하위 폴더의 사진까지 함께 불러옵니다." => ("Also loads photos in subfolders.", "サブフォルダの写真もまとめて読み込みます。"),
+        "사진을 보여 주는 순서를 정합니다." => ("Sets the order photos are shown in.", "写真を表示する順序を設定します。"),
+        "켜면 다음 사진으로 넘겨도 원본보기를 유지합니다." => (
+            "When on, original view stays on as you move to the next photo.",
+            "オンにすると、次の写真に移っても原寸表示を維持します。",
+        ),
+        "미리 로딩할 사진 수를 정합니다." => ("Sets how many photos to preload.", "先読みする写真の枚数を設定します。"),
+        "한 줄에 보여 줄 썸네일 수를 정합니다." => ("Sets how many thumbnails fit in a row.", "1行に表示するサムネイルの数を設定します。"),
+        "썸네일의 라벨, 별점, 색 태그 크기를 정합니다." => (
+            "Sets the size of labels, stars and color tags on thumbnails.",
+            "サムネイルのラベル・星・カラータグの大きさを設定します。",
+        ),
+        "사진 위에 EXIF를 표시합니다. I 키로 켜고 끕니다." => ("Shows EXIF over the photo. Press I to turn it on or off.", "写真の上にEXIFを表示します。Iキーでオン・オフします。"),
+        "히스토그램을 표시합니다. H 키로 켜고 끕니다." => ("Shows the histogram. Press H to turn it on or off.", "ヒストグラムを表示します。Hキーでオン・オフします。"),
+        "촬영 위치를 미니 지도로 표시합니다. M 키로 켜고 끕니다." => (
+            "Shows where the photo was taken on a mini map. Press M to turn it on or off.",
+            "撮影位置をミニマップに表示します。Mキーでオン・オフします。",
+        ),
+        "AF 포인트를 표시합니다. A 키로 켜고 끕니다." => ("Shows AF points. Press A to turn them on or off.", "AFポイントを表示します。Aキーでオン・オフします。"),
+        "사진 보기 화면의 배경색을 정합니다." => ("Sets the background color behind the photo.", "写真表示画面の背景色を設定します。"),
+        "셀렉하면 다음 사진으로 넘어갑니다." => ("Moves to the next photo after you label one.", "セレクトすると次の写真に進みます。"),
+        "셀렉 단축키입니다." => ("Culling shortcuts.", "セレクトのショートカットです。"),
+        "색 태그의 이름을 정합니다. Shift+1~5로 태그를 붙입니다." => (
+            "Sets names for color tags. Press Shift+1–5 to tag a photo.",
+            "カラータグの名前を設定します。Shift+1〜5でタグを付けます。",
+        ),
+        "전송할 때 처음 지정되는 폴더를 정합니다." => ("Sets the folder preselected when you transfer.", "転送時に最初に指定されるフォルダを設定します。"),
+        "표시 언어를 정합니다." => ("Sets the display language.", "表示言語を設定します。"),
+        "실행할 때 새 버전을 확인합니다." => ("Checks for a new version at launch.", "起動時に新しいバージョンを確認します。"),
+        "썸네일을 저장해 두고 폴더를 다시 열 때 씁니다." => (
+            "Stores thumbnails and reuses them when you reopen a folder.",
+            "サムネイルを保存し、フォルダを開き直すときに使います。",
+        ),
+        "이 크기를 넘으면 오래된 썸네일부터 삭제합니다. 0으로 두면 제한하지 않습니다." => (
+            "Deletes the oldest thumbnails once the cache exceeds this size. Set 0 for no limit.",
+            "このサイズを超えると古いサムネイルから削除します。0にすると制限しません。",
+        ),
+        "설정을 처음 상태로 되돌립니다. 라벨과 별점은 그대로입니다." => (
+            "Restores all settings to their defaults. Labels and stars are kept.",
+            "設定を初期状態に戻します。ラベルと星はそのまま残ります。",
+        ),
         // 설정 행: 짧은 라벨(문장형 금지). 긴 설명은 호버로.
         "자동 전진" => ("Auto-advance", "自動送り"),
         "하위 폴더" => ("Subfolders", "サブフォルダ"),
