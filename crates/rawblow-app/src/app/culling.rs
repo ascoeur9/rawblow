@@ -96,6 +96,10 @@ pub(super) fn build_cull_note(
     }
     if let Some(report) = ex.and_then(|e| e.report.as_ref()) {
         for chk in c.criteria().checks(report) {
+            // 상위 N 모드에선 미적 임계값이 판정에 쓰이지 않는다 — "미달"로 보이면 오해를 산다.
+            if top_n_mode && chk.kind == rawblow_core::quality::CheckKind::Aesthetic {
+                continue;
+            }
             // 상위 N 모드는 CV 판정을 순위로 덮어쓰므로 검사 결과는 참고로만 보인다.
             if chk.fail && !top_n_mode {
                 primary.push(CullFact::Check(chk));
@@ -238,6 +242,9 @@ pub(super) struct AiCullJob {
     pub(super) generation: u64,
     /// 이 작업이 결과를 배정할 분류축. 채점 중 이 축의 수동 편집을 막는다.
     pub(super) target: AiCullTarget,
+    /// 작업 시작 시점의 컬링 설정 스냅샷. 채점은 이 설정으로 했으므로 최종 판정·판정 근거(#91)도
+    /// 같은 설정으로 계산한다 — 진행 중 설정 화면에서 임계값을 바꿔도 근거가 판정과 어긋나지 않게.
+    pub(super) cfg: config::AiCullConfig,
 }
 
 /// 컬링 결과 캐시 항목(#50). 같은 파일을 같은 설정으로 재컬링할 때 디코드+채점을 건너뛴다.
@@ -1818,6 +1825,7 @@ impl RawBlowApp {
             total,
             generation: self.generation,
             target: cfg.target,
+            cfg: cfg.clone(),
         });
     }
 
@@ -1842,7 +1850,7 @@ impl RawBlowApp {
             // 폴더가 바뀌면 캡처한 real 인덱스가 다른 사진을 가리킨다 → 결과 폐기(오염 방지).
             if job.generation == self.generation {
                 let hits = job.cache_hits.load(Ordering::Relaxed);
-                self.apply_cull_verdicts(v, ex, hits);
+                self.apply_cull_verdicts(v, ex, hits, job.cfg.clone());
                 // 갱신된 캐시를 디스크에 저장(다음 세션 재컬링 즉시화). 메인 스레드 I/O 히치를 피해
                 // 스냅샷만 잠금 안에서 뜨고(빠른 memcpy) 직렬화·쓰기는 백그라운드에서.
                 let cache = self.cull_cache.clone();
@@ -2003,9 +2011,14 @@ impl RawBlowApp {
         mut results: Vec<(usize, Verdict, Option<f32>)>,
         extras: std::collections::HashMap<usize, CullExtra>,
         cache_hits: usize,
+        c: config::AiCullConfig,
     ) {
         let lang = self.lang;
-        let c = self.cfg.ai_cull.clone();
+        // 지난 실행의 근거는 지운다(#91) — 이번에 판정하지 않은 사진(디코드 실패·범위 밖)에
+        // 다른 설정으로 낸 옛 근거가 남아 보이지 않게.
+        for it in &mut self.items {
+            it.cull_note = None;
+        }
 
         // 판정 근거(#91)용 미적 순위 — finalize와 같은 정렬.
         let aesthetic_ranks = rawblow_core::quality::aesthetic_ranks(&results);

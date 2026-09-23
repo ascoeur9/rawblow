@@ -1064,12 +1064,17 @@ impl RawBlowApp {
     /// 화면에서 빠진 그리드 선택을 지운다(#102) — 안 보이는 사진에 일괄 분류가 새지 않게.
     fn relocate_after_filter(&mut self, keep: Option<usize>) {
         let f = self.filtered();
-        self.index = if f.is_empty() {
-            0
-        } else {
-            keep.and_then(|r| f.iter().position(|&x| x == r)).unwrap_or(0)
-        };
+        self.index = index_after_filter(&f, keep);
         let vis: std::collections::HashSet<usize> = f.into_iter().collect();
+        self.selected.retain(|r| vis.contains(r));
+        if self.selected.is_empty() {
+            self.sel_anchor = None;
+        }
+    }
+
+    /// 지금 필터에 안 보이는 선택을 지운다(#102). 인덱스는 건드리지 않는다.
+    fn prune_invisible_selection(&mut self) {
+        let vis: std::collections::HashSet<usize> = self.filtered().into_iter().collect();
         self.selected.retain(|r| vis.contains(r));
         if self.selected.is_empty() {
             self.sel_anchor = None;
@@ -1082,10 +1087,7 @@ impl RawBlowApp {
         if self.view != ViewMode::Grid || self.selected.is_empty() {
             return Vec::new();
         }
-        let vis: std::collections::HashSet<usize> = self.filtered().into_iter().collect();
-        let mut v: Vec<usize> = self.selected.iter().copied().filter(|r| vis.contains(r)).collect();
-        v.sort_unstable();
-        v
+        visible_subset(&self.selected, &self.filtered())
     }
 
     fn counts(&self) -> (usize, usize, usize, usize) {
@@ -1226,6 +1228,7 @@ impl RawBlowApp {
                 }
             }
             self.sidecar_dirty = true;
+            self.prune_invisible_selection(); // 분류로 필터에서 빠진 사진은 선택에서도 뺀다(#102)
             return;
         }
         if let Some(real) = self.current_real() {
@@ -1264,6 +1267,7 @@ impl RawBlowApp {
                 }
             }
             self.sidecar_dirty = true;
+            self.prune_invisible_selection(); // 분류로 필터에서 빠진 사진은 선택에서도 뺀다(#102)
             return;
         }
         if let Some(real) = self.current_real() {
@@ -1303,6 +1307,7 @@ impl RawBlowApp {
                 }
             }
             self.sidecar_dirty = true;
+            self.prune_invisible_selection(); // 분류로 필터에서 빠진 사진은 선택에서도 뺀다(#102)
             return;
         }
         if let Some(real) = self.current_real() {
@@ -2028,9 +2033,39 @@ fn index_after_rate(index: usize, still_visible: bool, new_len: usize) -> Option
     Some(next.min(new_len - 1))
 }
 
+/// 필터 변경 후 인덱스(#102): 보던 사진(`keep`)이 새 목록에 있으면 그 자리, 없으면 맨 앞.
+fn index_after_filter(filtered: &[usize], keep: Option<usize>) -> usize {
+    keep.and_then(|r| filtered.iter().position(|&x| x == r)).unwrap_or(0)
+}
+
+/// 선택 중 지금 목록에 보이는 것만(정렬)(#102).
+fn visible_subset(selected: &std::collections::HashSet<usize>, filtered: &[usize]) -> Vec<usize> {
+    let vis: std::collections::HashSet<usize> = filtered.iter().copied().collect();
+    let mut v: Vec<usize> = selected.iter().copied().filter(|r| vis.contains(r)).collect();
+    v.sort_unstable();
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::index_after_rate;
+
+    #[test]
+    fn index_after_filter_keeps_current_photo_or_goes_to_start() {
+        use super::index_after_filter;
+        assert_eq!(index_after_filter(&[3, 7, 9], Some(7)), 1, "보던 사진이 남으면 그 자리");
+        assert_eq!(index_after_filter(&[3, 9], Some(7)), 0, "빠졌으면 맨 앞");
+        assert_eq!(index_after_filter(&[], Some(7)), 0);
+        assert_eq!(index_after_filter(&[3, 9], None), 0);
+    }
+
+    #[test]
+    fn visible_subset_drops_filtered_out_selection() {
+        use super::visible_subset;
+        let sel: std::collections::HashSet<usize> = [9, 2, 5].into_iter().collect();
+        assert_eq!(visible_subset(&sel, &[1, 2, 3, 9]), vec![2, 9]);
+        assert!(visible_subset(&sel, &[1, 3]).is_empty(), "전부 안 보이면 일괄 적용 대상 없음");
+    }
 
     #[test]
     fn index_after_rate_filtered_out_stays_in_place() {

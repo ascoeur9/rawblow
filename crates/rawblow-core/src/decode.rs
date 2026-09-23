@@ -149,7 +149,8 @@ pub fn decode_file(path: &Path, opts: DecodeOptions) -> Result<DecodedImage, Dec
                 }
                 let bytes = read_whole(path)?;
                 let mut img = decode_jpeg_scaled(&bytes, orient, opts.max_edge)?;
-                // 본 이미지 전체를 푼 경로 = 원본 그 자체. ORIG 요청이면 성공으로 표시한다(#109) —
+                // 본 이미지 전체를 푼 경로 = 원본 그 자체. ORIG 요청이면 성공으로 표시한다(#109).
+                // (ORIG_EDGE=8192 GPU 한계로 축소됐더라도 "가진 최대 해상도"라는 의미에서 원본이다.) —
                 // 안 그러면 캐시가 "원본 아님"으로 기록해 매 프레임 재요청·토스트가 반복된다.
                 img.full_raw = opts.full_raw;
                 Ok(img)

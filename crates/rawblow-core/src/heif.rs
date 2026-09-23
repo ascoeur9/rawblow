@@ -31,7 +31,8 @@ pub fn orig_long_edge(path: &Path) -> Option<u32> {
 /// HEIC/HEIF 디코드. `want_orig`는 ORIG(원본 보기) 요청 여부 — 본 이미지를 푼 경로만
 /// `full_raw=true`로 표시해 UI가 원본 성공과 썸네일 폴백을 구분하게 한다(#109).
 ///
-/// 순서(#114): JPEG-in-HEIF primary → (그리드·컬링 ≤1024만) `jpeg`/`thmb` 항목 →
+/// 순서(#114): JPEG-in-HEIF primary → (≤1024 요청이고 항목이 요청 크기의 75% 이상일 때만)
+/// `jpeg`/`thmb` 항목 →
 /// 컨테이너 안 JPEG 스캔(≤384) → primary HEVC. 본 화면에서는 작은 썸네일 항목을 쓰지 않는다
 /// (12MP 사진 자리에 수백 px 썸네일이 뜨는 것 방지).
 pub fn decode(path: &Path, max_edge: Option<u32>, want_orig: bool) -> Result<DecodedImage, DecodeError> {
@@ -55,10 +56,16 @@ pub(crate) fn decode_bytes(
             }
         }
         if preview {
-            if let Some(img) = jpeg_thumb_items(bytes, &idx, max_edge) {
+            // 요청 크기에 충분히 가까운 항목만 쓴다. 그리드(≤384)는 iPhone thmb(~320)로 충분하지만,
+            // 컬링(1024)을 320px 썸네일로 재면 초점·기울기 임계가 다른 포맷과 어긋난다 — 그땐 본 이미지.
+            let enough = |img: &DecodedImage| {
+                let want = max_edge.unwrap_or(u32::MAX) as f32 * 0.75;
+                img.width.max(img.height) as f32 >= want
+            };
+            if let Some(img) = jpeg_thumb_items(bytes, &idx, max_edge).filter(enough) {
                 return Ok(img);
             }
-            if let Some(img) = hevc_thumb_item(bytes, &idx, max_edge) {
+            if let Some(img) = hevc_thumb_item(bytes, &idx, max_edge).filter(enough) {
                 return Ok(img);
             }
         }

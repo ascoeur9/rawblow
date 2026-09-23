@@ -217,31 +217,37 @@ fn e2e_scan_sidecar_transfer_organize_decode() {
 
 #[test]
 fn e2e_heic_thumb_jpeg_item_skips_hevc() {
-    let jpeg = jpeg_bytes(48, 32);
+    // 그리드: 요청 크기에 걸맞은 jpeg 항목이면 HEVC(여기선 쓰레기라 풀면 실패)를 건드리지 않는다.
+    let jpeg = jpeg_bytes(320, 240);
     let heif = heif_hvc1_with_jpeg_thumb(&jpeg);
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("iphone.heic");
     std::fs::write(&p, &heif).unwrap();
 
-    let thumb = decode::decode_file(
-        &p,
-        decode::DecodeOptions {
-            full_raw: false,
-            max_edge: Some(320),
-        },
-    )
-    .expect("grid thumb uses jpeg item");
-    assert_eq!((thumb.width, thumb.height), (48, 32));
+    let thumb = decode::decode_file(&p, decode::DecodeOptions { full_raw: false, max_edge: Some(320) })
+        .expect("grid thumb uses jpeg item");
+    assert_eq!((thumb.width, thumb.height), (320, 240));
+}
 
-    let cull = decode::decode_file(
-        &p,
-        decode::DecodeOptions {
-            full_raw: false,
-            max_edge: Some(1024),
-        },
-    )
-    .expect("cull edge uses jpeg item");
-    assert_eq!((cull.width, cull.height), (48, 32));
+#[test]
+fn e2e_heic_cull_edge_does_not_use_small_thumb() {
+    // 컬링(1024)을 320px 썸네일로 재면 HEIC만 판정 기준이 달라진다 — 작은 항목은 쓰지 않고
+    // 본 이미지로 가야 한다(여기선 HEVC가 쓰레기라 실패가 곧 "썸네일을 안 썼다"는 증거).
+    let jpeg = jpeg_bytes(320, 240);
+    let heif = heif_hvc1_with_jpeg_thumb(&jpeg);
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("iphone.heic");
+    std::fs::write(&p, &heif).unwrap();
+    let cull = decode::decode_file(&p, decode::DecodeOptions { full_raw: false, max_edge: Some(1024) });
+    assert!(cull.is_err(), "컬링이 작은 썸네일로 대체됨: {:?}", cull.map(|i| (i.width, i.height)));
+
+    // 요청 크기에 충분한 항목(≥75%)이면 컬링도 쓴다.
+    let big = heif_hvc1_with_jpeg_thumb(&jpeg_bytes(1024, 768));
+    let p2 = dir.path().join("big_thumb.heic");
+    std::fs::write(&p2, &big).unwrap();
+    let img = decode::decode_file(&p2, decode::DecodeOptions { full_raw: false, max_edge: Some(1024) })
+        .expect("large jpeg item is fine for culling");
+    assert_eq!(img.width.max(img.height), 1024);
 }
 
 #[test]
@@ -432,7 +438,7 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
 #[test]
 fn e2e_heic_thumb_and_cull_mark_not_orig() {
     // #109: 썸네일 항목으로 답한 결과는 ORIG 요청이어도 원본으로 표시하면 안 된다.
-    let jpeg = jpeg_bytes(48, 32);
+    let jpeg = jpeg_bytes(320, 240);
     let heif = heif_hvc1_with_jpeg_thumb(&jpeg);
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("iphone.heic");

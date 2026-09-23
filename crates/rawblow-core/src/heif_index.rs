@@ -6,6 +6,13 @@
 
 use std::collections::HashMap;
 
+/// 악성·손상 파일 방어 상한(#114). 실제 iPhone/카메라 HEIC는 항목 수십~수백, 항목당 조각
+/// 수 개 수준이다. 넘으면 색인을 포기하고(None) 호출부가 본 이미지 디코드로 폴백한다.
+const MAX_ITEMS: u32 = 4096;
+const MAX_EXTENTS_PER_ITEM: u16 = 64;
+const MAX_TOTAL_EXTENTS: usize = 16 * 1024;
+const MAX_REFS: usize = 4096;
+
 #[derive(Clone, Debug)]
 struct ItemLoc {
     construction_method: u8,
@@ -65,13 +72,18 @@ impl HeifIndex {
         };
         let mut out = Vec::new();
         for &(off, len) in &loc.extents {
-            let start = loc.base_offset.checked_add(off)? as usize;
+            let start = usize::try_from(loc.base_offset.checked_add(off)?).ok()?;
             let end = if len == 0 {
                 source.len()
             } else {
-                start.checked_add(len as usize)?
+                start.checked_add(usize::try_from(len).ok()?)?
             };
-            out.extend_from_slice(source.get(start..end)?);
+            let part = source.get(start..end)?;
+            // 같은 구간을 여러 번 가리키는 조각으로 파일보다 큰 출력을 만들지 못하게(메모리 폭발 방지).
+            if out.len() + part.len() > source.len() {
+                return None;
+            }
+            out.extend_from_slice(part);
         }
         Some(out)
     }
@@ -136,10 +148,9 @@ pub fn index(data: &[u8]) -> Option<HeifIndex> {
                 &mut refs,
             )?;
         }
+        // next_box는 be > pos(최소 8바이트 헤더)를 보장하므로 항상 전진한다. 빈 박스(be==bs)도
+        // 형제 박스 파싱을 끊지 않는다.
         pos = be;
-        if pos <= bs {
-            break;
-        }
     }
     if !saw_pitm || items.is_empty() {
         return None;
@@ -216,10 +227,9 @@ fn parse_meta_children(
             b"idat" => *idat = Some((bs, be)),
             _ => {}
         }
+        // next_box는 be > pos(최소 8바이트 헤더)를 보장하므로 항상 전진한다. 빈 박스(be==bs)도
+        // 형제 박스 파싱을 끊지 않는다.
         pos = be;
-        if pos <= bs {
-            break;
-        }
     }
     Some(())
 }
@@ -238,12 +248,14 @@ fn parse_iinf(data: &[u8], start: usize, end: usize, items: &mut HashMap<u32, It
                 let protection = r.u16()?;
                 let typ = r.fourcc()?;
                 items.insert(id, ItemInfo { typ, protection });
+                if items.len() > MAX_ITEMS as usize {
+                    return None;
+                }
             }
         }
+        // next_box는 be > pos(최소 8바이트 헤더)를 보장하므로 항상 전진한다. 빈 박스(be==bs)도
+        // 형제 박스 파싱을 끊지 않는다.
         pos = be;
-        if pos <= bs {
-            break;
-        }
     }
     Some(())
 }
@@ -266,13 +278,21 @@ fn parse_iloc(
     let base_offset_size = b >> 4;
     let index_size = if ver >= 1 { b & 0xF } else { 0 };
     let item_count = if ver < 2 { c.u16()? as u32 } else { c.u32()? };
+    if item_count > MAX_ITEMS {
+        return None;
+    }
+    let mut total_extents = 0usize;
     for _ in 0..item_count {
         let item_id = if ver < 2 { c.u16()? as u32 } else { c.u32()? };
         let construction_method = if ver >= 1 { (c.u16()? & 0xF) as u8 } else { 0 };
         let data_reference_index = c.u16()?;
         let base_offset = c.uint_sized(base_offset_size)?;
         let extent_count = c.u16()?;
-        let mut extents = Vec::with_capacity(extent_count as usize);
+        total_extents += extent_count as usize;
+        if extent_count > MAX_EXTENTS_PER_ITEM || total_extents > MAX_TOTAL_EXTENTS {
+            return None;
+        }
+        let mut extents = Vec::new();
         for _ in 0..extent_count {
             if index_size > 0 {
                 let _ = c.uint_sized(index_size)?;
@@ -307,15 +327,17 @@ fn parse_iref(
         let mut r = Cur::new(data, bs, be);
         let from = if ver == 0 { r.u16()? as u32 } else { r.u32()? };
         let count = r.u16()?;
-        let mut to = Vec::with_capacity(count as usize);
+        let mut to = Vec::new();
         for _ in 0..count {
             to.push(if ver == 0 { r.u16()? as u32 } else { r.u32()? });
         }
         refs.push((fourcc, from, to));
-        pos = be;
-        if pos <= bs {
-            break;
+        if refs.len() > MAX_REFS {
+            return None;
         }
+        // next_box는 be > pos(최소 8바이트 헤더)를 보장하므로 항상 전진한다. 빈 박스(be==bs)도
+        // 형제 박스 파싱을 끊지 않는다.
+        pos = be;
     }
     Some(())
 }
@@ -526,6 +548,59 @@ mod tests {
         assert!(idx.patch_pitm(&mut file, 2));
         let idx2 = index(&file).unwrap();
         assert_eq!(idx2.primary, 2);
+    }
+
+    /// iloc를 직접 조립한다: 항목 1개(id 2 = jpeg), `extents`개 조각이 모두 (0, 0) = "파일 끝까지".
+    fn heif_with_iloc(extent_count: u16, offset_size_nibbles: u8) -> Vec<u8> {
+        let mut infe = full(2, &[]);
+        infe.extend_from_slice(&2u16.to_be_bytes());
+        infe.extend_from_slice(&0u16.to_be_bytes());
+        infe.extend_from_slice(b"jpeg");
+        infe.push(0);
+        let mut iinf_body = full(0, &1u16.to_be_bytes());
+        iinf_body.extend_from_slice(&bx(b"infe", &infe));
+        let mut iloc_rest = vec![offset_size_nibbles, 0x00];
+        iloc_rest.extend_from_slice(&1u16.to_be_bytes()); // item_count
+        iloc_rest.extend_from_slice(&2u16.to_be_bytes()); // item id
+        iloc_rest.extend_from_slice(&0u16.to_be_bytes()); // data ref
+        iloc_rest.extend_from_slice(&extent_count.to_be_bytes());
+        let mut meta_body = full(0, &[]);
+        meta_body.extend_from_slice(&bx(b"pitm", &full(0, &2u16.to_be_bytes())));
+        meta_body.extend_from_slice(&bx(b"iinf", &iinf_body));
+        meta_body.extend_from_slice(&bx(b"iloc", &full(0, &iloc_rest)));
+        let mut file = bx(b"ftyp", b"heic\0\0\0\0mif1heic");
+        file.extend_from_slice(&bx(b"meta", &meta_body));
+        file.extend_from_slice(&bx(b"mdat", &[0xFF; 64]));
+        file
+    }
+
+    #[test]
+    fn hostile_extent_count_is_rejected_without_allocating() {
+        // offset/length 크기 0 → 조각 하나가 0바이트라 헤더 몇 바이트로 65535 조각을 선언할 수 있다.
+        // 상한에 걸려 색인을 포기해야 한다(수 GB 할당·반복 방지).
+        let file = heif_with_iloc(u16::MAX, 0x00);
+        assert!(index(&file).is_none());
+    }
+
+    #[test]
+    fn repeated_whole_file_extents_cannot_exceed_file_size() {
+        // 상한 안(40조각)이라도 모두 "파일 끝까지"면 출력이 파일×40이 된다 — None이어야 한다.
+        let file = heif_with_iloc(40, 0x00);
+        let idx = index(&file).expect("index within limits");
+        assert!(idx.item_bytes(&file, 2).is_none());
+    }
+
+    #[test]
+    fn empty_sibling_box_does_not_stop_parsing() {
+        // 헤더만 있는 빈 박스(size 8) 뒤의 형제 박스도 읽어야 한다.
+        let jpeg = tiny_jpeg();
+        let file = build_hvc1_with_jpeg_thumb(&jpeg);
+        let mut with_free = file[..24].to_vec(); // ftyp(24바이트) 뒤에
+        with_free.extend_from_slice(&bx(b"free", &[]));
+        with_free.extend_from_slice(&file[24..]);
+        // iloc 절대 오프셋이 8바이트 밀렸으니 색인만 확인한다.
+        let idx = index(&with_free).expect("parse past empty box");
+        assert!(idx.is_jpeg(2));
     }
 
     #[test]
