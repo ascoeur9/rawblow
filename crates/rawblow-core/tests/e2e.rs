@@ -625,3 +625,57 @@ fn e2e_jpeg_in_heif_applies_irot_and_imir() {
     assert_eq!((both.width, both.height), (32, 64));
     assert_eq!(red_corner(&both), (true, true));
 }
+
+#[test]
+fn e2e_split_subfolder_pair_scan_sidecar_transfer() {
+    // jpg/ · 원본/처럼 임의 이름의 하위 폴더에 나뉜 RAW+JPG도 한 항목으로 분류·전송된다.
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("shoot");
+    let jpg = src.join("jpg");
+    let raw = src.join("원본");
+    std::fs::create_dir_all(&jpg).unwrap();
+    std::fs::create_dir_all(&raw).unwrap();
+    for n in 4..=7 {
+        write_jpeg(&jpg.join(format!("DAZ_000{n}.JPG")), 64, 48);
+        std::fs::write(raw.join(format!("DAZ_000{n}.NEF")), b"raw-bytes").unwrap();
+    }
+
+    let mut entries = scan::scan_folder(&src, true, rawblow_core::SortOrder::Name);
+    assert_eq!(entries.len(), 4, "하위 폴더 분리 RAW+JPG는 번호당 한 항목");
+    for e in &entries {
+        assert!(e.shows_raw_badge(), "{} RAW+ 배지", e.stem);
+        assert_eq!(e.members_of_kind(Kind::Raw).len(), 1);
+        assert_eq!(e.display.extension().unwrap().to_ascii_uppercase(), "JPG");
+    }
+
+    entries[0].label = Label::Pick;
+    entries[1].label = Label::Reject;
+    sidecar::save(&src, &entries).unwrap();
+    let mut reloaded = scan::scan_folder(&src, true, rawblow_core::SortOrder::Name);
+    let session = sidecar::load(&src).expect("session");
+    sidecar::apply(&session, &mut reloaded, &src);
+    assert_eq!(reloaded[0].label, Label::Pick);
+    assert_eq!(reloaded[1].label, Label::Reject);
+
+    let dest = tmp.path().join("out");
+    let picks: Vec<Entry> = reloaded
+        .iter()
+        .filter(|e| e.label == Label::Pick)
+        .cloned()
+        .collect();
+    let report = transfer::execute(&transfer::TransferRequest {
+        entries: &picks,
+        labels: vec![Label::Pick],
+        stars: vec![],
+        tags: vec![],
+        action: transfer::Action::Copy,
+        companions: transfer::Companions::Both,
+        dest: dest.clone(),
+        split: transfer::TransferSplit::None,
+        conflict: transfer::ConflictPolicy::AutoIncrement,
+        rename: None,
+    });
+    assert_eq!(report.transferred, 2, "다른 폴더의 NEF도 동반 전송");
+    assert!(dest.join("DAZ_0004.JPG").exists());
+    assert!(dest.join("DAZ_0004.NEF").exists());
+}
