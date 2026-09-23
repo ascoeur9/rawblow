@@ -164,7 +164,8 @@ pub(super) fn build_cull_note(
 pub(super) fn cull_fact_text(lang: Lang, f: &CullFact) -> String {
     use rawblow_core::quality::CheckKind;
     let f2 = |v: f32| format!("{v:.2}");
-    let f1 = |v: f32| format!("{v:.1}");
+    // 반올림하면 0이 되는 작은 음수가 "-0.0°"로 찍히지 않게 +0.0을 더한다.
+    let f1 = |v: f32| format!("{:.1}", (v * 10.0).round() / 10.0 + 0.0);
     match *f {
         CullFact::Check(chk) => {
             let (a, b) = if chk.kind == CheckKind::Tilt { (f1(chk.value), f1(chk.limit)) } else { (f2(chk.value), f2(chk.limit)) };
@@ -2433,5 +2434,12 @@ mod tests {
         assert!(super::af_focus_regions(&none, 1).is_empty());
         let one = AfInfo { points: vec![pt(false), pt(true)], source: "test" };
         assert_eq!(super::af_focus_regions(&one, 1).len(), 1);
+    }
+    #[test]
+    fn tilt_text_never_shows_negative_zero() {
+        use rawblow_core::config::Lang;
+        use rawblow_core::quality::{CheckKind, CriterionCheck};
+        let f = super::CullFact::Check(CriterionCheck { kind: CheckKind::Tilt, value: -0.04, limit: 3.0, fail: false });
+        assert_eq!(super::cull_fact_text(Lang::Ko, &f), "기울기 0.0° (허용 3.0°)");
     }
 }

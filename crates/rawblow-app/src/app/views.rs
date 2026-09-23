@@ -710,7 +710,12 @@ impl RawBlowApp {
         };
         self.photo_view(ui, rect, real);
         if !self.has_modal() {
-            let suffix = if !self.full_raw {
+            // 본 이미지 디코딩이 끝내 실패했는데 썸네일만 있으면, 확대된 썸네일이 사진처럼 보이지 않게
+            // 알린다(#114 — 본 화면을 작은 썸네일로 조용히 대체하지 않는다).
+            let thumb_only = !self.cache.contains(real) && self.thumbs.contains(real) && self.decode_dead(real);
+            let suffix = if thumb_only {
+                tr(self.lang, "썸네일 · 본 이미지 열기 실패")
+            } else if !self.full_raw {
                 "FIT · sRGB"
             } else if self.orig_fallback.contains(&real) {
                 tr(self.lang, "PREVIEW · 원본 없음")
@@ -718,6 +723,14 @@ impl RawBlowApp {
                 "ORIG · sRGB"
             };
             self.paint_hud(ui, rect, real, suffix);
+            if thumb_only {
+                let msg = tr(self.lang, "⚠ 본 이미지를 열 수 없어 썸네일을 확대해 보여 주고 있습니다");
+                let pos = Pos2::new(rect.center().x, rect.top() + 28.0);
+                let galley = ui.painter().layout_no_wrap(msg.to_string(), mono(12.0), theme::WARN);
+                let bg = Rect::from_center_size(pos, galley.size() + Vec2::new(24.0, 12.0));
+                ui.painter().rect_filled(bg, Rounding::same(6.0), Color32::from_black_alpha(200));
+                ui.painter().galley(bg.center() - galley.size() / 2.0, galley, theme::WARN);
+            }
             self.ui_map_overlay(ui, rect, real);
         }
     }

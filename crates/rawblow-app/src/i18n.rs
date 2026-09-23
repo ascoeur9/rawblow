@@ -191,6 +191,11 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "이 파일을 열 수 없습니다" => ("Can't open this file", "このファイルを開けません"), // #64
         "파일 전송" => ("Transfer Files", "ファイル転送"),
         "PREVIEW · 원본 없음" => ("PREVIEW · no original", "PREVIEW · 原寸なし"),
+        "썸네일 · 본 이미지 열기 실패" => ("THUMBNAIL · image failed to open", "サムネイル · 本画像を開けません"),
+        "⚠ 본 이미지를 열 수 없어 썸네일을 확대해 보여 주고 있습니다" => (
+            "⚠ Couldn't open the image — showing an enlarged thumbnail",
+            "⚠ 本画像を開けないため、サムネイルを拡大して表示しています",
+        ),
         "원본 해상도를 못 구해 프리뷰로 표시합니다" => (
             "Couldn't get original resolution — showing preview",
             "原寸解像度が取れずプレビューで表示します",
@@ -904,6 +909,8 @@ mod tests {
             "폴더 스캔 중…",
             "원본 해상도를 못 구해 프리뷰로 표시합니다",
             "PREVIEW · 원본 없음",
+            "썸네일 · 본 이미지 열기 실패",
+            "⚠ 본 이미지를 열 수 없어 썸네일을 확대해 보여 주고 있습니다",
         ] {
             assert_ne!(tr(Lang::En, ko), ko, "En 번역 누락: {ko}");
             assert_ne!(tr(Lang::Ja, ko), ko, "Ja 번역 누락: {ko}");
