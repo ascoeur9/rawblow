@@ -1684,7 +1684,10 @@ mod tests {
         );
         let sections: Vec<egui::Rect> = painted
             .iter()
-            .filter(|(f, r)| *f == SETTINGS_SECTION_FILL && r.width() > 200.0)
+            // 상단 바(settings_top, 52px)도 BG2로 칠해 창 전체 폭이다 — 카드가 아니므로 제외.
+            .filter(|(f, r)| {
+                *f == SETTINGS_SECTION_FILL && r.width() > 200.0 && r.top() >= 52.0
+            })
             .map(|(_, r)| *r)
             .collect();
         assert!(!sections.is_empty(), "섹션 카드가 그려지지 않았다");
