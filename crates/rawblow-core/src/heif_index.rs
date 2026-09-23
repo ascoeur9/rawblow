@@ -12,6 +12,16 @@ const MAX_ITEMS: u32 = 4096;
 const MAX_EXTENTS_PER_ITEM: u16 = 64;
 const MAX_TOTAL_EXTENTS: usize = 16 * 1024;
 const MAX_REFS: usize = 4096;
+const MAX_PROPS: usize = 4096;
+const MAX_ASSOC_PER_ITEM: u8 = 64;
+
+/// HEIF 변환 속성(표시 전에 적용). `irot`는 반시계 90° 단위, `imir`는 축(0=세로축 → 좌우 반전,
+/// 1=가로축 → 상하 반전). ipma에 나열된 순서대로 적용한다(ISO/IEC 23008-12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Transform {
+    RotCcw(u8),
+    Mirror(u8),
+}
 
 #[derive(Clone, Debug)]
 struct ItemLoc {
@@ -38,6 +48,8 @@ pub struct HeifIndex {
     idat: Option<(usize, usize)>,
     pub jpeg_ids: Vec<u32>,
     pub thumb_ids: Vec<u32>,
+    /// 항목별 변환 속성(ipma 순서). 없으면 회전 없음.
+    transforms: HashMap<u32, Vec<Transform>>,
 }
 
 impl HeifIndex {
@@ -45,6 +57,12 @@ impl HeifIndex {
         self.items
             .get(&id)
             .is_some_and(|i| i.protection == 0 && (i.typ == *b"jpeg" || i.typ == *b"jpg "))
+    }
+
+    /// 항목의 irot/imir를 합성한 EXIF Orientation(1..8). `decode_jpeg_scaled`의 orient로 넘기면
+    /// heif-oxide가 HEVC에 해 주는 것과 같은 방향으로 선다.
+    pub fn exif_orientation(&self, id: u32) -> u16 {
+        self.transforms.get(&id).map(|t| compose_to_exif(t)).unwrap_or(1)
     }
 
     pub fn is_hevc_image(&self, id: u32) -> bool {
@@ -127,6 +145,7 @@ pub fn index(data: &[u8]) -> Option<HeifIndex> {
     let mut locations: HashMap<u32, ItemLoc> = HashMap::new();
     let mut idat = None;
     let mut refs: Vec<([u8; 4], u32, Vec<u32>)> = Vec::new();
+    let mut transforms: HashMap<u32, Vec<Transform>> = HashMap::new();
 
     let mut pos = 0usize;
     while let Some((_, fourcc, bs, be)) = next_box(data, pos, data.len()) {
@@ -146,6 +165,7 @@ pub fn index(data: &[u8]) -> Option<HeifIndex> {
                 &mut locations,
                 &mut idat,
                 &mut refs,
+                &mut transforms,
             )?;
         }
         // next_box는 be > pos(최소 8바이트 헤더)를 보장하므로 항상 전진한다. 빈 박스(be==bs)도
@@ -188,6 +208,7 @@ pub fn index(data: &[u8]) -> Option<HeifIndex> {
         idat,
         jpeg_ids,
         thumb_ids,
+        transforms,
     })
 }
 
@@ -204,6 +225,7 @@ fn parse_meta_children(
     locations: &mut HashMap<u32, ItemLoc>,
     idat: &mut Option<(usize, usize)>,
     refs: &mut Vec<([u8; 4], u32, Vec<u32>)>,
+    transforms: &mut HashMap<u32, Vec<Transform>>,
 ) -> Option<()> {
     let mut pos = start;
     while let Some((_, fourcc, bs, be)) = next_box(data, pos, end) {
@@ -225,6 +247,12 @@ fn parse_meta_children(
             b"iloc" => parse_iloc(data, bs, be, locations)?,
             b"iref" => parse_iref(data, bs, be, refs)?,
             b"idat" => *idat = Some((bs, be)),
+            // 속성은 회전 표시용 부가정보 — 깨져 있어도 색인 자체는 살린다(회전 없음으로).
+            b"iprp" => {
+                if let Some(t) = parse_iprp(data, bs, be) {
+                    *transforms = t;
+                }
+            }
             _ => {}
         }
         // next_box는 be > pos(최소 8바이트 헤더)를 보장하므로 항상 전진한다. 빈 박스(be==bs)도
@@ -340,6 +368,127 @@ fn parse_iref(
         pos = be;
     }
     Some(())
+}
+
+/// `iprp` → `ipco`(속성 목록, 1부터 번호) + `ipma`(항목 → 속성 번호들)에서 항목별 변환만 뽑는다.
+fn parse_iprp(data: &[u8], start: usize, end: usize) -> Option<HashMap<u32, Vec<Transform>>> {
+    let mut props: Vec<Option<Transform>> = Vec::new();
+    let mut assoc: Vec<(u32, Vec<u16>)> = Vec::new();
+    let mut pos = start;
+    while let Some((_, fourcc, bs, be)) = next_box(data, pos, end) {
+        match &fourcc {
+            b"ipco" => {
+                let mut p = bs;
+                while let Some((_, pc, pbs, pbe)) = next_box(data, p, be) {
+                    let t = match &pc {
+                        b"irot" => data.get(pbs).map(|b| Transform::RotCcw(b & 3)),
+                        b"imir" => data.get(pbs).map(|b| Transform::Mirror(b & 1)),
+                        _ => None,
+                    };
+                    props.push(t);
+                    if props.len() > MAX_PROPS {
+                        return None;
+                    }
+                    p = pbe;
+                }
+            }
+            b"ipma" => {
+                let mut c = Cur::new(data, bs, be);
+                let ver = c.u8()?;
+                let flags = u32::from_be_bytes([0, c.u8()?, c.u8()?, c.u8()?]);
+                let count = c.u32()?;
+                if count > MAX_ITEMS {
+                    return None;
+                }
+                for _ in 0..count {
+                    let id = if ver < 1 { c.u16()? as u32 } else { c.u32()? };
+                    let n = c.u8()?;
+                    if n > MAX_ASSOC_PER_ITEM {
+                        return None;
+                    }
+                    let mut idx = Vec::new();
+                    for _ in 0..n {
+                        let v = if flags & 1 != 0 { c.u16()? & 0x7FFF } else { (c.u8()? & 0x7F) as u16 };
+                        idx.push(v);
+                    }
+                    assoc.push((id, idx));
+                }
+            }
+            _ => {}
+        }
+        pos = be;
+    }
+    let mut out: HashMap<u32, Vec<Transform>> = HashMap::new();
+    for (id, idx) in assoc {
+        let t: Vec<Transform> = idx
+            .iter()
+            .filter_map(|&i| props.get((i as usize).checked_sub(1)?).copied().flatten())
+            .collect();
+        if !t.is_empty() {
+            out.insert(id, t);
+        }
+    }
+    Some(out)
+}
+
+/// 변환 목록을 EXIF Orientation 하나로 합성한다. 3×2 표식 격자에 변환을 차례로 적용한 결과를
+/// EXIF 8가지(decode.rs `apply_orientation`과 같은 정의)와 대조 — 합성 규칙을 손으로 외우지 않는다.
+pub fn compose_to_exif(ts: &[Transform]) -> u16 {
+    type G = (usize, usize, Vec<u8>); // (w, h, row-major)
+    fn at(g: &G, x: usize, y: usize) -> u8 {
+        g.2[y * g.0 + x]
+    }
+    fn rot_cw(g: &G) -> G {
+        let (w, h) = (g.0, g.1);
+        let mut v = Vec::with_capacity(w * h);
+        for y in 0..w {
+            for x in 0..h {
+                v.push(at(g, y, h - 1 - x));
+            }
+        }
+        (h, w, v)
+    }
+    fn fliph(g: &G) -> G {
+        let mut v = Vec::with_capacity(g.2.len());
+        for y in 0..g.1 {
+            for x in 0..g.0 {
+                v.push(at(g, g.0 - 1 - x, y));
+            }
+        }
+        (g.0, g.1, v)
+    }
+    fn flipv(g: &G) -> G {
+        let mut v = Vec::with_capacity(g.2.len());
+        for y in 0..g.1 {
+            for x in 0..g.0 {
+                v.push(at(g, x, g.1 - 1 - y));
+            }
+        }
+        (g.0, g.1, v)
+    }
+    fn exif(g: &G, o: u16) -> G {
+        match o {
+            2 => fliph(g),
+            3 => rot_cw(&rot_cw(g)),
+            4 => flipv(g),
+            5 => fliph(&rot_cw(g)),
+            6 => rot_cw(g),
+            7 => fliph(&rot_cw(&rot_cw(&rot_cw(g)))),
+            8 => rot_cw(&rot_cw(&rot_cw(g))),
+            _ => g.clone(),
+        }
+    }
+    let base: G = (3, 2, vec![0, 1, 2, 3, 4, 5]);
+    let mut g = base.clone();
+    for t in ts {
+        g = match *t {
+            // 반시계 k번 = 시계 (4-k)번.
+            Transform::RotCcw(k) => (0..(4 - k as usize % 4) % 4).fold(g, |acc, _| rot_cw(&acc)),
+            Transform::Mirror(0) => fliph(&g),
+            Transform::Mirror(_) => flipv(&g),
+        };
+    }
+    (1..=8).find(|&o| exif(&base, o) == g).unwrap_or(1)
 }
 
 fn next_box(data: &[u8], pos: usize, limit: usize) -> Option<(usize, [u8; 4], usize, usize)> {
@@ -601,6 +750,21 @@ mod tests {
         // iloc 절대 오프셋이 8바이트 밀렸으니 색인만 확인한다.
         let idx = index(&with_free).expect("parse past empty box");
         assert!(idx.is_jpeg(2));
+    }
+
+    #[test]
+    fn compose_to_exif_matches_known_cases() {
+        use Transform::*;
+        assert_eq!(compose_to_exif(&[]), 1);
+        assert_eq!(compose_to_exif(&[RotCcw(0)]), 1);
+        assert_eq!(compose_to_exif(&[RotCcw(1)]), 8, "반시계 90 = EXIF 8");
+        assert_eq!(compose_to_exif(&[RotCcw(2)]), 3);
+        assert_eq!(compose_to_exif(&[RotCcw(3)]), 6, "반시계 270 = 시계 90 = EXIF 6");
+        assert_eq!(compose_to_exif(&[Mirror(0)]), 2);
+        assert_eq!(compose_to_exif(&[Mirror(1)]), 4);
+        // 회전 후 좌우 반전: 시계 90 → 좌우 = EXIF 5(transpose 계열)
+        assert_eq!(compose_to_exif(&[RotCcw(3), Mirror(0)]), 5);
+        assert_eq!(compose_to_exif(&[RotCcw(1), Mirror(0)]), 7);
     }
 
     #[test]

@@ -85,7 +85,8 @@ pub(crate) fn decode_bytes(
     Ok(img)
 }
 
-/// 항목 하나를 JPEG로 디코딩(SOI 확인). 이 경로는 컨테이너 `irot`를 적용하지 않는다.
+/// 항목 하나를 JPEG로 디코딩(SOI 확인). 컨테이너의 `irot`/`imir`를 적용해 HEVC 경로
+/// (heif-oxide가 적용)와 같은 방향으로 세운다.
 fn jpeg_item(
     bytes: &[u8],
     idx: &crate::heif_index::HeifIndex,
@@ -96,7 +97,7 @@ fn jpeg_item(
     if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
         return None;
     }
-    crate::decode::decode_jpeg_scaled(&data, 1, max_edge).ok()
+    crate::decode::decode_jpeg_scaled(&data, idx.exif_orientation(id), max_edge).ok()
 }
 
 fn jpeg_thumb_items(

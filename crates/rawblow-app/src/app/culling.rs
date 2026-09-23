@@ -8,7 +8,9 @@ use super::*;
 /// 2: CR3(ISO BMFF) Orientation 검출 — 세로 컷이 이제 바로 선 채로 채점된다. dhash는
 ///    회전 불변이 아니고(cull_ext.rs `dhash`), 얼굴·미적·CLIP 모델 입력도 정사각 리사이즈라
 ///    회전 전후 점수가 달라진다 → 한 폴더에 옛 점수와 새 점수가 섞이는 것을 막는다.
-const CULL_SIG_EPOCH: u32 = 2;
+/// 3: AF 초점 모드에서 합초 측거점이 없는 사진의 초점이 0으로 캐시되던 버그 수정 — 전체 프레임
+///    초점으로 폴백한다. 옛 캐시의 0점 보고서를 버려야 수동 초점 사진이 다시 제대로 채점된다.
+const CULL_SIG_EPOCH: u32 = 3;
 
 /// AI 컬링(#50) 백그라운드 채점 완료 메시지. 진행률은 공유 원자 카운터(`AiCullJob::progress`)로
 /// 전달하므로(워커가 여러 개라 메시지 순서가 뒤섞이지 않게), 채널은 최종 결과만 보낸다.
@@ -2174,21 +2176,26 @@ pub(super) fn cull_decode_cv(
         criteria.use_tilt,
     );
     if use_af {
-        if let Some(af) = rawblow_core::af::parse_af(path) {
-            let orient = rawblow_core::meta::orientation(path);
-            let regions: Vec<(f32, f32, f32, f32)> = af
-                .points
-                .iter()
-                .filter(|p| p.in_focus)
-                .map(|p| {
-                    let (cx, cy, w, h) = af_display_coords(p, orient);
-                    (cx as f32, cy as f32, w as f32, h as f32)
-                })
-                .collect();
-            if !regions.is_empty() {
-                q.focus = rawblow_core::quality::focus_report_regions(&img, &regions);
-            }
-        }
+        let regions: Vec<(f32, f32, f32, f32)> = rawblow_core::af::parse_af(path)
+            .map(|af| {
+                let orient = rawblow_core::meta::orientation(path);
+                af.points
+                    .iter()
+                    .filter(|p| p.in_focus)
+                    .map(|p| {
+                        let (cx, cy, w, h) = af_display_coords(p, orient);
+                        (cx as f32, cy as f32, w as f32, h as f32)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        q.focus = if regions.is_empty() {
+            // 합초 측거점 정보가 없으면(수동 초점·MF 렌즈·AF 기록 없는 바디) 전체 프레임으로 잰다.
+            // 예전엔 초점 점수가 0으로 남아, 초점이 맞은 수동 초점 사진까지 전부 "초점 미달"이었다.
+            rawblow_core::quality::focus_report(&img)
+        } else {
+            rawblow_core::quality::focus_report_regions(&img, &regions)
+        };
     }
     let mut cv_only = criteria;
     cv_only.use_aesthetic = false;
@@ -2390,5 +2397,23 @@ mod tests {
         // 간략 모드는 참고 사유를 숨긴다.
         assert_eq!(cull_note_lines(Lang::Ko, &good, false).len(), 1);
         assert_eq!(cull_note_lines(Lang::Ko, &good, true).len(), 1 + good.secondary.len());
+    }
+    #[test]
+    fn af_mode_without_af_points_falls_back_to_whole_frame_focus() {
+        // 수동 초점·AF 기록 없는 사진: AF 측거점 모드여도 초점이 0점이면 안 된다(초점 맞은 MF 사진이
+        // 전부 탈락하던 버그). 전체 프레임 초점과 같은 값이어야 한다.
+        let dir = std::env::temp_dir().join(format!("rb_af_fallback_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("mf_sharp.jpg");
+        let img = image::RgbImage::from_fn(640, 480, |x, y| {
+            if (x / 4 + y / 4) % 2 == 0 { image::Rgb([240, 240, 240]) } else { image::Rgb([15, 15, 15]) }
+        });
+        img.save(&p).unwrap();
+        let crit = rawblow_core::quality::CullCriteria::default();
+        let (_, af, _) = super::cull_decode_cv(&p, crit, true, 1024).expect("decode");
+        let (_, whole, _) = super::cull_decode_cv(&p, crit, false, 1024).expect("decode");
+        assert!(af.focus.sharpness > 0.0, "AF 정보 없으면 0점이 되면 안 됨");
+        assert_eq!(af.focus, whole.focus);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

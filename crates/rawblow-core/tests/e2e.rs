@@ -49,6 +49,11 @@ fn heif_hvc1_with_jpeg_thumb(jpeg: &[u8]) -> Vec<u8> {
 
 /// `primary_id`가 1이면 hvc1(쓰레기)이 본 이미지, 2면 JPEG-in-HEIF.
 fn heif_with_primary(jpeg: &[u8], primary_id: u16) -> Vec<u8> {
+    heif_with_primary_props(jpeg, primary_id, &[])
+}
+
+/// 항목 2(jpeg)에 변환 속성(`irot`/`imir` 박스)을 ipma 순서대로 붙인다.
+fn heif_with_primary_props(jpeg: &[u8], primary_id: u16, props: &[Vec<u8>]) -> Vec<u8> {
     let garbage = b"not-hevc";
     let mut infe1 = full(2, &[]);
     infe1.extend_from_slice(&1u16.to_be_bytes());
@@ -95,6 +100,18 @@ fn heif_with_primary(jpeg: &[u8], primary_id: u16) -> Vec<u8> {
     let iloc_at = meta_body.len();
     meta_body.extend_from_slice(&iloc);
     meta_body.extend_from_slice(&iref);
+    if !props.is_empty() {
+        let ipco = bx(b"ipco", &props.concat());
+        let mut ipma = full(0, &1u32.to_be_bytes());
+        ipma.extend_from_slice(&2u16.to_be_bytes());
+        ipma.push(props.len() as u8);
+        for i in 1..=props.len() as u8 {
+            ipma.push(0x80 | i); // essential + 1부터 번호
+        }
+        let mut iprp = ipco;
+        iprp.extend_from_slice(&bx(b"ipma", &ipma));
+        meta_body.extend_from_slice(&bx(b"iprp", &iprp));
+    }
     let meta = bx(b"meta", &meta_body);
     let ftyp = bx(b"ftyp", b"heic\0\0\0\0mif1heic");
     let ftyp_len = ftyp.len();
@@ -547,4 +564,62 @@ fn e2e_group_explain_matches_group_verdicts() {
     assert_eq!(explained[1].burst.map(|r| r.rank), Some(1));
     assert_eq!(explained[3].burst, None, "혼자인 컷은 그룹 근거 없음");
     assert!(!explained[4].included);
+}
+
+/// 좌상단만 빨간 합성 JPEG(w×h). 방향 검사용.
+fn marked_jpeg(w: u32, h: u32) -> Vec<u8> {
+    let buf = ImageBuffer::from_fn(w, h, |x, y| {
+        if x < w / 4 && y < h / 4 { Rgb([250, 10, 10]) } else { Rgb([10, 10, 250]) }
+    });
+    let mut out = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(buf).write_to(&mut out, image::ImageFormat::Jpeg).unwrap();
+    out.into_inner()
+}
+
+/// 디코드 결과에서 빨간 표식이 있는 모서리: (오른쪽?, 아래?).
+fn red_corner(img: &decode::DecodedImage) -> (bool, bool) {
+    let px = |x: u32, y: u32| {
+        let i = ((y * img.width + x) * 4) as usize;
+        img.rgba[i] > 128 && img.rgba[i + 2] < 128
+    };
+    let (w, h) = (img.width, img.height);
+    let corners = [(false, false, 1, 1), (true, false, w - 2, 1), (false, true, 1, h - 2), (true, true, w - 2, h - 2)];
+    let hits: Vec<(bool, bool)> = corners.iter().filter(|c| px(c.2, c.3)).map(|c| (c.0, c.1)).collect();
+    assert_eq!(hits.len(), 1, "표식 모서리가 하나여야 함: {hits:?}");
+    hits[0]
+}
+
+#[test]
+fn e2e_jpeg_in_heif_applies_irot_and_imir() {
+    // JPEG primary는 heif-oxide를 안 거치므로 컨테이너 회전을 직접 적용해야 한다(세로 사진이 눕지 않게).
+    let jpeg = marked_jpeg(64, 32);
+    let dir = tempfile::tempdir().unwrap();
+    let dec = |name: &str, props: &[Vec<u8>]| {
+        let p = dir.path().join(name);
+        std::fs::write(&p, heif_with_primary_props(&jpeg, 2, props)).unwrap();
+        decode::decode_file(&p, decode::DecodeOptions { full_raw: true, max_edge: Some(1920) }).expect(name)
+    };
+    let none = dec("none.heic", &[]);
+    assert_eq!((none.width, none.height), (64, 32));
+    assert_eq!(red_corner(&none), (false, false));
+
+    // irot angle=1: 반시계 90° → 세로로 서고, 좌상단 표식은 좌하단으로.
+    let ccw = dec("ccw.heic", &[bx(b"irot", &[1])]);
+    assert_eq!((ccw.width, ccw.height), (32, 64));
+    assert_eq!(red_corner(&ccw), (false, true));
+
+    // irot angle=3: 시계 90° → 표식은 우상단으로.
+    let cw = dec("cw.heic", &[bx(b"irot", &[3])]);
+    assert_eq!((cw.width, cw.height), (32, 64));
+    assert_eq!(red_corner(&cw), (true, false));
+
+    // imir axis=0(세로축): 좌우 반전 → 우상단.
+    let mir = dec("mir.heic", &[bx(b"imir", &[0])]);
+    assert_eq!((mir.width, mir.height), (64, 32));
+    assert_eq!(red_corner(&mir), (true, false));
+
+    // 순서: 반시계 90 후 좌우 반전 → 좌하단이 우하단으로.
+    let both = dec("both.heic", &[bx(b"irot", &[1]), bx(b"imir", &[0])]);
+    assert_eq!((both.width, both.height), (32, 64));
+    assert_eq!(red_corner(&both), (true, true));
 }
