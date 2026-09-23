@@ -11,9 +11,8 @@ use walkdir::WalkDir;
 /// 페어링 키는 `(부모 디렉토리, 소문자 stem)` — 다른 하위 폴더의 동일 번호는
 /// 원칙적으로 별개 항목이다. RAW+JPG/HEIC가 같은 폴더·같은 stem이면 한 항목.
 ///
-/// 예외(폴더 분리 동반 페어): 같은 stem이 **정확히 두 폴더**에 있고 한쪽은 RAW만,
-/// 다른쪽은 이미지만이며, 폴더가 직계(루트+하위)이거나 형제 `RAW/`·`JPG/`일 때만
-/// 한 항목으로 합친다(#107). 서로 다른 날짜 루트의 번호 충돌은 별개 항목.
+/// 예외(폴더 분리 동반 페어): 같은 stem이 스캔 범위 안 여러 폴더에 있고 한쪽은 RAW만,
+/// 다른쪽은 이미지만이면 폴더 이름·위치와 무관하게 한 항목으로 합친다(`jpg/`·`원본/` 등).
 pub fn scan_folder(folder: &Path, recursive: bool, sort: SortOrder) -> Vec<Entry> {
     let max_depth = if recursive { usize::MAX } else { 1 };
     let mut groups: BTreeMap<(PathBuf, String), Vec<PathBuf>> = BTreeMap::new();
@@ -40,9 +39,8 @@ pub fn scan_folder(folder: &Path, recursive: bool, sort: SortOrder) -> Vec<Entry
         }
     }
 
-    // 폴더 분리 동반 페어 병합: stem 기준으로 재묶고, RAW-only 집합과 Image-only 집합이
-    // 같은 촬영으로 볼 수 있는 폴더 관계면 합친다(#107 #97). RAW+HEIC+JPG처럼 폴더가
-    // 셋이어도(RAW/ · JPG/ · HEIC/) 연결된 집합은 한 항목이 된다.
+    // 폴더 분리 동반 페어 병합: stem 기준으로 재묶고, RAW-only 집합과 Image-only 집합을
+    // 합친다(#97). RAW+HEIC+JPG처럼 폴더가 셋이어도(RAW/ · JPG/ · HEIC/) 한 항목이 된다.
     let mut by_stem: BTreeMap<String, Vec<(PathBuf, Vec<PathBuf>)>> = BTreeMap::new();
     for ((parent, stem_l), members) in groups {
         by_stem.entry(stem_l).or_default().push((parent, members));
@@ -73,7 +71,7 @@ fn only_kind(ms: &[PathBuf], k: Kind) -> bool {
     !ms.is_empty() && ms.iter().all(|p| kind_of(p) == Some(k))
 }
 
-/// RAW-only 집합과 Image-only 집합을 폴더 관계가 있으면 한 덩어리로 합친다.
+/// RAW-only 집합과 Image-only 집합을 폴더와 무관하게 한 덩어리로 합친다.
 /// 혼합 집합(이미 한 폴더에 RAW+이미지)은 그대로 둔다.
 fn merge_related_sets(sets: Vec<(PathBuf, Vec<PathBuf>)>) -> Vec<Vec<PathBuf>> {
     let n = sets.len();
@@ -86,7 +84,7 @@ fn merge_related_sets(sets: Vec<(PathBuf, Vec<PathBuf>)>) -> Vec<Vec<PathBuf>> {
             let (ri, ii) = (only_kind(&sets[i].1, Kind::Raw), only_kind(&sets[i].1, Kind::Image));
             let (rj, ij) = (only_kind(&sets[j].1, Kind::Raw), only_kind(&sets[j].1, Kind::Image));
             let complementary = (ri && ij) || (ii && rj);
-            if complementary && split_pair_related(&sets[i].0, &sets[j].0) {
+            if complementary {
                 let (a, b) = (ufind(&mut parent, i), ufind(&mut parent, j));
                 if a != b {
                     parent[a] = b;
@@ -108,38 +106,6 @@ fn ufind(p: &mut [usize], mut x: usize) -> usize {
         x = px;
     }
     x
-}
-
-/// 폴더 분리 RAW+이미지(JPG/HEIC)를 한 촬영으로 볼 수 있는지(#107 #97).
-/// 허용: 직계 부모, 또는 형제 폴더명이 raw vs jpg/heic, 또는 jpg vs heic.
-fn split_pair_related(a: &Path, b: &Path) -> bool {
-    if a == b {
-        return true;
-    }
-    if a.parent() == Some(b) || b.parent() == Some(a) {
-        return true;
-    }
-    if a.parent() != b.parent() {
-        return false;
-    }
-    let name = |p: &Path| {
-        p.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase()
-    };
-    let (na, nb) = (name(a), name(b));
-    (is_raw_dir(&na) && is_image_dir(&nb))
-        || (is_image_dir(&na) && is_raw_dir(&nb))
-        || (is_image_dir(&na) && is_image_dir(&nb))
-}
-
-fn is_raw_dir(s: &str) -> bool {
-    s == "raw"
-}
-
-fn is_image_dir(s: &str) -> bool {
-    matches!(s, "jpg" | "jpeg" | "heic" | "heif" | "image" | "images")
 }
 
 /// 주어진 기준으로 항목을 정렬한다.
