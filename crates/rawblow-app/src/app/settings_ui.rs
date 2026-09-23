@@ -51,7 +51,7 @@ const SETTINGS_DESC_FONT: f32 = 13.0;
 fn settings_row_desc(ui: &mut egui::Ui, text: &str) {
     ui.add_space(-10.0);
     ui.horizontal(|ui| {
-        ui.add_space(SICON + SICON_GAP - ui.spacing().item_spacing.x);
+        ui.add_space(SICON + SICON_GAP);
         ui.add(
             egui::Label::new(egui::RichText::new(text).font(prop(SETTINGS_DESC_FONT)).color(INK_HELP))
                 .wrap(),
@@ -367,11 +367,12 @@ fn settings_choice_block(
     ui.horizontal(|ui| {
         let (ir, _) = ui.allocate_exact_size(Vec2::splat(SICON), Sense::hover());
         draw_sicon(ui.painter(), ir, icon);
+        ui.add_space(SICON_GAP - ui.spacing().item_spacing.x);
         ui.label(egui::RichText::new(label).font(prop(SETTINGS_LABEL_FONT)).color(theme::INK2));
     });
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        ui.add_space(SICON + SICON_GAP - ui.spacing().item_spacing.x);
+        ui.add_space(SICON + SICON_GAP);
         ui.add(egui::Label::new(egui::RichText::new(desc).font(prop(SETTINGS_DESC_FONT)).color(INK_HELP)).wrap());
     });
     ui.add_space(8.0);
@@ -442,6 +443,7 @@ fn settings_identity(ui: &mut egui::Ui) {
         .rounding(10.0)
         .inner_margin(egui::Margin::symmetric(18.0, 16.0))
         .show(ui, |ui| {
+            ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing = Vec2::new(12.0, 6.0);
             ui.horizontal(|ui| {
                 let (mark, _) = ui.allocate_exact_size(Vec2::splat(52.0), Sense::hover());
@@ -533,26 +535,28 @@ fn settings_tag_name_row(
         Vec2::new(ui.available_width(), SETTINGS_ROW_H),
         Layout::left_to_right(Align::Center),
         |ui| {
-            let (dot, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
+            let (dot, _) = ui.allocate_exact_size(Vec2::splat(SICON), Sense::hover());
             ui.painter().circle_filled(
                 dot.center(),
                 7.0,
                 Color32::from_rgb(rgb[0], rgb[1], rgb[2]),
             );
-            ui.add_sized(
-                Vec2::new(NAME_COL, SETTINGS_ROW_H),
-                egui::Label::new(
-                    egui::RichText::new(default_name)
-                        .font(prop(SETTINGS_LABEL_FONT))
-                        .color(theme::INK2),
-                ),
+            ui.add_space(SICON_GAP - ui.spacing().item_spacing.x);
+            let (name, _) = ui.allocate_exact_size(Vec2::new(NAME_COL, SETTINGS_ROW_H), Sense::hover());
+            ui.painter().text(
+                Pos2::new(name.left(), name.center().y),
+                Align2::LEFT_CENTER,
+                default_name,
+                prop(SETTINGS_LABEL_FONT),
+                theme::INK2,
             );
             let rest = ui.available_width();
             ui.add_sized(
                 Vec2::new(rest.max(80.0), FIELD_H),
                 egui::TextEdit::singleline(value)
                     .hint_text(default_name)
-                    .font(prop(SETTINGS_LABEL_FONT)),
+                    .font(prop(SETTINGS_LABEL_FONT))
+                    .vertical_align(Align::Center),
             )
             .changed()
         },
@@ -909,7 +913,9 @@ impl RawBlowApp {
                         }
                         ui.horizontal(|ui| {
                             ui.set_min_height(SETTINGS_BTN_H);
-                            let rest = (ui.available_width() - 120.0).max(120.0);
+                            // TextEdit은 desired_width 바깥에 좌우 안쪽 여백을 더 그린다 — 버튼(128)과 합쳐 카드 폭을 넘지 않게.
+                            let pad = ui.spacing().button_padding.x * 2.0;
+                            let rest = (ui.available_width() - 128.0 - ui.spacing().item_spacing.x - pad).max(120.0);
                             let pictures = nfc_hangul(&config::pictures_dir().to_string_lossy());
                             if ui
                                 .add(
@@ -917,7 +923,8 @@ impl RawBlowApp {
                                         .font(mono(13.0))
                                         .desired_width(rest)
                                         .hint_text(pictures)
-                                        .min_size(Vec2::new(0.0, 32.0)),
+                                        .vertical_align(Align::Center)
+                                        .min_size(Vec2::new(0.0, SETTINGS_BTN_H)),
                                 )
                                 .changed()
                             {
