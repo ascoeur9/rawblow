@@ -97,6 +97,8 @@ struct Item {
     /// NEF처럼 EXIF width/height가 축소 썸네일(160x120)인 바디가 있어서다.
     /// EXIF와 같은 백그라운드 패스에서 한 번만 구한다([`rawblow_core::decode::orig_long_edge`]).
     orig_long: Option<u32>,
+    /// 마지막 AI 컬링의 판정 근거(#91). 결과 토스트를 닫아도 사진마다 HUD에서 다시 본다.
+    cull_note: Option<culling::CullNote>,
 }
 
 /// 우하단 토스트(#61) 심각도. 지속시간이 다르다: 정보는 짧게, 알림은 조금 길게, 오류는
@@ -214,6 +216,8 @@ pub struct RawBlowApp {
     pending_prefetch: std::collections::HashSet<usize>,   // 백그라운드 디스크 캐시 프리페치 중
     failed_preview: std::collections::HashSet<usize>,
     failed_thumb: std::collections::HashSet<usize>,
+    /// ORIG를 요청했으나 원본 해상도를 못 구해 프리뷰만 받은 항목(#109). 재요청 루프 방지.
+    orig_fallback: std::collections::HashSet<usize>,
     // 항목(real)별 디코딩 누적 실패 횟수(#64). decode_dead()가 3 이상을 영구 손상으로 간주.
     decode_fails: std::collections::HashMap<usize, u8>,
     histo: std::collections::HashMap<usize, Histo>,
@@ -412,6 +416,7 @@ impl RawBlowApp {
             pending_prefetch: std::collections::HashSet::new(),
             failed_preview: std::collections::HashSet::new(),
             failed_thumb: std::collections::HashSet::new(),
+            orig_fallback: std::collections::HashSet::new(),
             decode_fails: std::collections::HashMap::new(),
             histo: std::collections::HashMap::new(),
             generation: 0,
@@ -562,6 +567,7 @@ impl RawBlowApp {
             pending_prefetch: std::collections::HashSet::new(),
             failed_preview: std::collections::HashSet::new(),
             failed_thumb: std::collections::HashSet::new(),
+            orig_fallback: std::collections::HashSet::new(),
             decode_fails: std::collections::HashMap::new(),
             histo: std::collections::HashMap::new(),
             generation: 0,
@@ -672,6 +678,7 @@ impl RawBlowApp {
         self.pending_prefetch.clear();
         self.failed_preview.clear();
         self.failed_thumb.clear();
+        self.orig_fallback.clear();
         self.decode_fails.clear(); // real 인덱스가 재배정되므로 실패 카운터도 함께 리셋(#64).
         self.meta_inflight = false; // 이전 폴더 EXIF 읽기가 새 폴더 메타를 막지 않게(#105).
         self.undo_stack.clear(); // real 인덱스 재배정 → 되돌리기 스냅샷도 무효(#78).
@@ -716,6 +723,7 @@ impl RawBlowApp {
                     af_loaded: false,
                     orient: None,
                     orig_long: None,
+                    cull_note: None,
                 })
                 .collect();
             if let Some(session) = sidecar::load(&folder) {
@@ -901,6 +909,7 @@ impl RawBlowApp {
         self.pending_prefetch.clear();
         self.failed_preview.clear();
         self.failed_thumb.clear();
+        self.orig_fallback.clear();
         self.decode_fails.clear(); // real 인덱스가 재배정되므로 실패 카운터도 함께 리셋(#64).
         self.meta_inflight = false; // 이전 폴더 EXIF 읽기가 새 폴더 메타를 막지 않게(#105).
         self.undo_stack.clear(); // real 인덱스 재배정 → 되돌리기 스냅샷도 무효(#78).
@@ -1023,30 +1032,60 @@ impl RawBlowApp {
 
     /// 라벨 필터를 바꾸고, 인덱스를 새 목록 안에 두며 안 보이는 그리드 선택을 뺀다(#102).
     fn apply_label_filter(&mut self, filt: Filter) {
-        let old_real = self.current_real();
+        let keep = self.current_real();
         self.filter = filt;
+        self.relocate_after_filter(keep);
+    }
+
+    /// 별점 필터 변경(#102). 보던 사진이 새 목록에 있으면 그 자리를 유지한다.
+    fn apply_star_filter(&mut self, sf: StarFilter) {
+        let keep = self.current_real();
+        self.star_filter = sf;
+        self.relocate_after_filter(keep);
+    }
+
+    /// 색 태그 필터 변경(#102).
+    fn apply_tag_filter(&mut self, tf: TagFilter) {
+        let keep = self.current_real();
+        self.tag_filter = tf;
+        self.relocate_after_filter(keep);
+    }
+
+    /// 필터 세 축을 모두 기본값으로 되돌린다(#67). 보던 사진 위치는 유지한다(#102).
+    fn reset_filters(&mut self) {
+        let keep = self.current_real();
+        self.filter = Filter::All;
+        self.star_filter = StarFilter::Any;
+        self.tag_filter = TagFilter::Any;
+        self.relocate_after_filter(keep);
+    }
+
+    /// 필터 변경 후 인덱스를 새 목록 안에 두고(보던 사진이 남아 있으면 그 자리),
+    /// 화면에서 빠진 그리드 선택을 지운다(#102) — 안 보이는 사진에 일괄 분류가 새지 않게.
+    fn relocate_after_filter(&mut self, keep: Option<usize>) {
         let f = self.filtered();
-        self.index = old_real
-            .and_then(|r| f.iter().position(|&x| x == r))
-            .unwrap_or(0);
-        if !f.is_empty() {
-            self.index = self.index.min(f.len() - 1);
+        self.index = if f.is_empty() {
+            0
         } else {
-            self.index = 0;
-        }
-        self.selected.retain(|&r| f.contains(&r));
+            keep.and_then(|r| f.iter().position(|&x| x == r)).unwrap_or(0)
+        };
+        let vis: std::collections::HashSet<usize> = f.into_iter().collect();
+        self.selected.retain(|r| vis.contains(r));
         if self.selected.is_empty() {
             self.sel_anchor = None;
         }
     }
 
-    /// 필터 세 축을 모두 기본값으로 되돌린다(#67). 레일의 개별 필터 클릭 핸들러와 동일하게
-    /// index도 0으로 리셋한다.
-    fn reset_filters(&mut self) {
-        self.filter = Filter::All;
-        self.star_filter = StarFilter::Any;
-        self.tag_filter = TagFilter::Any;
-        self.index = 0;
+    /// 그리드 다중 선택 중 **지금 필터에 보이는** 항목(#102). 일괄 분류로 필터에서 빠진 항목이
+    /// 선택에 남아 있어도, 다음 일괄 분류가 안 보이는 사진을 건드리지 않게 한다.
+    fn visible_selected(&self) -> Vec<usize> {
+        if self.view != ViewMode::Grid || self.selected.is_empty() {
+            return Vec::new();
+        }
+        let vis: std::collections::HashSet<usize> = self.filtered().into_iter().collect();
+        let mut v: Vec<usize> = self.selected.iter().copied().filter(|r| vis.contains(r)).collect();
+        v.sort_unstable();
+        v
     }
 
     fn counts(&self) -> (usize, usize, usize, usize) {
@@ -1082,6 +1121,7 @@ impl RawBlowApp {
         self.decode_fails.remove(&real);
         self.failed_preview.remove(&real);
         self.failed_thumb.remove(&real);
+        self.orig_fallback.remove(&real);
         let cur_edge = if self.full_raw { Some(ORIG_EDGE) } else { Some(PREVIEW_EDGE) };
         self.request_preview(real, cur_edge, self.full_raw, true);
         self.request_thumb(real, true);
@@ -1177,8 +1217,8 @@ impl RawBlowApp {
             return;
         }
         // 그리드에서 다중 선택 중이면 선택한 항목 전부에 일괄 적용(토글·자동진행 없음).
-        if self.view == ViewMode::Grid && !self.selected.is_empty() {
-            let targets: Vec<usize> = self.selected.iter().copied().collect();
+        let targets = self.visible_selected();
+        if !targets.is_empty() {
             self.push_undo(&targets); // #78
             for real in targets {
                 if let Some(it) = self.items.get_mut(real) {
@@ -1215,8 +1255,8 @@ impl RawBlowApp {
         }
         let stars = stars.min(5);
         // 그리드 다중 선택 → 선택 전부에 그대로 적용(토글·자동진행 없음).
-        if self.view == ViewMode::Grid && !self.selected.is_empty() {
-            let targets: Vec<usize> = self.selected.iter().copied().collect();
+        let targets = self.visible_selected();
+        if !targets.is_empty() {
             self.push_undo(&targets); // #78
             for real in targets {
                 if let Some(it) = self.items.get_mut(real) {
@@ -1254,8 +1294,8 @@ impl RawBlowApp {
         if self.cull_axis_locked(AiCullTarget::Tag) {
             return;
         }
-        if self.view == ViewMode::Grid && !self.selected.is_empty() {
-            let targets: Vec<usize> = self.selected.iter().copied().collect();
+        let targets = self.visible_selected();
+        if !targets.is_empty() {
             self.push_undo(&targets); // #78
             for real in targets {
                 if let Some(it) = self.items.get_mut(real) {

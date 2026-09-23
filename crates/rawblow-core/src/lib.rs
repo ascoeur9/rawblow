@@ -15,6 +15,7 @@ pub mod decode;
 pub mod face_detect;
 pub mod fsio;
 pub mod heif;
+pub mod heif_index;
 pub mod meta;
 pub mod model;
 pub mod object_detect;

@@ -168,6 +168,8 @@ impl RawBlowApp {
         }
         if self.failed_preview.contains(&real)
             || self.cache.contains_full(real, full)
+            // ORIG를 요청했지만 원본이 없어 프리뷰로 받은 항목은 다시 요청하지 않는다(#109).
+            || (full && self.orig_fallback.contains(&real) && self.cache.contains(real))
             || self.pending_preview.contains(&real)
         {
             return;
@@ -355,7 +357,10 @@ impl RawBlowApp {
                     );
                     self.cache.insert(res.id, handle, res.full_raw);
                     uploads += 1;
-                    if self.full_raw && !res.full_raw && self.current_real() == Some(res.id) {
+                    // ORIG 요청이 프리뷰 폴백으로 온 경우(#109): 기록해 재요청을 막고, 토스트는 한 번만.
+                    if self.full_raw && !res.full_raw && self.orig_fallback.insert(res.id)
+                        && self.current_real() == Some(res.id)
+                    {
                         self.toast_info(tr(self.lang, "원본 해상도를 못 구해 프리뷰로 표시합니다").into());
                     }
                 }

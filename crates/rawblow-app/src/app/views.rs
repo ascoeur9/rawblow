@@ -384,8 +384,8 @@ impl RawBlowApp {
                 });
                 if let Some(sf) = new_star {
                     // 같은 별점 칩 재클릭 = 토글 해제(전체로). 그 외엔 해당 별점만.
-                    self.star_filter = if sf == self.star_filter { StarFilter::Any } else { sf };
-                    self.index = 0;
+                    let sf = if sf == self.star_filter { StarFilter::Any } else { sf };
+                    self.apply_star_filter(sf);
                 }
 
                 // 컬러 태그 필터(#27): 라벨·별점 필터와 독립 AND. 특정 색만 표시. `전체`=태그 무시.
@@ -431,8 +431,7 @@ impl RawBlowApp {
                     }
                 });
                 if let Some(tf) = new_tag_filter {
-                    self.tag_filter = tf;
-                    self.index = 0;
+                    self.apply_tag_filter(tf);
                 }
 
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
@@ -711,7 +710,13 @@ impl RawBlowApp {
         };
         self.photo_view(ui, rect, real);
         if !self.has_modal() {
-            let suffix = if self.full_raw { "ORIG · sRGB" } else { "FIT · sRGB" };
+            let suffix = if !self.full_raw {
+                "FIT · sRGB"
+            } else if self.orig_fallback.contains(&real) {
+                tr(self.lang, "PREVIEW · 원본 없음")
+            } else {
+                "ORIG · sRGB"
+            };
             self.paint_hud(ui, rect, real, suffix);
             self.ui_map_overlay(ui, rect, real);
         }
@@ -1072,15 +1077,31 @@ impl RawBlowApp {
         hud_text(ui, tr, Align2::RIGHT_TOP, &format!("{:03} / {}", (self.index + 1).min(f.len().max(1)), f.len()), mono(30.0), theme::INK);
         hud_text(ui, tr + Vec2::new(0.0, 34.0), Align2::RIGHT_TOP, counter_suffix, mono(10.0), theme::INK3);
 
-        // BL: EXIF.
+        // BL: AI 컬링 판정 근거(#91) + EXIF. 근거는 판정·핵심 사유를 늘 보이고,
+        // EXIF 오버레이(I)를 켜면 참고 사유(통과 점수·그룹 순위)까지 펼친다.
+        let mut y = area.bottom() - 16.0;
         if self.show_exif {
             if let Some(ex) = &it.exif {
-                let mut y = area.bottom() - 16.0;
                 let lines = exif_lines(ex);
                 for line in lines.iter().rev() {
                     hud_text(ui, Pos2::new(area.left() + 16.0, y), Align2::LEFT_BOTTOM, line, mono(12.0), theme::INK2);
                     y -= 18.0;
                 }
+                y -= 8.0;
+            }
+        }
+        if let Some(note) = &it.cull_note {
+            let hint = if self.show_exif {
+                crate::i18n::tr(lang, "AI 제안일 뿐 확정 판정이 아닙니다 — 최종 선택은 직접 확인하세요")
+            } else {
+                crate::i18n::tr(lang, "I: 판정 근거 자세히")
+            };
+            hud_text(ui, Pos2::new(area.left() + 16.0, y), Align2::LEFT_BOTTOM, hint, mono(10.0), theme::INK3);
+            y -= 16.0;
+            let lines = culling::cull_note_lines(lang, note, self.show_exif);
+            for line in lines.iter().rev() {
+                hud_text(ui, Pos2::new(area.left() + 16.0, y), Align2::LEFT_BOTTOM, line, mono(12.0), theme::INK2);
+                y -= 18.0;
             }
         }
 
