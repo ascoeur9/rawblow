@@ -16,11 +16,15 @@ pub(super) const SETTINGS_SECTION_STROKE: Color32 = theme::LINE2;
 pub(super) const SETTINGS_ACTION_FILL: Color32 = theme::BG3;
 pub(super) const SETTINGS_ACTION_STROKE: Color32 = theme::LINE2;
 
-const SETTINGS_COL_W: f32 = 560.0;
+const SETTINGS_COL_W: f32 = 920.0;
 const SETTINGS_ROW_H: f32 = 48.0;
 const SETTINGS_TOGGLE_W: f32 = 52.0;
 const SETTINGS_TOGGLE_H: f32 = 30.0;
 const SETTINGS_BTN_H: f32 = 36.0;
+/// 입력칸·숫자칸·세그먼트 높이.
+const SETTINGS_CTRL_H: f32 = 32.0;
+/// 행 머리(제목·설명)가 오른쪽 컨트롤 자리를 침범하지 않도록 비워 두는 폭.
+const SETTINGS_CTRL_RESERVE: f32 = 380.0;
 const SETTINGS_LABEL_FONT: f32 = 15.0;
 const SETTINGS_HEAD_FONT: f32 = 15.0;
 const SETTINGS_BTN_FONT: f32 = 15.0;
@@ -39,6 +43,7 @@ pub(super) fn settings_section_panel(
         .rounding(10.0)
         .inner_margin(egui::Margin::symmetric(18.0, 12.0))
         .show(ui, |ui| {
+            ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing = Vec2::new(8.0, 0.0);
             add_contents(ui);
         });
@@ -46,19 +51,6 @@ pub(super) fn settings_section_panel(
 }
 
 const SETTINGS_DESC_FONT: f32 = 13.0;
-
-/// 행 설명: 바로 위 행의 라벨 x에 맞춰 작은 회색 글씨로 항상 보인다(호버 툴팁 대신).
-fn settings_row_desc(ui: &mut egui::Ui, text: &str) {
-    ui.add_space(-10.0);
-    ui.horizontal(|ui| {
-        ui.add_space(SICON + SICON_GAP);
-        ui.add(
-            egui::Label::new(egui::RichText::new(text).font(prop(SETTINGS_DESC_FONT)).color(INK_HELP))
-                .wrap(),
-        );
-    });
-    ui.add_space(10.0);
-}
 
 /// 섹션 안내: 카드 맨 위(또는 행 묶음 앞)에 한 줄.
 fn settings_section_note(ui: &mut egui::Ui, text: &str) {
@@ -294,7 +286,65 @@ fn paint_settings_toggle(painter: &egui::Painter, rect: Rect, on: bool) {
     painter.circle_filled(Pos2::new(cx, rect.center().y), r, theme::INK);
 }
 
-/// 라벨 왼쪽 · 스위치 오른쪽. 행 전체가 클릭된다(체크박스 없음).
+/// 설정 공통 행: [아이콘 | 제목(+설명) | 컨트롤]. 모든 행이 이 한 가지 격자를 쓴다.
+/// 아이콘은 제목 줄의 세로 가운데, 제목 x = 아이콘 + 간격, 컨트롤은 오른쪽 끝·행 세로 가운데.
+fn settings_row<R>(
+    ui: &mut egui::Ui,
+    icon: SIcon,
+    label: &str,
+    desc: Option<&str>,
+    control: impl FnOnce(&mut egui::Ui) -> R,
+) -> (R, egui::Response) {
+    let w = ui.available_width();
+    let min_h = if desc.is_some() { SETTINGS_ROW_H + 18.0 } else { SETTINGS_ROW_H };
+    // 가로(세로 가운데) 행: 머리 블록과 컨트롤이 둘 다 행 높이의 가운데에 온다.
+    let inner = ui.allocate_ui_with_layout(
+        Vec2::new(w, min_h),
+        Layout::left_to_right(Align::Center),
+        |ui| {
+            ui.set_min_size(Vec2::new(w, min_h));
+            settings_row_head(ui, icon, label, desc, (w - SETTINGS_CTRL_RESERVE).max(200.0));
+            ui.with_layout(Layout::right_to_left(Align::Center), control).inner
+        },
+    );
+    (inner.inner, inner.response)
+}
+
+/// 행 왼쪽 머리: 아이콘 + 제목, 그 아래 제목 x에 맞춘 설명.
+/// `ui.vertical`은 가로 행의 세로 가운데 정렬을 받지 않으므로, 높이를 먼저 재서 그 크기로 자리를 잡는다.
+fn settings_row_head(ui: &mut egui::Ui, icon: SIcon, label: &str, desc: Option<&str>, max_w: f32) {
+    const DESC_GAP: f32 = 4.0;
+    let label_font = prop(SETTINGS_LABEL_FONT);
+    let desc_font = prop(SETTINGS_DESC_FONT);
+    let label_h = ui.fonts(|f| f.row_height(&label_font));
+    let desc_w = (max_w - SICON - SICON_GAP).max(80.0);
+    let desc_h = desc.map_or(0.0, |d| {
+        ui.fonts(|f| f.layout(d.to_string(), desc_font.clone(), INK_HELP, desc_w).size().y) + DESC_GAP
+    });
+    ui.allocate_ui_with_layout(
+        Vec2::new(max_w, label_h + desc_h),
+        Layout::top_down(Align::Min),
+        |ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(0.0, DESC_GAP);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let (slot, _) = ui.allocate_exact_size(Vec2::new(SICON, label_h), Sense::hover());
+                draw_sicon(ui.painter(), Rect::from_center_size(slot.center(), Vec2::splat(SICON)), icon);
+                ui.add_space(SICON_GAP);
+                ui.label(egui::RichText::new(label).font(label_font.clone()).color(theme::INK));
+            });
+            if let Some(d) = desc {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.add_space(SICON + SICON_GAP);
+                    ui.add(egui::Label::new(egui::RichText::new(d).font(desc_font.clone()).color(INK_HELP)).wrap());
+                });
+            }
+        },
+    );
+}
+
+/// 토글 행. 행 어디를 눌러도 켜고 끈다(체크박스 없음).
 fn settings_toggle_row(
     ui: &mut egui::Ui,
     icon: SIcon,
@@ -302,26 +352,15 @@ fn settings_toggle_row(
     on: &mut bool,
     desc: &str,
 ) -> bool {
-    let w = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, SETTINGS_ROW_H), Sense::click());
-    let ir = Rect::from_center_size(Pos2::new(rect.left() + SICON * 0.5, rect.center().y), Vec2::splat(SICON));
-    draw_sicon(ui.painter(), ir, icon);
-    ui.painter().text(
-        Pos2::new(rect.left() + SICON + SICON_GAP, rect.center().y),
-        Align2::LEFT_CENTER,
-        label,
-        prop(SETTINGS_LABEL_FONT),
-        theme::INK,
-    );
-    let trect = Rect::from_center_size(
-        Pos2::new(rect.right() - SETTINGS_TOGGLE_W * 0.5, rect.center().y),
-        Vec2::new(SETTINGS_TOGGLE_W, SETTINGS_TOGGLE_H),
-    );
-    paint_settings_toggle(ui.painter(), trect, *on);
+    let cur = *on;
+    let (_, row) = settings_row(ui, icon, label, Some(desc), |ui| {
+        let (r, _) = ui.allocate_exact_size(Vec2::new(SETTINGS_TOGGLE_W, SETTINGS_TOGGLE_H), Sense::hover());
+        paint_settings_toggle(ui.painter(), r, cur);
+    });
+    let resp = ui.interact(row.rect, ui.id().with(("settings_toggle", label)), Sense::click());
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    settings_row_desc(ui, desc);
     if resp.clicked() {
         *on = !*on;
         true
@@ -330,7 +369,7 @@ fn settings_toggle_row(
     }
 }
 
-/// 라벨 왼쪽 · 컨트롤 오른쪽. 같은 카드 안에서 x가 맞도록 한 줄, 접지 않음.
+/// 값 입력 행(숫자·키 표시·버튼 등). 컨트롤은 오른쪽 끝.
 fn settings_field_row(
     ui: &mut egui::Ui,
     icon: SIcon,
@@ -338,23 +377,20 @@ fn settings_field_row(
     desc: Option<&str>,
     add: impl FnOnce(&mut egui::Ui),
 ) {
-    ui.allocate_ui_with_layout(
-        Vec2::new(ui.available_width(), SETTINGS_ROW_H),
-        Layout::left_to_right(Align::Center),
-        |ui| {
-            let (ir, _) = ui.allocate_exact_size(Vec2::splat(SICON), Sense::hover());
-            draw_sicon(ui.painter(), ir, icon);
-            ui.add_space(SICON_GAP - ui.spacing().item_spacing.x);
-            ui.label(egui::RichText::new(label).font(prop(SETTINGS_LABEL_FONT)).color(theme::INK2));
-            ui.with_layout(Layout::right_to_left(Align::Center), add);
-        },
-    );
-    if let Some(d) = desc {
-        settings_row_desc(ui, d);
-    }
+    let _ = settings_row(ui, icon, label, desc, add);
 }
 
-/// 배타 선택: 아이콘+짧은 라벨, 세그먼트는 카드 폭을 채움.
+/// 설정 숫자 칸: 높이 SETTINGS_CTRL_H, 글자 세로 가운데. DragValue는 interact_size를 최소 크기로 쓴다.
+fn settings_drag(ui: &mut egui::Ui, w: f32, dv: egui::DragValue<'_>) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size = Vec2::new(w, SETTINGS_CTRL_H);
+        ui.style_mut().override_font_id = Some(prop(14.0));
+        ui.add(dv)
+    })
+    .inner
+}
+
+/// 배타 선택 행: 세그먼트는 오른쪽에 필요한 폭만.
 fn settings_choice_block(
     ui: &mut egui::Ui,
     icon: SIcon,
@@ -363,34 +399,23 @@ fn settings_choice_block(
     options: &[(&str, &str)],
     selected: usize,
 ) -> Option<usize> {
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        let (ir, _) = ui.allocate_exact_size(Vec2::splat(SICON), Sense::hover());
-        draw_sicon(ui.painter(), ir, icon);
-        ui.add_space(SICON_GAP - ui.spacing().item_spacing.x);
-        ui.label(egui::RichText::new(label).font(prop(SETTINGS_LABEL_FONT)).color(theme::INK2));
-    });
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.add_space(SICON + SICON_GAP);
-        ui.add(egui::Label::new(egui::RichText::new(desc).font(prop(SETTINGS_DESC_FONT)).color(INK_HELP)).wrap());
-    });
-    ui.add_space(8.0);
-    let clicked = settings_segmented(ui, options, selected);
-    ui.add_space(8.0);
-    clicked
+    settings_row(ui, icon, label, Some(desc), |ui| settings_segmented(ui, options, selected)).0
 }
 
-/// 설정용 세그먼트. 칸을 균등 분할하고 비활성에도 필이 있다(글로벌 `segmented`와 별개).
+/// 설정용 세그먼트. 칸 폭은 가장 긴 선택지에 맞춰 균등, 비활성에도 필이 있다(글로벌 `segmented`와 별개).
 fn settings_segmented(ui: &mut egui::Ui, options: &[(&str, &str)], selected: usize) -> Option<usize> {
     let mut clicked = None;
     let n = options.len().max(1);
-    let full = ui.available_width();
+    let font = prop(14.0);
+    let text_w = options
+        .iter()
+        .map(|(l, _)| ui.fonts(|f| f.layout_no_wrap((*l).to_string(), font.clone(), theme::INK).size().x))
+        .fold(0.0_f32, f32::max);
     let pad = 3.0;
     let gap = 3.0;
-    let h = 38.0;
-    let inner_w = (full - pad * 2.0).max(0.0);
-    let cell_w = ((inner_w - gap * (n as f32 - 1.0)) / n as f32).max(48.0);
+    let h = SETTINGS_CTRL_H;
+    let cell_w = (text_w + 28.0).max(84.0);
+    let full = cell_w * n as f32 + gap * (n as f32 - 1.0) + pad * 2.0;
     let (outer, _) = ui.allocate_exact_size(Vec2::new(full, h + pad * 2.0), Sense::hover());
     ui.painter().rect(
         outer,
@@ -414,7 +439,7 @@ fn settings_segmented(ui: &mut egui::Ui, options: &[(&str, &str)], selected: usi
             rect.center(),
             Align2::CENTER_CENTER,
             *label,
-            prop(14.0),
+            font.clone(),
             if active { theme::INK } else { theme::INK2 },
         );
         if resp.hovered() {
@@ -435,21 +460,24 @@ fn settings_inner_rule(ui: &mut egui::Ui) {
     ui.add_space(6.0);
 }
 
-/// 설정 맨 위 아이덴티티: 로고 + 버전 + 만든 사람. 링크/라이선스와 섞지 않는다.
+/// 설정 맨 위 아이덴티티: 로고 + 버전, 그 아래 만든 사람 행(다른 행과 같은 격자).
 fn settings_identity(ui: &mut egui::Ui) {
     egui::Frame::none()
         .fill(SETTINGS_SECTION_FILL)
         .stroke(Stroke::new(1.0_f32, SETTINGS_SECTION_STROKE))
         .rounding(10.0)
-        .inner_margin(egui::Margin::symmetric(18.0, 16.0))
+        .inner_margin(egui::Margin::symmetric(18.0, 12.0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing = Vec2::new(12.0, 6.0);
+            ui.spacing_mut().item_spacing = Vec2::new(8.0, 0.0);
+            ui.add_space(6.0);
             ui.horizontal(|ui| {
-                let (mark, _) = ui.allocate_exact_size(Vec2::splat(52.0), Sense::hover());
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let (mark, _) = ui.allocate_exact_size(Vec2::splat(48.0), Sense::hover());
                 crate::logo::draw_mark(ui.painter(), mark);
+                ui.add_space(14.0);
                 ui.vertical(|ui| {
-                    ui.add_space(4.0);
+                    ui.spacing_mut().item_spacing.y = 2.0;
                     ui.label(egui::RichText::new("RawBlow").font(prop(22.0)).color(theme::INK));
                     ui.label(
                         egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
@@ -458,15 +486,13 @@ fn settings_identity(ui: &mut egui::Ui) {
                     );
                 });
             });
+            ui.add_space(6.0);
             settings_inner_rule(ui);
-            ui.horizontal(|ui| {
-                let (ir, _) = ui.allocate_exact_size(Vec2::splat(SICON), Sense::hover());
-                draw_sicon(ui.painter(), ir, SIcon::Person);
-                ui.label(egui::RichText::new("하레").font(prop(SETTINGS_LABEL_FONT)).color(theme::INK2));
-                ui.add_space(8.0);
-                settings_inline_link(ui, "@ascoeur9", "https://x.com/ascoeur9");
-                ui.label(egui::RichText::new("·").font(prop(14.0)).color(INK_HELP));
+            settings_field_row(ui, SIcon::Person, "하레", None, |ui| {
+                // right_to_left: 먼저 넣은 것이 오른쪽.
                 settings_inline_link(ui, "@hare_kig", "https://x.com/hare_kig");
+                ui.label(egui::RichText::new("·").font(prop(14.0)).color(INK_HELP));
+                settings_inline_link(ui, "@ascoeur9", "https://x.com/ascoeur9");
             });
         });
     ui.add_space(22.0);
@@ -490,7 +516,7 @@ fn settings_inline_link(ui: &mut egui::Ui, text: &str, url: &str) {
     }
 }
 
-/// 링크 전용 행. 라벨 왼쪽, 화살표 오른쪽. 버튼과 겹치지 않게 행 높이를 고정한다.
+/// 링크 전용 행. 라벨 왼쪽, 화살표 오른쪽.
 fn settings_link_row(ui: &mut egui::Ui, icon: SIcon, label: &str, url: &str) {
     if settings_nav_row(ui, icon, label) {
         open_url(url);
@@ -498,67 +524,49 @@ fn settings_link_row(ui: &mut egui::Ui, icon: SIcon, label: &str, url: &str) {
 }
 
 fn settings_nav_row(ui: &mut egui::Ui, icon: SIcon, label: &str) -> bool {
-    let w = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, SETTINGS_ROW_H), Sense::click());
-    let ir = Rect::from_center_size(Pos2::new(rect.left() + SICON * 0.5, rect.center().y), Vec2::splat(SICON));
-    draw_sicon(ui.painter(), ir, icon);
-    ui.painter().text(
-        Pos2::new(rect.left() + SICON + SICON_GAP, rect.center().y),
-        Align2::LEFT_CENTER,
-        label,
-        prop(SETTINGS_LABEL_FONT),
-        theme::INK,
-    );
-    ui.painter().text(
-        Pos2::new(rect.right(), rect.center().y),
-        Align2::RIGHT_CENTER,
-        "↗",
-        prop(SETTINGS_LABEL_FONT),
-        INK_HELP,
-    );
+    let (_, row) = settings_row(ui, icon, label, None, |ui| {
+        ui.label(egui::RichText::new("↗").font(prop(SETTINGS_LABEL_FONT)).color(INK_HELP));
+    });
+    let resp = ui.interact(row.rect, ui.id().with(("settings_nav", label)), Sense::click());
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     resp.clicked()
 }
 
-/// 색 태그 한 줄: 점 + 고정 폭 이름 + 나머지 폭을 채우는 입력. 힌트 길이로 필드가 줄어들지 않는다.
+/// 색 태그 한 줄: 점(아이콘 열) + 이름(제목 x) + 오른쪽 입력칸.
 fn settings_tag_name_row(
     ui: &mut egui::Ui,
     rgb: [u8; 3],
     default_name: &str,
     value: &mut String,
 ) -> bool {
-    const NAME_COL: f32 = 88.0;
-    const FIELD_H: f32 = 36.0;
+    const FIELD_W: f32 = 320.0;
+    let w = ui.available_width();
+    let label_font = prop(SETTINGS_LABEL_FONT);
+    let label_h = ui.fonts(|f| f.row_height(&label_font));
     ui.allocate_ui_with_layout(
-        Vec2::new(ui.available_width(), SETTINGS_ROW_H),
-        Layout::left_to_right(Align::Center),
+        Vec2::new(w, SETTINGS_ROW_H),
+        Layout::right_to_left(Align::Center),
         |ui| {
-            let (dot, _) = ui.allocate_exact_size(Vec2::splat(SICON), Sense::hover());
-            ui.painter().circle_filled(
-                dot.center(),
-                7.0,
-                Color32::from_rgb(rgb[0], rgb[1], rgb[2]),
-            );
-            ui.add_space(SICON_GAP - ui.spacing().item_spacing.x);
-            let (name, _) = ui.allocate_exact_size(Vec2::new(NAME_COL, SETTINGS_ROW_H), Sense::hover());
-            ui.painter().text(
-                Pos2::new(name.left(), name.center().y),
-                Align2::LEFT_CENTER,
-                default_name,
-                prop(SETTINGS_LABEL_FONT),
-                theme::INK2,
-            );
-            let rest = ui.available_width();
-            ui.add_sized(
-                Vec2::new(rest.max(80.0), FIELD_H),
-                egui::TextEdit::singleline(value)
-                    .hint_text(default_name)
-                    .font(prop(SETTINGS_LABEL_FONT))
-                    .vertical_align(Align::Center),
-            )
-            .changed()
+            ui.set_min_size(Vec2::new(w, SETTINGS_ROW_H));
+            let changed = ui
+                .add_sized(
+                    Vec2::new(FIELD_W, SETTINGS_CTRL_H),
+                    egui::TextEdit::singleline(value)
+                        .hint_text(default_name)
+                        .font(prop(SETTINGS_LABEL_FONT))
+                        .vertical_align(Align::Center),
+                )
+                .changed();
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let (slot, _) = ui.allocate_exact_size(Vec2::new(SICON, label_h), Sense::hover());
+                ui.painter().circle_filled(slot.center(), 7.0, Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+                ui.add_space(SICON_GAP);
+                ui.label(egui::RichText::new(default_name).font(label_font.clone()).color(theme::INK));
+            });
+            changed
         },
     )
     .inner
@@ -626,6 +634,7 @@ impl RawBlowApp {
                         ) {
                             self.persist_cfg();
                         }
+                        settings_inner_rule(ui);
                         // 정렬 기준(#56): 촬영시간순(기본)/파일명순. 변경 즉시 재정렬·저장.
                         if let Some(i) = settings_choice_block(
                             ui,
@@ -657,13 +666,23 @@ impl RawBlowApp {
                             self.persist_cfg();
                         }
                         settings_inner_rule(ui);
+                        if settings_toggle_row(
+                            ui,
+                            SIcon::Skip,
+                            tr(lang, "자동 전진"),
+                            &mut self.cfg.auto_advance,
+                            tr(lang, "셀렉하면 다음 사진으로 넘어갑니다."),
+                        ) {
+                            self.persist_cfg();
+                        }
+                        settings_inner_rule(ui);
                         settings_field_row(
                             ui,
                             SIcon::Preload,
                             tr(lang, "프리로드"),
                             Some(tr(lang, "미리 로딩할 사진 수를 정합니다.")),
                             |ui| {
-                                if ui.add(egui::DragValue::new(&mut self.cfg.preload).range(0..=10)).changed() {
+                                if settings_drag(ui, 72.0, egui::DragValue::new(&mut self.cfg.preload).range(0..=10)).changed() {
                                     self.persist_cfg();
                                 }
                             },
@@ -675,11 +694,12 @@ impl RawBlowApp {
                             tr(lang, "그리드"),
                             Some(tr(lang, "한 줄에 보여 줄 썸네일 수를 정합니다.")),
                             |ui| {
-                                if ui.add(egui::DragValue::new(&mut self.cfg.grid_cols).range(4..=12)).changed() {
+                                if settings_drag(ui, 72.0, egui::DragValue::new(&mut self.cfg.grid_cols).range(4..=12)).changed() {
                                     self.persist_cfg();
                                 }
                             },
                         );
+                        settings_inner_rule(ui);
                         // 스트립·그리드 표기 크기(#44): 셀 위 선택 표시·별점·색상 태그를 크게(기본)/작게.
                         if let Some(i) = settings_choice_block(
                             ui,
@@ -752,17 +772,20 @@ impl RawBlowApp {
                         ];
                         // 고정폭 셀 그리드: 라벨 길이가 달라도(검정/라이트 그레이/ミディアムグレー) 색견본과
                         // 글자가 같은 열에 맞도록 각 프리셋을 동일 크기 셀에 가운데 정렬한다(테스트 피드백).
-                        const BG_CELL: Vec2 = Vec2::new(84.0, 58.0);
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing = Vec2::new(8.0, 10.0);
+                        const BG_GAP: f32 = 8.0;
+                        let n_bg = presets.len() as f32;
+                        let bg_cell = Vec2::new((ui.available_width() - BG_GAP * (n_bg - 1.0)) / n_bg, 58.0);
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing = Vec2::new(BG_GAP, 0.0);
                             for (label, val) in presets {
                                 let selected = self.cfg.photo_bg == val;
                                 let swatch_rgb = val.unwrap_or(theme::BG0_RGB);
                                 let cell = ui.allocate_ui_with_layout(
-                                    BG_CELL,
+                                    bg_cell,
                                     Layout::top_down(Align::Center),
                                     |ui| {
-                                        ui.set_width(BG_CELL.x);
+                                        ui.set_width(bg_cell.x);
                                         ui.spacing_mut().item_spacing.y = 6.0;
                                         let clicked = bg_swatch(ui, swatch_rgb, selected);
                                         ui.label(
@@ -798,7 +821,8 @@ impl RawBlowApp {
                                     .font(mono(14.0))
                                     .desired_width(96.0)
                                     .hint_text("#101010")
-                                    .min_size(Vec2::new(0.0, 32.0)),
+                                    .vertical_align(Align::Center)
+                                    .min_size(Vec2::new(0.0, SETTINGS_CTRL_H)),
                             );
                             if resp.changed() {
                                 if let Some(rgb) = parse_hex_rgb(&self.bg_hex) {
@@ -818,46 +842,17 @@ impl RawBlowApp {
                             let mut rgb = self.photo_bg_rgb();
                             let mut changed = false;
                             ui.label(egui::RichText::new("R").font(prop(14.0)).color(INK_HEAD));
-                            changed |= ui.add(egui::DragValue::new(&mut rgb[0]).range(0..=255)).changed();
+                            changed |= settings_drag(ui, 56.0, egui::DragValue::new(&mut rgb[0]).range(0..=255)).changed();
                             ui.label(egui::RichText::new("G").font(prop(14.0)).color(INK_HEAD));
-                            changed |= ui.add(egui::DragValue::new(&mut rgb[1]).range(0..=255)).changed();
+                            changed |= settings_drag(ui, 56.0, egui::DragValue::new(&mut rgb[1]).range(0..=255)).changed();
                             ui.label(egui::RichText::new("B").font(prop(14.0)).color(INK_HEAD));
-                            changed |= ui.add(egui::DragValue::new(&mut rgb[2]).range(0..=255)).changed();
+                            changed |= settings_drag(ui, 56.0, egui::DragValue::new(&mut rgb[2]).range(0..=255)).changed();
                             if changed {
                                 self.cfg.photo_bg = Some(rgb);
                                 self.bg_hex = hex_str(rgb);
                                 self.persist_cfg();
                             }
                         });
-                    });
-
-                    settings_section_panel(ui, tr(lang, "셀렉"), |ui| {
-                        if settings_toggle_row(
-                            ui,
-                            SIcon::Skip,
-                            tr(lang, "자동 전진"),
-                            &mut self.cfg.auto_advance,
-                            tr(lang, "셀렉하면 다음 사진으로 넘어갑니다."),
-                        ) {
-                            self.persist_cfg();
-                        }
-                        settings_inner_rule(ui);
-                        settings_section_note(ui, tr(lang, "셀렉 단축키입니다."));
-                        let km = &self.cfg.keymap;
-                        let keys = [
-                            (Label::Pick, &km.pick),
-                            (Label::Hold, &km.hold),
-                            (Label::Reject, &km.reject),
-                            (Label::Unrated, &km.clear),
-                        ];
-                        for (i, (lbl, key)) in keys.into_iter().enumerate() {
-                            if i > 0 {
-                                settings_inner_rule(ui);
-                            }
-                            settings_field_row(ui, SIcon::Key, lbl.name(lang), None, |ui| {
-                                kbd(ui, key);
-                            });
-                        }
                     });
 
                     // ── COLOR TAGS (#27): 색별 커스텀 이름. 비우면 기본 색 이름 표시 ──
@@ -878,6 +873,26 @@ impl RawBlowApp {
                             ) {
                                 self.persist_cfg(); // 태그 이름은 키 입력마다 즉시 저장(#69).
                             }
+                        }
+                    });
+
+                    // 단축키: 지금은 표시만(변경 기능 예정 자리).
+                    settings_section_panel(ui, tr(lang, "단축키"), |ui| {
+                        settings_section_note(ui, tr(lang, "셀렉 단축키입니다."));
+                        let km = &self.cfg.keymap;
+                        let keys = [
+                            (Label::Pick, &km.pick),
+                            (Label::Hold, &km.hold),
+                            (Label::Reject, &km.reject),
+                            (Label::Unrated, &km.clear),
+                        ];
+                        for (i, (lbl, key)) in keys.into_iter().enumerate() {
+                            if i > 0 {
+                                settings_inner_rule(ui);
+                            }
+                            settings_field_row(ui, SIcon::Key, lbl.name(lang), None, |ui| {
+                                kbd(ui, key);
+                            });
                         }
                     });
 
@@ -909,8 +924,11 @@ impl RawBlowApp {
                                 self.persist_cfg();
                             }
                         }
+                        ui.add_space(4.0);
                         ui.horizontal(|ui| {
                             ui.set_min_height(SETTINGS_BTN_H);
+                            // 첫 항목 앞의 add_space 뒤에는 item_spacing이 붙지 않는다 → 제목 x 그대로.
+                            ui.add_space(SICON + SICON_GAP);
                             // TextEdit은 desired_width 바깥에 좌우 안쪽 여백을 더 그린다 — 버튼(128)과 합쳐 카드 폭을 넘지 않게.
                             let pad = ui.spacing().button_padding.x * 2.0;
                             let rest = (ui.available_width() - 128.0 - ui.spacing().item_spacing.x - pad).max(120.0);
@@ -939,6 +957,7 @@ impl RawBlowApp {
                                 }
                             }
                         });
+                        ui.add_space(10.0);
                     });
 
                     settings_section_panel(ui, tr(lang, "앱"), |ui| {
@@ -999,42 +1018,40 @@ impl RawBlowApp {
                             self.cache_size = Some(cache::dir_size(&config::cache_dir()));
                         }
                         let size = self.cache_size.unwrap_or(0);
-                        ui.add_space(6.0);
-                        ui.label(
-                            egui::RichText::new(trf(lang, "썸네일 캐시 사용량 · {}", &[&fmt_bytes(size)]))
-                                .font(prop(15.0))
-                                .color(theme::INK2),
-                        );
-                        ui.add_space(10.0);
-                        ui.horizontal(|ui| {
+                        let usage = trf(lang, "썸네일 캐시 사용량 · {}", &[&fmt_bytes(size)]);
+                        settings_field_row(ui, SIcon::Cache, &usage, None, |ui| {
+                            // right_to_left: 먼저 넣은 것이 오른쪽.
+                            if settings_action_btn(ui, tr(lang, "새로고침")).clicked() {
+                                self.cache_size = Some(cache::dir_size(&config::cache_dir()));
+                            }
                             if settings_action_btn(ui, tr(lang, "캐시 삭제")).clicked() {
                                 let _ = cache::clear(&config::cache_dir());
                                 self.cache_size = Some(cache::dir_size(&config::cache_dir()));
                                 self.toast_info(tr(lang, "썸네일 캐시를 삭제했습니다").into());
                             }
-                            if settings_action_btn(ui, tr(lang, "새로고침")).clicked() {
-                                self.cache_size = Some(cache::dir_size(&config::cache_dir()));
-                            }
                         });
+                        settings_inner_rule(ui);
                         settings_field_row(
                             ui,
                             SIcon::Cache,
                             tr(lang, "자동 상한"),
                             Some(tr(lang, "이 크기를 넘으면 오래된 썸네일부터 삭제합니다. 0으로 두면 제한하지 않습니다.")),
                             |ui| {
-                            if ui
-                                .add(
+                                if settings_drag(
+                                    ui,
+                                    110.0,
                                     egui::DragValue::new(&mut self.cfg.cache_limit_mb)
                                         .speed(64.0)
                                         .range(0..=1_048_576)
                                         .suffix(" MB"),
                                 )
                                 .changed()
-                            {
-                                self.persist_cfg(); // 캐시 상한 변경 즉시 저장(#69).
-                            }
-                        },
+                                {
+                                    self.persist_cfg(); // 캐시 상한 변경 즉시 저장(#69).
+                                }
+                            },
                         );
+                        ui.add_space(4.0);
                         // 캐시 경로: 클릭하면 OS 파일 관리자에서 캐시 폴더를 연다(#69). hover 시 밝게 + 손가락 커서.
                         let cache_path = config::cache_dir();
                         let cache_path_str = cache_path.to_string_lossy().to_string();
@@ -1042,7 +1059,16 @@ impl RawBlowApp {
                         let galley =
                             ui.painter()
                                 .layout_no_wrap(cache_path_str.clone(), cache_font.clone(), INK_HELP);
-                        let (cp_rect, cp_resp) = ui.allocate_exact_size(galley.size(), Sense::click());
+                        let cp_indent = SICON + SICON_GAP;
+                        let (cp_row, _) = ui.allocate_exact_size(
+                            Vec2::new(ui.available_width(), galley.size().y + 8.0),
+                            Sense::hover(),
+                        );
+                        let cp_rect = Rect::from_min_size(
+                            Pos2::new(cp_row.left() + cp_indent, cp_row.top()),
+                            galley.size(),
+                        );
+                        let cp_resp = ui.interact(cp_rect, ui.id().with("settings_cache_path"), Sense::click());
                         let cp_col = if cp_resp.hovered() { theme::INK2 } else { INK_HELP };
                         ui.painter().text(
                             cp_rect.left_top(),
@@ -1729,7 +1755,7 @@ mod tests {
             "check_updates",
             "show_map",
             "show_af",
-            "settings_row_desc",
+            "settings_row_head",
             "preload",
             "grid_cols",
             "large_badges",
@@ -1918,7 +1944,14 @@ mod tests {
         }
         let names: Vec<f32> = ["주황", "분홍", "청록", "파랑", "보라"]
             .iter()
-            .filter_map(|n| texts.iter().find(|(t, _)| t == n).map(|(_, r)| r.min.x))
+            // 빈 입력칸의 힌트도 같은 글자라 가장 왼쪽(행 제목)을 잡는다.
+            .filter_map(|n| {
+                texts
+                    .iter()
+                    .filter(|(t, _)| t == n)
+                    .map(|(_, r)| r.min.x)
+                    .reduce(f32::min)
+            })
             .collect();
         assert_eq!(names.len(), 5, "기본 색 이름이 다 보여야 한다");
         let nx = names[0];
