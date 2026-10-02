@@ -23,6 +23,9 @@ pub(super) struct TransferDialogState {
     split: TransferSplit,
     conflict: ConflictPolicy,
     dest: String,
+    /// `dest` → 실제 경로 메모(미리보기·열린 폴더 검사용). 다이얼로그는 매 프레임 그려지므로
+    /// 문자열이 바뀔 때만 디스크를 다시 본다. 저장하지 않으며, 전송 시작은 그 순간 새로 푼다.
+    dest_real: Option<(String, PathBuf)>,
     /// 파일명 변경(#26).
     rename_mode: RenameMode,
     rename_template: String,
@@ -47,6 +50,7 @@ impl TransferDialogState {
             split: d.split(),
             conflict: d.conflict,
             dest: String::new(),
+            dest_real: None,
             rename_mode: d.rename_mode,
             rename_template: d.rename_template.clone(),
             rename_numbering: d.rename_numbering,
@@ -89,6 +93,20 @@ impl TransferDialogState {
                 template: self.rename_template.clone(),
                 numbering: self.rename_numbering,
             }),
+        }
+    }
+
+    /// 미리보기용 실제 대상 경로(`real_dest_path`). 같은 문자열이면 메모 값을 써서 큰 폴더 목록을
+    /// 매 프레임 읽지 않는다. 전송 시작은 이 값이 아니라 그 순간 새로 푼 경로를 쓴다.
+    fn preview_dest(&mut self) -> PathBuf {
+        let s = self.dest.trim();
+        match &self.dest_real {
+            Some((k, p)) if k == s => p.clone(),
+            _ => {
+                let p = real_dest_path(s);
+                self.dest_real = Some((s.to_owned(), p.clone()));
+                p
+            }
         }
     }
 }
@@ -173,9 +191,14 @@ impl RawBlowApp {
         // 마지막 사용 옵션을 기본값으로 로드(#57). dest는 설정 기본값(#113) — 다이얼로그에서
         // 바꿔도 다음 열기는 다시 이 값. 한 폴더 모드 + 지금 폴더면 `{폴더}/selected`.
         let mut st = TransferDialogState::from_defaults(&self.cfg.transfer_defaults);
+        // 설정의 지정 폴더는 NFC로 저장돼 있을 수 있다 — 실제 폴더로 풀어야 지금 폴더와 비교된다.
+        let mut cfg = self.cfg.clone();
+        if !cfg.transfer_dest_folder.trim().is_empty() {
+            cfg.transfer_dest_folder =
+                real_dest_path(cfg.transfer_dest_folder.trim()).to_string_lossy().into_owned();
+        }
         st.dest = nfc_hangul(
-            &self
-                .cfg
+            &cfg
                 .transfer_default_dest(self.folder.as_deref(), st.split)
                 .to_string_lossy(),
         );
@@ -265,6 +288,9 @@ impl RawBlowApp {
                 let _ = ui.allocate_rect(screen, Sense::click_and_drag());
             });
 
+        // 화면 문자열(NFC)을 디스크의 실제 경로로 — NFD 폴더에서 쌍둥이 경로가 생기지 않게.
+        // 문자열이 바뀐 프레임에만 디스크를 본다(메모) — 플랜·열린 폴더 검사 모두 이 값.
+        let dest_path = st.preview_dest();
         // 미리보기 계획(footer 통계). entries는 위에서 스코프 기준으로 구성됨(#68).
         let plan = transfer::plan(&TransferRequest {
             entries: &entries,
@@ -273,7 +299,7 @@ impl RawBlowApp {
             tags: st.tags.clone(),
             action: st.action,
             companions: st.companions,
-            dest: PathBuf::from(&st.dest),
+            dest: dest_path.clone(),
             split: st.split,
             conflict: st.conflict,
             rename: st.rename_rule(),
@@ -281,7 +307,7 @@ impl RawBlowApp {
         let raw_n = plan.iter().filter(|(p, _, _)| rawblow_core::model::kind_of(p) == Some(rawblow_core::model::Kind::Raw)).count();
         let img_n = plan.len().saturating_sub(raw_n);
         let dest_blocked = dest_is_open_folder(
-            Path::new(st.dest.trim()),
+            &dest_path,
             self.folder.as_deref(),
             st.split,
         );
@@ -694,7 +720,8 @@ impl RawBlowApp {
     /// 메인 스레드가 막히지 않게 별도 스레드에서 `execute_with_progress`를 돌리고,
     /// 진행 상황을 채널로 받는다(Move면 완료 후 폴더를 재스캔해 사라진 항목 정리, #24).
     pub(super) fn start_transfer(&mut self, st: &TransferDialogState) {
-        let dest = PathBuf::from(st.dest.trim());
+        // 미리보기 메모(dest_real)가 아니라 지금 디스크 기준으로 새로 푼다 — 그사이 폴더가 생겼을 수 있다.
+        let dest = real_dest_path(st.dest.trim());
         if dest_is_open_folder(&dest, self.folder.as_deref(), st.split) {
             self.toast_info(
                 tr(self.lang, "지금 열린 폴더로는 보낼 수 없습니다. 다른 폴더를 고르세요.").into(),
@@ -763,7 +790,7 @@ impl RawBlowApp {
         let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
         let key = st.key;
         let action = st.action;
-        let dest = PathBuf::from(&st.dest);
+        let dest = real_dest_path(&st.dest);
         let conflict = st.conflict;
 
         let (tx, rx) = crossbeam_channel::unbounded::<JobMsg>();
@@ -1324,6 +1351,20 @@ mod tests {
         assert_eq!(st2.rename_numbering, Numbering::Order);
         assert!(!st2.scope_all); // 전송 범위도 저장·복원(#68)
         assert!(st2.dest.is_empty()); // dest는 복원 대상 아님
+    }
+
+    #[test]
+    fn preview_dest_resolves_only_when_dest_text_changes() {
+        // 미리보기 대상 경로는 dest 문자열이 바뀔 때만 다시 푼다(매 프레임 큰 폴더 목록 읽기 방지).
+        let mut st = TransferDialogState { dest: " Z:/rb_memo/selected ".into(), ..Default::default() };
+        assert_eq!(st.preview_dest(), PathBuf::from("Z:/rb_memo/selected")); // 키는 앞뒤 공백 제외
+        // 같은 문자열이면 메모 값 그대로 — 표식 값을 심어 다시 풀지 않음을 확인.
+        st.dest_real = Some(("Z:/rb_memo/selected".into(), PathBuf::from("memo")));
+        assert_eq!(st.preview_dest(), PathBuf::from("memo"));
+        // 문자열이 바뀌면 새로 풀고 메모도 바꾼다.
+        st.dest = "Z:/rb_memo/other".into();
+        assert_eq!(st.preview_dest(), PathBuf::from("Z:/rb_memo/other"));
+        assert_eq!(st.dest_real, Some(("Z:/rb_memo/other".into(), PathBuf::from("Z:/rb_memo/other"))));
     }
 
     #[test]

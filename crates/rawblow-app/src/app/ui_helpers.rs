@@ -484,6 +484,56 @@ pub(super) fn nfc_path_label(path: &std::path::Path) -> String {
     nfc_hangul(&path.to_string_lossy())
 }
 
+/// 화면에 NFC로 보인 대상 폴더 문자열을 디스크에 실재하는 경로로 되돌린다.
+///
+/// APFS는 NFC·NFD를 같은 이름으로 보지만 NTFS·exFAT·ext4는 아니다 — 맥에서 만든 NFD 폴더를
+/// 윈도우에서 열면 NFC 문자열은 다른(새로 만들어질) 쌍둥이 경로가 된다. 구성 요소마다 그대로
+/// 붙여 존재하면 유지하고, 없으면 부모 목록에서 NFC가 같은 항목의 실제 이름을 쓴다. 맞는 게
+/// 없으면 입력한 이름 그대로(새 폴더로 생성). 목록은 직접 경로가 없고 이름이 ASCII가 아닐 때만 읽는다.
+pub(super) fn real_dest_path(s: &str) -> std::path::PathBuf {
+    use std::path::{Component, Path, PathBuf};
+    let typed = Path::new(s);
+    // ASCII는 NFC/NFD 차이가 없고, 그대로 있으면 그게 실제 경로다.
+    if s.is_ascii() || typed.exists() {
+        return typed.to_path_buf();
+    }
+    let mut out = PathBuf::new();
+    let mut on_disk = true; // 여기까지 실재하는 접두인지 — 끊기면 나머지는 입력 그대로.
+    for c in typed.components() {
+        let Component::Normal(name) = c else {
+            out.push(c.as_os_str());
+            continue;
+        };
+        let direct = out.join(name);
+        if !on_disk || direct.exists() {
+            out = direct;
+            continue;
+        }
+        // ASCII 이름은 NFC·NFD가 같아 목록에서 다른 항목이 맞을 수 없다 — 없는 것으로 보고,
+        // 부모(흔히 수천 장짜리 사진 폴더 — `{폴더}/selected`) 목록을 읽지 않는다.
+        if name.is_ascii() {
+            on_disk = false;
+            out = direct;
+            continue;
+        }
+        let want = nfc_hangul(&name.to_string_lossy());
+        let parent = if out.as_os_str().is_empty() { Path::new(".") } else { out.as_path() };
+        let found = std::fs::read_dir(parent).ok().and_then(|rd| {
+            rd.flatten()
+                .map(|e| e.file_name())
+                .find(|n| nfc_hangul(&n.to_string_lossy()) == want)
+        });
+        match found {
+            Some(real) => out.push(real),
+            None => {
+                on_disk = false;
+                out = direct;
+            }
+        }
+    }
+    out
+}
+
 pub(super) fn nfc_file_name(path: &std::path::Path) -> String {
     nfc_hangul(
         &path
@@ -497,8 +547,8 @@ pub(super) fn nfc_file_name(path: &std::path::Path) -> String {
 mod tests {
     use super::{
         af_display_coords, af_focus_center, compute_histo, exif_lines, fmt_bytes,
-        display_zoom_ratio, format_capture_datetime, hex_str, nfc_hangul, parse_hex_rgb, sync_view_mag,
-        ExifInfo, ViewMag,
+        display_zoom_ratio, format_capture_datetime, hex_str, nfc_hangul, parse_hex_rgb, real_dest_path,
+        sync_view_mag, ExifInfo, ViewMag,
     };
     use rawblow_core::af::{AfInfo, AfPoint};
 
@@ -966,6 +1016,61 @@ mod tests {
         let nfd_t: String = ['\u{1100}', '\u{1161}', '\u{11AB}'].into_iter().collect();
         assert_eq!(nfc_hangul(&nfd_t), "간");
         assert_eq!(nfc_hangul("이미NFC"), "이미NFC");
+    }
+
+    /// 한글 음절을 맥 NFD 자모로 푼다(테스트용).
+    fn nfd(s: &str) -> String {
+        let mut out = String::new();
+        for c in s.chars() {
+            let cu = c as u32;
+            if (0xAC00..=0xD7A3).contains(&cu) {
+                let si = cu - 0xAC00;
+                out.push(char::from_u32(0x1100 + si / 588).unwrap());
+                out.push(char::from_u32(0x1161 + (si % 588) / 28).unwrap());
+                if !si.is_multiple_of(28) {
+                    out.push(char::from_u32(0x11A7 + si % 28).unwrap());
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn real_dest_path_finds_nfd_folder_from_nfc_text() {
+        use rawblow_core::config::same_folder;
+        // 맥에서 만든 NFD 폴더를 윈도우에서 연 상황: 화면 문자열은 NFC, 디스크 이름은 NFD.
+        let root = std::env::temp_dir().join(format!("rb_nfd_dest_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let real = root.join(nfd("사진")).join(nfd("한글"));
+        std::fs::create_dir_all(&real).unwrap();
+        let typed = root.join("사진").join("한글");
+        assert_eq!(nfc_hangul(&real.to_string_lossy()), typed.to_string_lossy());
+
+        let got = real_dest_path(&typed.to_string_lossy());
+        assert!(same_folder(&got, &real), "NFC 문자열이 실재 NFD 폴더를 가리켜야 함: {got:?}");
+
+        // 아직 없는 하위 경로: 실재 접두 아래에 입력한 이름 그대로 만든다.
+        let got_new = real_dest_path(&typed.join("새폴더").join("selected").to_string_lossy());
+        assert_eq!(got_new.file_name().unwrap(), "selected");
+        let parent = got_new.parent().unwrap();
+        assert_eq!(parent.file_name().unwrap(), "새폴더");
+        assert!(same_folder(parent.parent().unwrap(), &real), "접두는 실재 폴더: {got_new:?}");
+
+        // 없는 ASCII 하위 폴더(`{폴더}/selected`): 그 부모 목록은 읽지 않아도 접두는 실재 NFD 폴더,
+        // 끝은 입력한 이름 그대로.
+        let got_sel = real_dest_path(&typed.join("selected").to_string_lossy());
+        assert_eq!(got_sel.file_name().unwrap(), "selected");
+        assert!(same_folder(got_sel.parent().unwrap(), &real), "접두는 실재 폴더: {got_sel:?}");
+
+        // ASCII 경로는 손대지 않는다(있든 없든).
+        let ascii = "Z:/no/such/ascii_dir/";
+        assert_eq!(real_dest_path(ascii), std::path::PathBuf::from(ascii));
+        let root_s = root.to_string_lossy().into_owned();
+        assert_eq!(real_dest_path(&root_s), std::path::PathBuf::from(&root_s));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
