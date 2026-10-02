@@ -3,7 +3,7 @@
 
 use crate::model::{ColorTag, Entry, Label};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 pub const SIDECAR_DIR: &str = ".rawblow";
@@ -50,8 +50,10 @@ pub fn sidecar_txt_path(folder: &Path) -> PathBuf {
 /// 복구까지 실패하면 None. 파일이 아예 없을 때는 백업을 뒤지지 않는다(의도적 초기화 존중).
 /// `.bak`으로 읽으면 `session.json`에 다시 써서, 라벨을 안 바꾼 채 다시 열어도 분류가 남는다(#96).
 pub fn load(folder: &Path) -> Option<Session> {
-    let data = std::fs::read_to_string(sidecar_path(folder)).ok()?;
-    if let Ok(s) = serde_json::from_str(&data) {
+    let data = std::fs::read(sidecar_path(folder)).ok()?;
+    // UTF-8이 아닌 내용도 파싱 실패와 똑같이 손상 처리(예전엔 '없음'으로 취급돼 .corrupt·복구 없이
+    // 다음 저장이 손상본을 .bak 위에 복사했다).
+    if let Some(s) = parse(&data) {
         return Some(s);
     }
     let dir = sidecar_dir(folder);
@@ -61,6 +63,10 @@ pub fn load(folder: &Path) -> Option<Session> {
     // 복구한 내용을 메인 경로에 되살린다. 실패해도 이번 세션 메모리는 유효하다.
     let _ = crate::fsio::write_atomic_nosync(&sidecar_path(folder), bak.as_bytes());
     Some(session)
+}
+
+fn parse(data: &[u8]) -> Option<Session> {
+    serde_json::from_str(std::str::from_utf8(data).ok()?).ok()
 }
 
 /// 멤버 경로를 폴더 기준 상대 문자열로(불가하면 파일명).
@@ -78,18 +84,87 @@ fn rel(folder: &Path, p: &Path) -> String {
 /// 폴더 기준 상대 경로에서 확장자를 뺀 값(`day1/DSC_0001`). 루트 파일은 기존처럼 stem.
 fn item_key(folder: &Path, e: &Entry) -> String {
     let primary = e.members.first().map(|p| p.as_path()).unwrap_or(e.display.as_path());
-    let rel = rel(folder, primary);
+    path_key(folder, primary).unwrap_or_else(|| e.stem.clone())
+}
+
+/// 파일 하나의 키 형태(폴더 기준 상대 경로, 확장자 제외).
+fn path_key(folder: &Path, p: &Path) -> Option<String> {
+    let rel = rel(folder, p);
     let no_ext = Path::new(&rel).with_extension("");
-    no_ext
-        .to_str()
-        .map(|s| s.replace('\\', "/"))
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| e.stem.clone())
+    no_ext.to_str().map(|s| s.replace('\\', "/")).filter(|s| !s.is_empty())
+}
+
+/// 키·멤버 경로 비교용 정규화('/' 구분, 대소문자 무시).
+fn norm(s: &str) -> String {
+    s.replace('\\', "/").to_ascii_lowercase()
+}
+
+/// 저장된 기록 색인. 항목 키는 첫 멤버를 따르므로 페어링·멤버가 바뀌면 달라진다 —
+/// 그래서 기록을 항목 키 하나로만 찾지 않고 멤버 키·저장된 멤버 경로로도 찾는다.
+struct Index<'a> {
+    by_key: BTreeMap<String, &'a ItemRec>,
+    /// 정규화 멤버 경로 → 그 멤버를 담은 기록 키들(키 순).
+    by_member: BTreeMap<String, Vec<String>>,
+}
+
+impl<'a> Index<'a> {
+    fn new(session: &'a Session) -> Self {
+        let mut by_key = BTreeMap::new();
+        let mut by_member: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (k, v) in &session.items {
+            let k = norm(k);
+            for m in &v.members {
+                by_member.entry(norm(m)).or_default().push(k.clone());
+            }
+            by_key.insert(k, v);
+        }
+        Index { by_key, by_member }
+    }
+
+    /// 항목에 속한 기록 키(우선순위 순, 중복 없음): 항목 자신의 키 → 멤버 순서대로
+    /// 그 멤버의 키, 그 멤버 경로를 담은 기록.
+    fn keys_for(&self, folder: &Path, e: &Entry) -> Vec<String> {
+        let mut cands = vec![norm(&item_key(folder, e))];
+        for m in &e.members {
+            cands.extend(path_key(folder, m).map(|k| norm(&k)));
+            cands.extend(self.by_member.get(&norm(&rel(folder, m))).into_iter().flatten().cloned());
+        }
+        let mut out: Vec<String> = Vec::new();
+        for k in cands {
+            if self.by_key.contains_key(&k) && !out.contains(&k) {
+                out.push(k);
+            }
+        }
+        out
+    }
 }
 
 /// 분류된(미선택 제외) 항목을 사이드카로 저장한다. txt도 동시 출력.
+/// 범위는 재귀 목록과 같다(전체 재작성) — 비재귀 목록은 [`save_scoped`].
 pub fn save(folder: &Path, entries: &[Entry]) -> std::io::Result<()> {
+    save_scoped(folder, entries, true)
+}
+
+/// `recursive`는 entries를 만든 **스캔**이 하위 폴더까지 봤는지(설정값이 아니라 실제 스캔 기준).
+/// 재귀 목록이면 전체를 다시 써서 묵은 키를 정리한다. 비재귀 목록이면 하위 폴더 기록(키에 '/')은
+/// 범위 밖이라 그대로 둔다 — 하위 폴더를 끄고 한 장만 분류해도 재귀 세션 기록이 지워지지 않게.
+/// 단 현재 항목이 읽어 가는 기록(병합 항목의 루트 멤버 등)은 이번 저장이 대신하므로 남기지 않는다
+/// (미선택으로 되돌린 것이 되살아나지 않게). 기존 파일을 못 읽으면 예전처럼 전체 재작성.
+pub fn save_scoped(folder: &Path, entries: &[Entry], recursive: bool) -> std::io::Result<()> {
     let mut items = BTreeMap::new();
+    if !recursive {
+        if let Some(old) = std::fs::read(sidecar_path(folder)).ok().and_then(|d| parse(&d)) {
+            let idx = Index::new(&old);
+            let claimed: BTreeSet<String> =
+                entries.iter().flat_map(|e| idx.keys_for(folder, e)).collect();
+            for (k, v) in old.items {
+                let nk = norm(&k);
+                if nk.contains('/') && !claimed.contains(&nk) {
+                    items.insert(k, v);
+                }
+            }
+        }
+    }
     for e in entries {
         if e.label == Label::Unrated && e.stars == 0 && e.tag == ColorTag::None {
             continue; // 미선택 + 무별점 + 무태그는 키 생략(스펙). 별점·태그만 있어도 보존.
@@ -189,31 +264,29 @@ pub fn render_txt(session: &Session) -> String {
 }
 
 /// 로드한 세션의 라벨을 현재 항목에 복원한다.
-/// 키는 상대 경로(확장자 제외). 옛 stem-only 세션은 그 stem이 **한 장뿐일 때**만 폴백(#98).
+/// 키는 상대 경로(확장자 제외). 항목 키뿐 아니라 멤버 키·저장된 멤버 경로로 찾은 기록을 모두
+/// 모아 필드별로 합친다(자기 키 기록 우선, 이후 멤버 순: 미선택 아닌 첫 라벨, 0 아닌 첫 별점,
+/// 무태그 아닌 첫 태그) — 0.6.1의 jpg/·원본/ 두 키나, 멤버가 바뀌어 달라진 키도 잃지 않게.
+/// 옛 stem-only 세션은 아무 기록도 못 찾았고 그 stem이 **한 장뿐일 때**만 폴백(#98).
 pub fn apply(session: &Session, entries: &mut [Entry], folder: &Path) {
-    let map: BTreeMap<String, (Label, u8, ColorTag)> = session
-        .items
-        .iter()
-        .map(|(k, v)| (k.replace('\\', "/").to_ascii_lowercase(), (v.label, v.stars, v.tag)))
-        .collect();
+    let idx = Index::new(session);
     let mut stem_counts: BTreeMap<String, usize> = BTreeMap::new();
     for e in entries.iter() {
         *stem_counts.entry(e.stem.to_ascii_lowercase()).or_insert(0) += 1;
     }
     for e in entries.iter_mut() {
-        let key = item_key(folder, e).to_ascii_lowercase();
+        let mut recs: Vec<&ItemRec> =
+            idx.keys_for(folder, e).iter().filter_map(|k| idx.by_key.get(k).copied()).collect();
         let stem_l = e.stem.to_ascii_lowercase();
-        let rec = map.get(&key).or_else(|| {
-            if stem_counts.get(&stem_l).copied().unwrap_or(0) == 1 {
-                map.get(&stem_l)
-            } else {
-                None
-            }
-        });
-        if let Some((l, s, t)) = rec {
-            e.label = *l;
-            e.stars = (*s).min(5); // 손편집/구포맷의 비정상 값 방어(표시 깨짐 방지).
-            e.tag = *t;
+        if recs.is_empty() && stem_counts.get(&stem_l).copied().unwrap_or(0) == 1 {
+            recs.extend(idx.by_key.get(&stem_l).copied());
         }
+        if recs.is_empty() {
+            continue;
+        }
+        e.label = recs.iter().map(|r| r.label).find(|l| *l != Label::Unrated).unwrap_or_default();
+        // 손편집/구포맷의 비정상 값 방어(표시 깨짐 방지).
+        e.stars = recs.iter().map(|r| r.stars).find(|s| *s != 0).unwrap_or(0).min(5);
+        e.tag = recs.iter().map(|r| r.tag).find(|t| *t != ColorTag::None).unwrap_or_default();
     }
 }

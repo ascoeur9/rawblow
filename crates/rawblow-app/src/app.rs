@@ -224,6 +224,9 @@ pub struct RawBlowApp {
     generation: u64,
 
     sidecar_dirty: bool,
+    // 지금 items를 만든 스캔이 재귀였는지. 설정(cfg.recursive)은 재스캔 없이 바뀔 수 있어
+    // 사이드카 저장 범위는 이 값으로 정한다(비재귀 목록이 하위 폴더 기록을 지우지 않게).
+    scan_recursive: bool,
     last_save: Instant,
     // 사이드카 저장 실패 표면화(#62). 예전엔 save 결과를 버리고 dirty를 내려, 읽기 전용
     // 폴더·권한·용량 부족에서 상태바가 "saved"인 채 세션 전체가 무음 유실됐다.
@@ -421,6 +424,7 @@ impl RawBlowApp {
             histo: std::collections::HashMap::new(),
             generation: 0,
             sidecar_dirty: false,
+            scan_recursive: false,
             last_save: Instant::now(),
             save_error: None,
             save_fail_count: 0,
@@ -572,6 +576,7 @@ impl RawBlowApp {
             histo: std::collections::HashMap::new(),
             generation: 0,
             sidecar_dirty: false,
+            scan_recursive: false,
             last_save: Instant::now(),
             save_error: None,
             save_fail_count: 0,
@@ -652,7 +657,7 @@ impl RawBlowApp {
         if self.sidecar_dirty {
             if let Some(cur) = &self.folder {
                 let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
-                if sidecar::save(cur, &entries).is_err() {
+                if sidecar::save_scoped(cur, &entries, self.scan_recursive).is_err() {
                     // 안내용 옛 폴더명(마지막 경로 요소, lossy). 루트 등 file_name이 없으면 전체 경로.
                     flush_failed = Some(
                         cur.file_name()
@@ -708,6 +713,7 @@ impl RawBlowApp {
         self.scanning = true;
         let gen = self.generation;
         let recursive = self.cfg.recursive;
+        self.scan_recursive = recursive;
         let sort = self.sort;
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.scan_rx = Some(rx);
@@ -1426,7 +1432,7 @@ impl RawBlowApp {
         if self.sidecar_dirty && self.last_save.elapsed() > sidecar_retry_interval(self.save_fail_count) {
             if let Some(folder) = &self.folder {
                 let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
-                match sidecar::save(folder, &entries) {
+                match sidecar::save_scoped(folder, &entries, self.scan_recursive) {
                     Ok(()) => {
                         self.sidecar_dirty = false;
                         self.last_save = Instant::now();
@@ -1692,7 +1698,7 @@ impl eframe::App for RawBlowApp {
                 let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
                 // 결과는 버린다 — 창이 이미 닫히는 중이라 실패해도 알릴 UI가 없다(재시도 불가,
                 // 다음 실행이 직전 정상 사이드카를 복원하는 것이 최선의 폴백).
-                let _ = sidecar::save(folder, &entries);
+                let _ = sidecar::save_scoped(folder, &entries, self.scan_recursive);
             }
         }
         // 다음 실행에서 이어볼 수 있게 지금 보던 사진을 기록(#86). 바로 아래 저장에 실려 나간다.
