@@ -723,15 +723,15 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "셀렉" => ("CULLING", "セレクト"),
         "앱" => ("APP", "アプリ"),
         // 설정 행 설명(제목 아래 항상 표시).
-        "항상 원본보기" => ("Always original", "常に原寸表示"),
+        "원본보기 유지" => ("Keep original view", "原寸表示を維持"),
         "미니 지도" => ("Mini map", "ミニマップ"),
         "캐시 삭제" => ("Delete Cache", "キャッシュを削除"),
         "썸네일 캐시를 삭제했습니다" => ("Thumbnail cache deleted", "サムネイルキャッシュを削除しました"),
         "하위 폴더의 사진까지 함께 불러옵니다." => ("Also loads photos in subfolders.", "サブフォルダの写真もまとめて読み込みます。"),
         "사진을 보여 주는 순서를 정합니다." => ("Sets the order photos are shown in.", "写真を表示する順序を設定します。"),
-        "켜면 다음 사진으로 넘겨도 원본보기를 유지합니다." => (
-            "When on, original view stays on as you move to the next photo.",
-            "オンにすると、次の写真に移っても原寸表示を維持します。",
+        "켜면 창맞춤 상태에서도 다음 사진을 원본보기로 엽니다." => (
+            "When on, the next photo opens in original view even at Fit.",
+            "オンにすると、フィット時でも次の写真を原寸表示で開きます。",
         ),
         "미리 로딩할 사진 수를 정합니다." => ("Sets how many photos to preload.", "先読みする写真の枚数を設定します。"),
         "한 줄에 보여 줄 썸네일 수를 정합니다." => ("Sets how many thumbnails fit in a row.", "1行に表示するサムネイルの数を設定します。"),

@@ -658,9 +658,9 @@ impl RawBlowApp {
                         if settings_toggle_row(
                             ui,
                             SIcon::Orig,
-                            tr(lang, "항상 원본보기"),
+                            tr(lang, "원본보기 유지"),
                             &mut keep_orig,
-                            tr(lang, "켜면 다음 사진으로 넘겨도 원본보기를 유지합니다."),
+                            tr(lang, "켜면 창맞춤 상태에서도 다음 사진을 원본보기로 엽니다."),
                         ) {
                             self.cfg.view_carry = if keep_orig { ViewCarry::Keep } else { ViewCarry::ZoomOnly };
                             self.persist_cfg();
@@ -1565,9 +1565,9 @@ mod tests {
         qa.click_exact("크게");
         assert!(qa.app.cfg.large_badges, "크게 클릭이 large_badges=true");
 
-        qa.click_exact("항상 원본보기");
-        assert_eq!(qa.app.cfg.view_carry, ViewCarry::Keep, "항상 원본보기 켬 = Keep");
-        qa.click_exact("항상 원본보기");
+        qa.click_exact("원본보기 유지");
+        assert_eq!(qa.app.cfg.view_carry, ViewCarry::Keep, "원본보기 유지 켬 = Keep");
+        qa.click_exact("원본보기 유지");
         assert_eq!(qa.app.cfg.view_carry, ViewCarry::ZoomOnly, "끔 = 확대 중일 때만");
 
         qa.click_exact("지정된 폴더");
@@ -1728,7 +1728,7 @@ mod tests {
             "정렬",
             "파일명순",
             "촬영시간순",
-            "항상 원본보기",
+            "원본보기 유지",
             "미니 지도",
             "AF 포인트",
             "전송 폴더",
@@ -1847,7 +1847,7 @@ mod tests {
 
         let texts = texts_from(&out);
         let l1 = texts.iter().find(|(t, _)| t == "하위 폴더").map(|(_, r)| r.min.x);
-        let l2 = texts.iter().find(|(t, _)| t == "항상 원본보기").map(|(_, r)| r.min.x);
+        let l2 = texts.iter().find(|(t, _)| t == "원본보기 유지").map(|(_, r)| r.min.x);
         let l3 = texts.iter().find(|(t, _)| t == "프리로드").map(|(_, r)| r.min.x);
         match (l1, l2, l3) {
             (Some(a), Some(b), Some(c)) => {
