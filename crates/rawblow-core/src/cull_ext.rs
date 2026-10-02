@@ -8,6 +8,7 @@
 //! 모두 모델 불필요(순수 CV/메타). CLIP 임베딩 기반 의미적 클러스터링·프롬프트 축은 `cull_clip`(별도).
 
 use crate::decode::DecodedImage;
+use crate::quality::score_desc;
 use std::collections::HashSet;
 
 // ───────────────────────── Tier1: EXIF 수치 파싱 ─────────────────────────
@@ -143,8 +144,8 @@ pub struct MetaFilter {
     pub iso_min: Option<u32>,
     pub aperture_max: Option<f32>, // 조리개 f값 상한(밝은 렌즈만: f<=값)
     pub aperture_min: Option<f32>,
-    pub shutter_min_secs: Option<f32>, // 손떨림 거르기: 1/focal 등 하한
-    pub shutter_max_secs: Option<f32>,
+    pub shutter_min_secs: Option<f32>, // 노출 시간 하한(이보다 짧으면 제외)
+    pub shutter_max_secs: Option<f32>, // 노출 시간 상한(이보다 길면 제외 — 손떨림 거르기)
     pub focal_min_mm: Option<f32>,
     pub focal_max_mm: Option<f32>,
     pub camera_contains: Option<String>,
@@ -245,7 +246,7 @@ pub fn group_bursts(times: &[Option<i64>], max_gap_secs: i64) -> Vec<Vec<usize>>
 }
 
 /// 각 그룹에서 점수 상위 `top_n`개 인덱스를 채택(Good) 집합으로 반환. 나머지는 제외(Bad).
-/// 점수 동률은 인덱스 작은 쪽(먼저 찍힌 컷) 우선.
+/// 점수 동률은 인덱스 작은 쪽(먼저 찍힌 컷) 우선, NaN 점수는 최하위.
 pub fn select_best_per_group(
     groups: &[Vec<usize>],
     scores: &[f32],
@@ -254,12 +255,7 @@ pub fn select_best_per_group(
     let mut keep = HashSet::new();
     for g in groups {
         let mut idx: Vec<usize> = g.clone();
-        idx.sort_by(|&a, &b| {
-            scores[b]
-                .partial_cmp(&scores[a])
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.cmp(&b))
-        });
+        idx.sort_by(|&a, &b| score_desc(scores[a], scores[b]).then(a.cmp(&b)));
         for &i in idx.iter().take(top_n.max(1)) {
             keep.insert(i);
         }
@@ -367,16 +363,15 @@ pub struct GroupCullParams {
     pub dedup_keep: usize,
 }
 
-/// rank 내림차순(동점은 인덱스 오름차순)으로 정렬한 그룹. 앞의 keep개가 살아남는다.
+/// rank 내림차순(동점은 인덱스 오름차순, NaN은 맨 뒤)으로 정렬한 그룹. 앞의 keep개가 살아남는다.
 fn sorted_by_rank(orig: &[usize], ranks: &[f32]) -> Vec<usize> {
     let mut v = orig.to_vec();
-    v.sort_by(|&a, &b| {
-        ranks[b].partial_cmp(&ranks[a]).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(&b))
-    });
+    v.sort_by(|&a, &b| score_desc(ranks[a], ranks[b]).then(a.cmp(&b)));
     v
 }
 
 /// 그룹 안에서 한 컷의 위치(#91). `rank`는 1부터, `rank > keep`이면 이 그룹 때문에 탈락.
+/// `rank`·`size`는 그룹 중 순위를 다툰(그 시점에 좋음이던) 컷 기준이다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GroupRank {
     pub rank: usize,
@@ -390,7 +385,8 @@ impl GroupRank {
     }
 }
 
-/// 한 컷의 그룹 컬링 결과와 근거(#91). 2장 이상인 그룹에 속했을 때만 `burst`/`dedup`이 채워진다.
+/// 한 컷의 그룹 컬링 결과와 근거(#91). 좋음인 컷 2장 이상이 다툰 그룹에 속했을 때만
+/// `burst`/`dedup`이 채워진다(이미 탈락한 컷은 순위에 끼지 않아 비어 있다).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GroupOutcome {
     /// false면 메타 필터에 걸려 판정 대상에서 빠졌다(라벨을 건드리지 않음).
@@ -400,8 +396,9 @@ pub struct GroupOutcome {
     pub dedup: Option<GroupRank>,
 }
 
-/// 메타 필터로 대상을 좁히고(불통과=제외, 손대지 않음), 연사·시각중복 그룹마다 rank 상위 keep만
-/// Good 유지(나머지는 Bad로 강등). 반환: 각 인덱스별 `None`=제외, `Some(true/false)`=Good/Bad.
+/// 메타 필터로 대상을 좁히고(불통과=제외, 손대지 않음), 연사·시각중복 그룹마다 좋음인 컷 중
+/// rank 상위 keep만 Good 유지(나머지는 Bad로 강등, 이미 Bad는 그대로). 연사 묶기는 입력 순서의
+/// 인접 컷 기준이므로 `items`는 촬영 순서여야 한다. 반환: 각 인덱스별 `None`=제외, `Some(true/false)`=Good/Bad.
 pub fn apply_group_culling(items: &[CullItem], p: &GroupCullParams) -> Vec<Option<bool>> {
     explain_group_culling(items, p)
         .into_iter()
@@ -424,12 +421,13 @@ pub fn explain_group_culling(items: &[CullItem], p: &GroupCullParams) -> Vec<Gro
     let included: Vec<usize> = (0..n).filter(|&i| out[i].included).collect();
     let ranks: Vec<f32> = items.iter().map(|it| it.rank).collect();
 
-    // 연사: included를 원래(촬영) 순서대로 시각 간격 그룹핑.
+    // 연사: included를 원래(촬영) 순서대로 시각 간격 그룹핑. 유지 슬롯은 그룹 안에서 **아직 좋음인**
+    // 컷끼리만 다툰다 — 이미 탈락한 컷이 슬롯을 차지해 좋은 컷까지 전부 탈락하는 것을 막는다.
     if p.use_burst {
         let keep = p.burst_keep.max(1);
         let times: Vec<Option<i64>> = included.iter().map(|&i| items[i].shot_time).collect();
         for g in group_bursts(&times, p.burst_gap_secs) {
-            let orig: Vec<usize> = g.iter().map(|&k| included[k]).collect();
+            let orig: Vec<usize> = g.iter().map(|&k| included[k]).filter(|&i| out[i].good).collect();
             let sorted = sorted_by_rank(&orig, &ranks);
             for (pos, &oi) in sorted.iter().enumerate() {
                 let r = GroupRank { rank: pos + 1, size: sorted.len(), keep };
@@ -442,13 +440,13 @@ pub fn explain_group_culling(items: &[CullItem], p: &GroupCullParams) -> Vec<Gro
             }
         }
     }
-    // 시각중복: dhash 있는 included만 클러스터(없으면 단독 취급).
+    // 시각중복: dhash 있는 included만 클러스터(없으면 단독 취급). 슬롯은 연사처럼 좋음인 컷끼리만.
     if p.use_dedup {
         let keep = p.dedup_keep.max(1);
         let valid: Vec<usize> = included.iter().cloned().filter(|&i| items[i].dhash.is_some()).collect();
         let vhash: Vec<u64> = valid.iter().map(|&i| items[i].dhash.unwrap()).collect();
         for c in cluster_near_dups(&vhash, p.dedup_hamming) {
-            let orig: Vec<usize> = c.iter().map(|&k| valid[k]).collect();
+            let orig: Vec<usize> = c.iter().map(|&k| valid[k]).filter(|&i| out[i].good).collect();
             let sorted = sorted_by_rank(&orig, &ranks);
             for (pos, &oi) in sorted.iter().enumerate() {
                 let r = GroupRank { rank: pos + 1, size: sorted.len(), keep };
@@ -702,5 +700,100 @@ mod tests {
         assert_eq!(out[1], Some(true), "유사쌍 고점 유지");
         assert_eq!(out[0], Some(false), "유사쌍 저점 강등");
         assert_eq!(out[2], Some(true), "단독 유지");
+    }
+
+    #[test]
+    fn group_culling_bad_items_do_not_take_keep_slots() {
+        // 연사 3장: 0은 rank 최고지만 이미 탈락(CV). 유지 슬롯은 좋음인 1·2끼리 다툰다.
+        let t = |s| meta_iso_time(None, Some(s));
+        let items = vec![
+            CullItem { good: false, rank: 0.95, dhash: None, shot_time: Some(100), meta: t(100) },
+            CullItem { good: true, rank: 0.6, dhash: None, shot_time: Some(101), meta: t(101) },
+            CullItem { good: true, rank: 0.4, dhash: None, shot_time: Some(102), meta: t(102) },
+        ];
+        let p = GroupCullParams {
+            use_meta: false, meta_filter: MetaFilter::default(),
+            use_burst: true, burst_gap_secs: 2, burst_keep: 1,
+            use_dedup: false, dedup_hamming: 6, dedup_keep: 1,
+        };
+        let out = explain_group_culling(&items, &p);
+        assert!(!out[0].good, "이미 탈락한 컷은 탈락 유지");
+        assert_eq!(out[0].burst, None, "순위 경쟁에 끼지 않았으니 연사 근거도 없음");
+        assert!(out[1].good, "좋음 중 최고가 슬롯을 받는다(그룹 전체 탈락 방지)");
+        assert_eq!(out[1].burst, Some(GroupRank { rank: 1, size: 2, keep: 1 }));
+        assert!(!out[2].good);
+        assert_eq!(out[2].burst, Some(GroupRank { rank: 2, size: 2, keep: 1 }));
+
+        // 좋음이 하나뿐이면 다툴 상대가 없다 → 유지, 그룹 근거 없음.
+        let mut solo = items.clone();
+        solo[2].good = false;
+        let out = explain_group_culling(&solo, &p);
+        assert_eq!(out.iter().map(|o| o.good).collect::<Vec<_>>(), vec![false, true, false]);
+        assert!(out.iter().all(|o| o.burst.is_none()));
+    }
+
+    #[test]
+    fn dedup_slots_skip_items_already_demoted_by_burst() {
+        // 유사 3장(같은 해시). 0·1은 연사 → 1이 연사에서 강등. 중복 정리(2장 유지)는 남은 0·2에게.
+        let h = dhash(&gradient(120, 90, 0));
+        let items = vec![
+            CullItem { good: true, rank: 0.9, dhash: Some(h), shot_time: Some(100), meta: PhotoMeta::default() },
+            CullItem { good: true, rank: 0.8, dhash: Some(h), shot_time: Some(101), meta: PhotoMeta::default() },
+            CullItem { good: true, rank: 0.7, dhash: Some(h), shot_time: Some(900), meta: PhotoMeta::default() },
+        ];
+        let p = GroupCullParams {
+            use_meta: false, meta_filter: MetaFilter::default(),
+            use_burst: true, burst_gap_secs: 2, burst_keep: 1,
+            use_dedup: true, dedup_hamming: 6, dedup_keep: 2,
+        };
+        let out = explain_group_culling(&items, &p);
+        assert_eq!(out.iter().map(|o| o.good).collect::<Vec<_>>(), vec![true, false, true]);
+        assert_eq!(out[1].dedup, None, "연사에서 이미 탈락 — 중복 슬롯을 차지하지 않음");
+        assert_eq!(out[2].dedup, Some(GroupRank { rank: 2, size: 2, keep: 2 }));
+    }
+
+    /// 30장 중 3장마다 하나가 NaN, 나머지 점수는 서로 다르다(30 > 20 — 패닉할 수 있는 정렬 경로).
+    fn nan_scores() -> Vec<f32> {
+        (0..30).map(|i| if i % 3 == 0 { f32::NAN } else { (i * 11 % 30) as f32 / 30.0 }).collect()
+    }
+
+    #[test]
+    fn nan_scores_rank_last_in_best_per_group() {
+        let scores = nan_scores();
+        let group = vec![(0..30).collect::<Vec<usize>>()];
+        let keep = select_best_per_group(&group, &scores, 3);
+        let mut finite: Vec<usize> = (0..30).filter(|i| i % 3 != 0).collect();
+        finite.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
+        assert_eq!(keep, finite[..3].iter().copied().collect::<HashSet<_>>());
+        // 전부 NaN이면 동점 — 인덱스 작은 쪽(먼저 찍힌 컷) 우선.
+        let all_nan = vec![f32::NAN; 30];
+        assert_eq!(select_best_per_group(&group, &all_nan, 2), HashSet::from([0, 1]));
+    }
+
+    #[test]
+    fn nan_rank_is_demoted_in_burst_and_dedup() {
+        let scores = nan_scores();
+        let h = dhash(&gradient(120, 90, 0));
+        let items: Vec<CullItem> = scores
+            .iter()
+            .enumerate()
+            .map(|(i, &r)| CullItem { good: true, rank: r, dhash: Some(h), shot_time: Some(100 + i as i64), meta: PhotoMeta::default() })
+            .collect();
+        let mut finite: Vec<usize> = (0..30).filter(|i| i % 3 != 0).collect();
+        finite.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
+        for (use_burst, use_dedup) in [(true, false), (false, true)] {
+            let p = GroupCullParams {
+                use_meta: false, meta_filter: MetaFilter::default(),
+                use_burst, burst_gap_secs: 2, burst_keep: 2,
+                use_dedup, dedup_hamming: 6, dedup_keep: 2,
+            };
+            let out = explain_group_culling(&items, &p);
+            let good: HashSet<usize> = (0..30).filter(|&i| out[i].good).collect();
+            assert_eq!(good, finite[..2].iter().copied().collect(), "burst={use_burst}");
+            // NaN 컷은 유한 점수 컷 뒤, 서로는 인덱스 순.
+            let r = |i: usize| if use_burst { out[i].burst } else { out[i].dedup }.unwrap().rank;
+            assert_eq!(r(0), finite.len() + 1);
+            assert_eq!(r(27), 30);
+        }
     }
 }

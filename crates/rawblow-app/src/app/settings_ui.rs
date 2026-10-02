@@ -16,11 +16,15 @@ pub(super) const SETTINGS_SECTION_STROKE: Color32 = theme::LINE2;
 pub(super) const SETTINGS_ACTION_FILL: Color32 = theme::BG3;
 pub(super) const SETTINGS_ACTION_STROKE: Color32 = theme::LINE2;
 
-const SETTINGS_COL_W: f32 = 560.0;
+const SETTINGS_COL_W: f32 = 920.0;
 const SETTINGS_ROW_H: f32 = 48.0;
 const SETTINGS_TOGGLE_W: f32 = 52.0;
 const SETTINGS_TOGGLE_H: f32 = 30.0;
 const SETTINGS_BTN_H: f32 = 36.0;
+/// 입력칸·숫자칸·세그먼트 높이.
+const SETTINGS_CTRL_H: f32 = 32.0;
+/// 행 머리(제목·설명)가 오른쪽 컨트롤 자리를 침범하지 않도록 비워 두는 폭.
+const SETTINGS_CTRL_RESERVE: f32 = 380.0;
 const SETTINGS_LABEL_FONT: f32 = 15.0;
 const SETTINGS_HEAD_FONT: f32 = 15.0;
 const SETTINGS_BTN_FONT: f32 = 15.0;
@@ -31,7 +35,7 @@ pub(super) fn settings_section_panel(
     title: &str,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
-    ui.label(egui::RichText::new(title).font(prop(SETTINGS_HEAD_FONT)).color(INK_HEAD));
+    ui.label(egui::RichText::new(title.to_uppercase()).font(prop(SETTINGS_HEAD_FONT)).color(INK_HEAD));
     ui.add_space(8.0);
     egui::Frame::none()
         .fill(SETTINGS_SECTION_FILL)
@@ -39,10 +43,20 @@ pub(super) fn settings_section_panel(
         .rounding(10.0)
         .inner_margin(egui::Margin::symmetric(18.0, 12.0))
         .show(ui, |ui| {
+            ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing = Vec2::new(8.0, 0.0);
             add_contents(ui);
         });
     ui.add_space(22.0);
+}
+
+const SETTINGS_DESC_FONT: f32 = 13.0;
+
+/// 섹션 안내: 카드 맨 위(또는 행 묶음 앞)에 한 줄.
+fn settings_section_note(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(6.0);
+    ui.add(egui::Label::new(egui::RichText::new(text).font(prop(SETTINGS_DESC_FONT)).color(INK_HELP)).wrap());
+    ui.add_space(6.0);
 }
 
 /// 설정 전용 액션 버튼. 비활성에서도 fill+stroke. 창 폭을 채우지 않는다(데스크톱 크기).
@@ -90,6 +104,8 @@ enum SIcon {
     Cosly,
     Person,
     Key,
+    Map,
+    Af,
 }
 
 const SICON: f32 = 18.0;
@@ -232,6 +248,17 @@ fn draw_sicon(p: &egui::Painter, rect: Rect, kind: SIcon) {
             p.line_segment([Pos2::new(r.left() + 3.5, r.bottom() - 2.5), Pos2::new(r.left() + 5.0, mid.y + 1.5)], st);
             p.line_segment([Pos2::new(r.right() - 3.5, r.bottom() - 2.5), Pos2::new(r.right() - 5.0, mid.y + 1.5)], st);
         }
+        SIcon::Map => {
+            let pin = Pos2::new(mid.x, mid.y - 2.0);
+            p.circle_stroke(pin, r.width() * 0.26, st);
+            p.line_segment([Pos2::new(mid.x - 3.6, mid.y + 0.5), Pos2::new(mid.x, r.bottom() - 1.5)], st);
+            p.line_segment([Pos2::new(mid.x + 3.6, mid.y + 0.5), Pos2::new(mid.x, r.bottom() - 1.5)], st);
+        }
+        SIcon::Af => {
+            let b = Rect::from_center_size(mid, Vec2::splat(r.width() * 0.62));
+            p.rect_stroke(b, Rounding::same(1.0), st);
+            p.circle_filled(mid, 1.4, c);
+        }
         SIcon::Key => {
             p.rect_stroke(
                 Rect::from_min_max(Pos2::new(r.left() + 2.0, mid.y - 3.2), Pos2::new(r.right() - 2.0, mid.y + 3.2)),
@@ -259,35 +286,80 @@ fn paint_settings_toggle(painter: &egui::Painter, rect: Rect, on: bool) {
     painter.circle_filled(Pos2::new(cx, rect.center().y), r, theme::INK);
 }
 
-/// 라벨 왼쪽 · 스위치 오른쪽. 행 전체가 클릭된다(체크박스 없음).
+/// 설정 공통 행: [아이콘 | 제목(+설명) | 컨트롤]. 모든 행이 이 한 가지 격자를 쓴다.
+/// 아이콘은 제목 줄의 세로 가운데, 제목 x = 아이콘 + 간격, 컨트롤은 오른쪽 끝·행 세로 가운데.
+fn settings_row<R>(
+    ui: &mut egui::Ui,
+    icon: SIcon,
+    label: &str,
+    desc: Option<&str>,
+    control: impl FnOnce(&mut egui::Ui) -> R,
+) -> (R, egui::Response) {
+    let w = ui.available_width();
+    let min_h = if desc.is_some() { SETTINGS_ROW_H + 18.0 } else { SETTINGS_ROW_H };
+    // 가로(세로 가운데) 행: 머리 블록과 컨트롤이 둘 다 행 높이의 가운데에 온다.
+    let inner = ui.allocate_ui_with_layout(
+        Vec2::new(w, min_h),
+        Layout::left_to_right(Align::Center),
+        |ui| {
+            ui.set_min_size(Vec2::new(w, min_h));
+            settings_row_head(ui, icon, label, desc, (w - SETTINGS_CTRL_RESERVE).max(200.0));
+            ui.with_layout(Layout::right_to_left(Align::Center), control).inner
+        },
+    );
+    (inner.inner, inner.response)
+}
+
+/// 행 왼쪽 머리: 아이콘 + 제목, 그 아래 제목 x에 맞춘 설명.
+/// `ui.vertical`은 가로 행의 세로 가운데 정렬을 받지 않으므로, 높이를 먼저 재서 그 크기로 자리를 잡는다.
+fn settings_row_head(ui: &mut egui::Ui, icon: SIcon, label: &str, desc: Option<&str>, max_w: f32) {
+    const DESC_GAP: f32 = 4.0;
+    let label_font = prop(SETTINGS_LABEL_FONT);
+    let desc_font = prop(SETTINGS_DESC_FONT);
+    let label_h = ui.fonts(|f| f.row_height(&label_font));
+    let desc_w = (max_w - SICON - SICON_GAP).max(80.0);
+    let desc_h = desc.map_or(0.0, |d| {
+        ui.fonts(|f| f.layout(d.to_string(), desc_font.clone(), INK_HELP, desc_w).size().y) + DESC_GAP
+    });
+    ui.allocate_ui_with_layout(
+        Vec2::new(max_w, label_h + desc_h),
+        Layout::top_down(Align::Min),
+        |ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(0.0, DESC_GAP);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let (slot, _) = ui.allocate_exact_size(Vec2::new(SICON, label_h), Sense::hover());
+                draw_sicon(ui.painter(), Rect::from_center_size(slot.center(), Vec2::splat(SICON)), icon);
+                ui.add_space(SICON_GAP);
+                ui.label(egui::RichText::new(label).font(label_font.clone()).color(theme::INK));
+            });
+            if let Some(d) = desc {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.add_space(SICON + SICON_GAP);
+                    ui.add(egui::Label::new(egui::RichText::new(d).font(desc_font.clone()).color(INK_HELP)).wrap());
+                });
+            }
+        },
+    );
+}
+
+/// 토글 행. 행 어디를 눌러도 켜고 끈다(체크박스 없음).
 fn settings_toggle_row(
     ui: &mut egui::Ui,
     icon: SIcon,
     label: &str,
     on: &mut bool,
-    hint: Option<&str>,
+    desc: &str,
 ) -> bool {
-    let w = ui.available_width();
-    let (rect, mut resp) = ui.allocate_exact_size(Vec2::new(w, SETTINGS_ROW_H), Sense::click());
-    let ir = Rect::from_center_size(Pos2::new(rect.left() + SICON * 0.5, rect.center().y), Vec2::splat(SICON));
-    draw_sicon(ui.painter(), ir, icon);
-    ui.painter().text(
-        Pos2::new(rect.left() + SICON + SICON_GAP, rect.center().y),
-        Align2::LEFT_CENTER,
-        label,
-        prop(SETTINGS_LABEL_FONT),
-        theme::INK,
-    );
-    let trect = Rect::from_center_size(
-        Pos2::new(rect.right() - SETTINGS_TOGGLE_W * 0.5, rect.center().y),
-        Vec2::new(SETTINGS_TOGGLE_W, SETTINGS_TOGGLE_H),
-    );
-    paint_settings_toggle(ui.painter(), trect, *on);
+    let cur = *on;
+    let (_, row) = settings_row(ui, icon, label, Some(desc), |ui| {
+        let (r, _) = ui.allocate_exact_size(Vec2::new(SETTINGS_TOGGLE_W, SETTINGS_TOGGLE_H), Sense::hover());
+        paint_settings_toggle(ui.painter(), r, cur);
+    });
+    let resp = ui.interact(row.rect, ui.id().with(("settings_toggle", label)), Sense::click());
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    if let Some(h) = hint {
-        resp = resp.on_hover_text(h);
     }
     if resp.clicked() {
         *on = !*on;
@@ -297,51 +369,53 @@ fn settings_toggle_row(
     }
 }
 
-/// 라벨 왼쪽 · 컨트롤 오른쪽. 같은 카드 안에서 x가 맞도록 한 줄, 접지 않음.
-fn settings_field_row(ui: &mut egui::Ui, icon: SIcon, label: &str, add: impl FnOnce(&mut egui::Ui)) {
-    ui.allocate_ui_with_layout(
-        Vec2::new(ui.available_width(), SETTINGS_ROW_H),
-        Layout::left_to_right(Align::Center),
-        |ui| {
-            let (ir, _) = ui.allocate_exact_size(Vec2::splat(SICON), Sense::hover());
-            draw_sicon(ui.painter(), ir, icon);
-            ui.add_space(SICON_GAP - ui.spacing().item_spacing.x);
-            ui.label(egui::RichText::new(label).font(prop(SETTINGS_LABEL_FONT)).color(theme::INK2));
-            ui.with_layout(Layout::right_to_left(Align::Center), add);
-        },
-    );
+/// 값 입력 행(숫자·키 표시·버튼 등). 컨트롤은 오른쪽 끝.
+fn settings_field_row(
+    ui: &mut egui::Ui,
+    icon: SIcon,
+    label: &str,
+    desc: Option<&str>,
+    add: impl FnOnce(&mut egui::Ui),
+) {
+    let _ = settings_row(ui, icon, label, desc, add);
 }
 
-/// 배타 선택: 아이콘+짧은 라벨, 세그먼트는 카드 폭을 채움.
+/// 설정 숫자 칸: 높이 SETTINGS_CTRL_H, 글자 세로 가운데. DragValue는 interact_size를 최소 크기로 쓴다.
+fn settings_drag(ui: &mut egui::Ui, w: f32, dv: egui::DragValue<'_>) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size = Vec2::new(w, SETTINGS_CTRL_H);
+        ui.style_mut().override_font_id = Some(prop(14.0));
+        ui.add(dv)
+    })
+    .inner
+}
+
+/// 배타 선택 행: 세그먼트는 오른쪽에 필요한 폭만.
 fn settings_choice_block(
     ui: &mut egui::Ui,
     icon: SIcon,
     label: &str,
+    desc: &str,
     options: &[(&str, &str)],
     selected: usize,
 ) -> Option<usize> {
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        let (ir, _) = ui.allocate_exact_size(Vec2::splat(SICON), Sense::hover());
-        draw_sicon(ui.painter(), ir, icon);
-        ui.label(egui::RichText::new(label).font(prop(SETTINGS_LABEL_FONT)).color(theme::INK2));
-    });
-    ui.add_space(8.0);
-    let clicked = settings_segmented(ui, options, selected);
-    ui.add_space(8.0);
-    clicked
+    settings_row(ui, icon, label, Some(desc), |ui| settings_segmented(ui, options, selected)).0
 }
 
-/// 설정용 세그먼트. 칸을 균등 분할하고 비활성에도 필이 있다(글로벌 `segmented`와 별개).
+/// 설정용 세그먼트. 칸 폭은 가장 긴 선택지에 맞춰 균등, 비활성에도 필이 있다(글로벌 `segmented`와 별개).
 fn settings_segmented(ui: &mut egui::Ui, options: &[(&str, &str)], selected: usize) -> Option<usize> {
     let mut clicked = None;
     let n = options.len().max(1);
-    let full = ui.available_width();
+    let font = prop(14.0);
+    let text_w = options
+        .iter()
+        .map(|(l, _)| ui.fonts(|f| f.layout_no_wrap((*l).to_string(), font.clone(), theme::INK).size().x))
+        .fold(0.0_f32, f32::max);
     let pad = 3.0;
     let gap = 3.0;
-    let h = 38.0;
-    let inner_w = (full - pad * 2.0).max(0.0);
-    let cell_w = ((inner_w - gap * (n as f32 - 1.0)) / n as f32).max(48.0);
+    let h = SETTINGS_CTRL_H;
+    let cell_w = (text_w + 28.0).max(84.0);
+    let full = cell_w * n as f32 + gap * (n as f32 - 1.0) + pad * 2.0;
     let (outer, _) = ui.allocate_exact_size(Vec2::new(full, h + pad * 2.0), Sense::hover());
     ui.painter().rect(
         outer,
@@ -365,7 +439,7 @@ fn settings_segmented(ui: &mut egui::Ui, options: &[(&str, &str)], selected: usi
             rect.center(),
             Align2::CENTER_CENTER,
             *label,
-            prop(14.0),
+            font.clone(),
             if active { theme::INK } else { theme::INK2 },
         );
         if resp.hovered() {
@@ -386,20 +460,24 @@ fn settings_inner_rule(ui: &mut egui::Ui) {
     ui.add_space(6.0);
 }
 
-/// 설정 맨 위 아이덴티티: 로고 + 버전 + 만든 사람. 링크/라이선스와 섞지 않는다.
+/// 설정 맨 위 아이덴티티: 로고 + 버전, 그 아래 만든 사람 행(다른 행과 같은 격자).
 fn settings_identity(ui: &mut egui::Ui) {
     egui::Frame::none()
         .fill(SETTINGS_SECTION_FILL)
         .stroke(Stroke::new(1.0_f32, SETTINGS_SECTION_STROKE))
         .rounding(10.0)
-        .inner_margin(egui::Margin::symmetric(18.0, 16.0))
+        .inner_margin(egui::Margin::symmetric(18.0, 12.0))
         .show(ui, |ui| {
-            ui.spacing_mut().item_spacing = Vec2::new(12.0, 6.0);
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing = Vec2::new(8.0, 0.0);
+            ui.add_space(6.0);
             ui.horizontal(|ui| {
-                let (mark, _) = ui.allocate_exact_size(Vec2::splat(52.0), Sense::hover());
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let (mark, _) = ui.allocate_exact_size(Vec2::splat(48.0), Sense::hover());
                 crate::logo::draw_mark(ui.painter(), mark);
+                ui.add_space(14.0);
                 ui.vertical(|ui| {
-                    ui.add_space(4.0);
+                    ui.spacing_mut().item_spacing.y = 2.0;
                     ui.label(egui::RichText::new("RawBlow").font(prop(22.0)).color(theme::INK));
                     ui.label(
                         egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
@@ -408,15 +486,13 @@ fn settings_identity(ui: &mut egui::Ui) {
                     );
                 });
             });
+            ui.add_space(6.0);
             settings_inner_rule(ui);
-            ui.horizontal(|ui| {
-                let (ir, _) = ui.allocate_exact_size(Vec2::splat(SICON), Sense::hover());
-                draw_sicon(ui.painter(), ir, SIcon::Person);
-                ui.label(egui::RichText::new("하레").font(prop(SETTINGS_LABEL_FONT)).color(theme::INK2));
-                ui.add_space(8.0);
-                settings_inline_link(ui, "@ascoeur9", "https://x.com/ascoeur9");
-                ui.label(egui::RichText::new("·").font(prop(14.0)).color(INK_HELP));
+            settings_field_row(ui, SIcon::Person, "하레", None, |ui| {
+                // right_to_left: 먼저 넣은 것이 오른쪽.
                 settings_inline_link(ui, "@hare_kig", "https://x.com/hare_kig");
+                ui.label(egui::RichText::new("·").font(prop(14.0)).color(INK_HELP));
+                settings_inline_link(ui, "@ascoeur9", "https://x.com/ascoeur9");
             });
         });
     ui.add_space(22.0);
@@ -440,7 +516,7 @@ fn settings_inline_link(ui: &mut egui::Ui, text: &str, url: &str) {
     }
 }
 
-/// 링크 전용 행. 라벨 왼쪽, 화살표 오른쪽. 버튼과 겹치지 않게 행 높이를 고정한다.
+/// 링크 전용 행. 라벨 왼쪽, 화살표 오른쪽.
 fn settings_link_row(ui: &mut egui::Ui, icon: SIcon, label: &str, url: &str) {
     if settings_nav_row(ui, icon, label) {
         open_url(url);
@@ -448,65 +524,49 @@ fn settings_link_row(ui: &mut egui::Ui, icon: SIcon, label: &str, url: &str) {
 }
 
 fn settings_nav_row(ui: &mut egui::Ui, icon: SIcon, label: &str) -> bool {
-    let w = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, SETTINGS_ROW_H), Sense::click());
-    let ir = Rect::from_center_size(Pos2::new(rect.left() + SICON * 0.5, rect.center().y), Vec2::splat(SICON));
-    draw_sicon(ui.painter(), ir, icon);
-    ui.painter().text(
-        Pos2::new(rect.left() + SICON + SICON_GAP, rect.center().y),
-        Align2::LEFT_CENTER,
-        label,
-        prop(SETTINGS_LABEL_FONT),
-        theme::INK,
-    );
-    ui.painter().text(
-        Pos2::new(rect.right(), rect.center().y),
-        Align2::RIGHT_CENTER,
-        "↗",
-        prop(SETTINGS_LABEL_FONT),
-        INK_HELP,
-    );
+    let (_, row) = settings_row(ui, icon, label, None, |ui| {
+        ui.label(egui::RichText::new("↗").font(prop(SETTINGS_LABEL_FONT)).color(INK_HELP));
+    });
+    let resp = ui.interact(row.rect, ui.id().with(("settings_nav", label)), Sense::click());
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     resp.clicked()
 }
 
-/// 색 태그 한 줄: 점 + 고정 폭 이름 + 나머지 폭을 채우는 입력. 힌트 길이로 필드가 줄어들지 않는다.
+/// 색 태그 한 줄: 점(아이콘 열) + 이름(제목 x) + 오른쪽 입력칸.
 fn settings_tag_name_row(
     ui: &mut egui::Ui,
     rgb: [u8; 3],
     default_name: &str,
     value: &mut String,
 ) -> bool {
-    const NAME_COL: f32 = 88.0;
-    const FIELD_H: f32 = 36.0;
+    const FIELD_W: f32 = 320.0;
+    let w = ui.available_width();
+    let label_font = prop(SETTINGS_LABEL_FONT);
+    let label_h = ui.fonts(|f| f.row_height(&label_font));
     ui.allocate_ui_with_layout(
-        Vec2::new(ui.available_width(), SETTINGS_ROW_H),
-        Layout::left_to_right(Align::Center),
+        Vec2::new(w, SETTINGS_ROW_H),
+        Layout::right_to_left(Align::Center),
         |ui| {
-            let (dot, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
-            ui.painter().circle_filled(
-                dot.center(),
-                7.0,
-                Color32::from_rgb(rgb[0], rgb[1], rgb[2]),
-            );
-            ui.add_sized(
-                Vec2::new(NAME_COL, SETTINGS_ROW_H),
-                egui::Label::new(
-                    egui::RichText::new(default_name)
+            ui.set_min_size(Vec2::new(w, SETTINGS_ROW_H));
+            let changed = ui
+                .add_sized(
+                    Vec2::new(FIELD_W, SETTINGS_CTRL_H),
+                    egui::TextEdit::singleline(value)
+                        .hint_text(default_name)
                         .font(prop(SETTINGS_LABEL_FONT))
-                        .color(theme::INK2),
-                ),
-            );
-            let rest = ui.available_width();
-            ui.add_sized(
-                Vec2::new(rest.max(80.0), FIELD_H),
-                egui::TextEdit::singleline(value)
-                    .hint_text(default_name)
-                    .font(prop(SETTINGS_LABEL_FONT)),
-            )
-            .changed()
+                        .vertical_align(Align::Center),
+                )
+                .changed();
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let (slot, _) = ui.allocate_exact_size(Vec2::new(SICON, label_h), Sense::hover());
+                ui.painter().circle_filled(slot.center(), 7.0, Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+                ui.add_space(SICON_GAP);
+                ui.label(egui::RichText::new(default_name).font(label_font.clone()).color(theme::INK));
+            });
+            changed
         },
     )
     .inner
@@ -537,11 +597,9 @@ impl RawBlowApp {
                     if settings_action_btn(ui, &format!("← {}", tr(lang, "돌아가기"))).clicked() {
                         go_back = true;
                     }
-                    // #74: 헤더 전용 캡션 키로 전체 제목을 표시한다(영어 UI에서 "Settings"로 축약되던
-                    // 문제 복원). 툴바 툴팁 등에서 재사용하는 "설정"(Settings) 키와 별개.
                     ui.add_space(10.0);
                     ui.label(
-                        egui::RichText::new(tr(lang, "설정 — 키보드 · 일반"))
+                        egui::RichText::new(tr(lang, "설정"))
                             .font(prop(16.0))
                             .color(theme::INK),
                     );
@@ -565,84 +623,24 @@ impl RawBlowApp {
                     // 모든 설정 컨트롤은 변경 즉시 저장(#69). persist_cfg는 작은 원자적 JSON 쓰기라
                     // 토글/드래그/텍스트 입력마다 저장해도 부담이 적다(DragValue·TextEdit의 .changed()는
                     // 드래그 틱·키 입력마다 발생). '돌아가기' 저장은 최종 catch-all로 남긴다.
-                    settings_section_panel(ui, tr(lang, "일반"), |ui| {
-                        if settings_toggle_row(
-                            ui,
-                            SIcon::Skip,
-                            tr(lang, "자동 전진"),
-                            &mut self.cfg.auto_advance,
-                            Some(tr(lang, "라벨링 후 자동 전진")),
-                        ) {
-                            self.persist_cfg();
-                        }
-                        settings_inner_rule(ui);
+                    // 섹션은 성격별로 묶는다: 폴더 → 보기 → 표시 → 사진 배경 → 셀렉 → 색 태그 → 전송 → 앱 → 캐시 → 초기화 → 정보.
+                    settings_section_panel(ui, tr(lang, "폴더"), |ui| {
                         if settings_toggle_row(
                             ui,
                             SIcon::Folder,
                             tr(lang, "하위 폴더"),
                             &mut self.cfg.recursive,
-                            Some(tr(lang, "하위 폴더 포함 스캔")),
+                            tr(lang, "하위 폴더의 사진까지 함께 불러옵니다."),
                         ) {
                             self.persist_cfg();
                         }
                         settings_inner_rule(ui);
-                        if settings_toggle_row(
-                            ui,
-                            SIcon::Exif,
-                            "EXIF",
-                            &mut self.cfg.show_exif,
-                            Some(tr(lang, "EXIF 오버레이 기본 표시")),
-                        ) {
-                            self.persist_cfg();
-                        }
-                        settings_inner_rule(ui);
-                        if settings_toggle_row(
-                            ui,
-                            SIcon::Hist,
-                            tr(lang, "히스토그램"),
-                            &mut self.cfg.show_histogram,
-                            Some(tr(lang, "히스토그램 기본 표시")),
-                        ) {
-                            self.persist_cfg();
-                        }
-                        settings_inner_rule(ui);
-                        if settings_toggle_row(
-                            ui,
-                            SIcon::Update,
-                            tr(lang, "업데이트"),
-                            &mut self.cfg.check_updates,
-                            Some(tr(lang, "새 버전 자동 확인")),
-                        ) {
-                            self.persist_cfg();
-                        }
-                        settings_inner_rule(ui);
-                        settings_field_row(ui, SIcon::Preload, tr(lang, "프리로드"), |ui| {
-                            if ui.add(egui::DragValue::new(&mut self.cfg.preload).range(0..=10)).changed() {
-                                self.persist_cfg();
-                            }
-                        });
-                        settings_inner_rule(ui);
-                        settings_field_row(ui, SIcon::Grid, tr(lang, "그리드"), |ui| {
-                            if ui.add(egui::DragValue::new(&mut self.cfg.grid_cols).range(4..=12)).changed() {
-                                self.persist_cfg();
-                            }
-                        });
-                        // 스트립·그리드 표기 크기(#44): 셀 위 선택 표시·별점·색상 태그를 크게(기본)/작게.
-                        if let Some(i) = settings_choice_block(
-                            ui,
-                            SIcon::Badge,
-                            tr(lang, "배지"),
-                            &[(tr(lang, "크게"), ""), (tr(lang, "작게"), "")],
-                            if self.cfg.large_badges { 0 } else { 1 },
-                        ) {
-                            self.cfg.large_badges = i == 0;
-                            self.persist_cfg();
-                        }
                         // 정렬 기준(#56): 촬영시간순(기본)/파일명순. 변경 즉시 재정렬·저장.
                         if let Some(i) = settings_choice_block(
                             ui,
                             SIcon::Sort,
                             tr(lang, "정렬"),
+                            tr(lang, "사진을 보여 주는 순서를 정합니다."),
                             &[(tr(lang, "파일명순"), ""), (tr(lang, "촬영시간순"), "")],
                             if self.cfg.sort == SortOrder::Name { 0 } else { 1 },
                         ) {
@@ -652,114 +650,117 @@ impl RawBlowApp {
                                 SortOrder::CaptureTime
                             });
                         }
-                        // 사진 이동 시 원본 보기(ORIG) 유지 방식(#87).
-                        if let Some(i) = settings_choice_block(
+                    });
+
+                    settings_section_panel(ui, tr(lang, "보기"), |ui| {
+                        // 사진 이동 시 원본보기(ORIG) 유지(#87): 켬=Keep, 끔=ZoomOnly(확대 중일 때만).
+                        let mut keep_orig = self.cfg.view_carry == ViewCarry::Keep;
+                        if settings_toggle_row(
                             ui,
                             SIcon::Orig,
-                            tr(lang, "ORIG"),
-                            &[
-                                (tr(lang, "확대 시"), ""),
-                                (tr(lang, "유지"), ""),
-                            ],
-                            if self.cfg.view_carry == ViewCarry::Keep { 1 } else { 0 },
+                            tr(lang, "원본보기 유지"),
+                            &mut keep_orig,
+                            tr(lang, "켜면 창맞춤 상태에서도 다음 사진을 원본보기로 엽니다."),
                         ) {
-                            self.cfg.view_carry = if i == 0 {
-                                ViewCarry::ZoomOnly
-                            } else {
-                                ViewCarry::Keep
-                            };
+                            self.cfg.view_carry = if keep_orig { ViewCarry::Keep } else { ViewCarry::ZoomOnly };
                             self.persist_cfg();
                         }
                         settings_inner_rule(ui);
-                        // 전송 dest 기본값(#113).
-                        {
-                            let sel = if self.cfg.transfer_dest_mode == TransferDestMode::Fixed {
-                                1
-                            } else {
-                                0
-                            };
-                            if let Some(i) = settings_choice_block(
-                                ui,
-                                SIcon::Send,
-                                tr(lang, "전송 폴더"),
-                                &[(tr(lang, "원래 폴더 아래"), ""), (tr(lang, "지정된 폴더"), "")],
-                                sel,
-                            ) {
-                                if i == 0 {
-                                    self.cfg.transfer_dest_mode = TransferDestMode::CurrentFolder;
-                                } else {
-                                    self.cfg.transfer_dest_mode = TransferDestMode::Fixed;
-                                    if self.cfg.transfer_dest_folder.trim().is_empty() {
-                                        self.cfg.transfer_dest_folder =
-                                            nfc_hangul(&config::pictures_dir().to_string_lossy());
-                                    }
-                                }
-                                self.persist_cfg();
-                            }
+                        if settings_toggle_row(
+                            ui,
+                            SIcon::Skip,
+                            tr(lang, "자동 전진"),
+                            &mut self.cfg.auto_advance,
+                            tr(lang, "셀렉하면 다음 사진으로 넘어갑니다."),
+                        ) {
+                            self.persist_cfg();
                         }
-                        ui.horizontal(|ui| {
-                            ui.set_min_height(SETTINGS_BTN_H);
-                            let rest = (ui.available_width() - 120.0).max(120.0);
-                            let pictures = nfc_hangul(&config::pictures_dir().to_string_lossy());
-                            if ui
-                                .add(
-                                    egui::TextEdit::singleline(&mut self.cfg.transfer_dest_folder)
-                                        .font(mono(13.0))
-                                        .desired_width(rest)
-                                        .hint_text(pictures)
-                                        .min_size(Vec2::new(0.0, 32.0)),
-                                )
-                                .changed()
-                            {
-                                if !self.cfg.transfer_dest_folder.trim().is_empty() {
-                                    self.cfg.transfer_dest_mode = TransferDestMode::Fixed;
-                                }
-                                self.persist_cfg();
-                            }
-                            if settings_action_btn(ui, tr(lang, "찾아보기…")).clicked() {
-                                if let Some(d) = rfd::FileDialog::new().pick_folder() {
-                                    self.cfg.transfer_dest_folder = nfc_path_label(&d);
-                                    self.cfg.transfer_dest_mode = TransferDestMode::Fixed;
-                                    self.persist_cfg();
-                                }
-                            }
-                        });
                         settings_inner_rule(ui);
-                        // 언어 선택(#30): 시스템(자동)/한국어/English/日本語. 변경 즉시 적용·저장.
-                        {
-                            let sys = tr(lang, "시스템 (자동)");
-                            let opts = [
-                                (sys, ""),
-                                (Lang::Ko.native_name(), ""),
-                                (Lang::En.native_name(), ""),
-                                (Lang::Ja.native_name(), ""),
-                            ];
-                            let sel = match self.cfg.lang {
-                                None => 0,
-                                Some(Lang::Ko) => 1,
-                                Some(Lang::En) => 2,
-                                Some(Lang::Ja) => 3,
-                            };
-                            if let Some(i) = settings_choice_block(ui, SIcon::Lang, tr(lang, "언어"), &opts, sel) {
-                                let new_lang = match i {
-                                    1 => Some(Lang::Ko),
-                                    2 => Some(Lang::En),
-                                    3 => Some(Lang::Ja),
-                                    _ => None,
-                                };
-                                if new_lang != self.cfg.lang {
-                                    self.cfg.lang = new_lang;
-                                    self.lang = crate::i18n::effective_lang(&self.cfg);
-                                    // 폰트도 새 언어의 폰트를 primary로 교체(#32 후속: 세로 어긋남 방지).
-                                    crate::fonts::install(ui.ctx(), self.lang);
+                        settings_field_row(
+                            ui,
+                            SIcon::Preload,
+                            tr(lang, "프리로드"),
+                            Some(tr(lang, "미리 로딩할 사진 수를 정합니다.")),
+                            |ui| {
+                                if settings_drag(ui, 72.0, egui::DragValue::new(&mut self.cfg.preload).range(0..=10)).changed() {
                                     self.persist_cfg();
                                 }
-                            }
+                            },
+                        );
+                        settings_inner_rule(ui);
+                        settings_field_row(
+                            ui,
+                            SIcon::Grid,
+                            tr(lang, "그리드"),
+                            Some(tr(lang, "한 줄에 보여 줄 썸네일 수를 정합니다.")),
+                            |ui| {
+                                if settings_drag(ui, 72.0, egui::DragValue::new(&mut self.cfg.grid_cols).range(4..=12)).changed() {
+                                    self.persist_cfg();
+                                }
+                            },
+                        );
+                        settings_inner_rule(ui);
+                        // 스트립·그리드 표기 크기(#44): 셀 위 선택 표시·별점·색상 태그를 크게(기본)/작게.
+                        if let Some(i) = settings_choice_block(
+                            ui,
+                            SIcon::Badge,
+                            tr(lang, "배지"),
+                            tr(lang, "썸네일의 라벨, 별점, 색 태그 크기를 정합니다."),
+                            &[(tr(lang, "크게"), ""), (tr(lang, "작게"), "")],
+                            if self.cfg.large_badges { 0 } else { 1 },
+                        ) {
+                            self.cfg.large_badges = i == 0;
+                            self.persist_cfg();
+                        }
+                    });
+
+                    settings_section_panel(ui, tr(lang, "표시"), |ui| {
+                        if settings_toggle_row(
+                            ui,
+                            SIcon::Exif,
+                            "EXIF",
+                            &mut self.cfg.show_exif,
+                            tr(lang, "사진 위에 EXIF를 표시합니다. I 키로 켜고 끕니다."),
+                        ) {
+                            self.persist_cfg();
+                        }
+                        settings_inner_rule(ui);
+                        if settings_toggle_row(
+                            ui,
+                            SIcon::Hist,
+                            tr(lang, "히스토그램"),
+                            &mut self.cfg.show_histogram,
+                            tr(lang, "히스토그램을 표시합니다. H 키로 켜고 끕니다."),
+                        ) {
+                            self.persist_cfg();
+                        }
+                        settings_inner_rule(ui);
+                        if settings_toggle_row(
+                            ui,
+                            SIcon::Map,
+                            tr(lang, "미니 지도"),
+                            &mut self.cfg.show_map,
+                            tr(lang, "촬영 위치를 미니 지도로 표시합니다. M 키로 켜고 끕니다."),
+                        ) {
+                            self.show_map = self.cfg.show_map;
+                            self.persist_cfg();
+                        }
+                        settings_inner_rule(ui);
+                        if settings_toggle_row(
+                            ui,
+                            SIcon::Af,
+                            tr(lang, "AF 포인트"),
+                            &mut self.cfg.show_af,
+                            tr(lang, "AF 포인트를 표시합니다. A 키로 켜고 끕니다."),
+                        ) {
+                            self.show_af = self.cfg.show_af;
+                            self.persist_cfg();
                         }
                     });
 
                     // ── PHOTO BACKGROUND (#36): 사진 표시 화면 배경색 — 프리셋 + HEX/RGB ──
                     settings_section_panel(ui, tr(lang, "사진 배경"), |ui| {
+                        settings_section_note(ui, tr(lang, "사진 보기 화면의 배경색을 정합니다."));
                         // 프리셋: (라벨, Option<rgb>) — None은 앱 기본(near-black void).
                         let presets: [(&str, Option<[u8; 3]>); 6] = [
                             (tr(lang, "기본"), None),
@@ -771,17 +772,20 @@ impl RawBlowApp {
                         ];
                         // 고정폭 셀 그리드: 라벨 길이가 달라도(검정/라이트 그레이/ミディアムグレー) 색견본과
                         // 글자가 같은 열에 맞도록 각 프리셋을 동일 크기 셀에 가운데 정렬한다(테스트 피드백).
-                        const BG_CELL: Vec2 = Vec2::new(84.0, 58.0);
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing = Vec2::new(8.0, 10.0);
+                        const BG_GAP: f32 = 8.0;
+                        let n_bg = presets.len() as f32;
+                        let bg_cell = Vec2::new((ui.available_width() - BG_GAP * (n_bg - 1.0)) / n_bg, 58.0);
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing = Vec2::new(BG_GAP, 0.0);
                             for (label, val) in presets {
                                 let selected = self.cfg.photo_bg == val;
                                 let swatch_rgb = val.unwrap_or(theme::BG0_RGB);
                                 let cell = ui.allocate_ui_with_layout(
-                                    BG_CELL,
+                                    bg_cell,
                                     Layout::top_down(Align::Center),
                                     |ui| {
-                                        ui.set_width(BG_CELL.x);
+                                        ui.set_width(bg_cell.x);
                                         ui.spacing_mut().item_spacing.y = 6.0;
                                         let clicked = bg_swatch(ui, swatch_rgb, selected);
                                         ui.label(
@@ -817,7 +821,8 @@ impl RawBlowApp {
                                     .font(mono(14.0))
                                     .desired_width(96.0)
                                     .hint_text("#101010")
-                                    .min_size(Vec2::new(0.0, 32.0)),
+                                    .vertical_align(Align::Center)
+                                    .min_size(Vec2::new(0.0, SETTINGS_CTRL_H)),
                             );
                             if resp.changed() {
                                 if let Some(rgb) = parse_hex_rgb(&self.bg_hex) {
@@ -837,11 +842,11 @@ impl RawBlowApp {
                             let mut rgb = self.photo_bg_rgb();
                             let mut changed = false;
                             ui.label(egui::RichText::new("R").font(prop(14.0)).color(INK_HEAD));
-                            changed |= ui.add(egui::DragValue::new(&mut rgb[0]).range(0..=255)).changed();
+                            changed |= settings_drag(ui, 56.0, egui::DragValue::new(&mut rgb[0]).range(0..=255)).changed();
                             ui.label(egui::RichText::new("G").font(prop(14.0)).color(INK_HEAD));
-                            changed |= ui.add(egui::DragValue::new(&mut rgb[1]).range(0..=255)).changed();
+                            changed |= settings_drag(ui, 56.0, egui::DragValue::new(&mut rgb[1]).range(0..=255)).changed();
                             ui.label(egui::RichText::new("B").font(prop(14.0)).color(INK_HEAD));
-                            changed |= ui.add(egui::DragValue::new(&mut rgb[2]).range(0..=255)).changed();
+                            changed |= settings_drag(ui, 56.0, egui::DragValue::new(&mut rgb[2]).range(0..=255)).changed();
                             if changed {
                                 self.cfg.photo_bg = Some(rgb);
                                 self.bg_hex = hex_str(rgb);
@@ -850,26 +855,12 @@ impl RawBlowApp {
                         });
                     });
 
-                    settings_section_panel(ui, tr(lang, "라벨"), |ui| {
-                        let km = &self.cfg.keymap;
-                        let keys = [
-                            (Label::Pick, &km.pick),
-                            (Label::Hold, &km.hold),
-                            (Label::Reject, &km.reject),
-                            (Label::Unrated, &km.clear),
-                        ];
-                        for (i, (lbl, key)) in keys.into_iter().enumerate() {
-                            if i > 0 {
-                                settings_inner_rule(ui);
-                            }
-                            settings_field_row(ui, SIcon::Key, lbl.name(lang), |ui| {
-                                kbd(ui, key);
-                            });
-                        }
-                    });
-
                     // ── COLOR TAGS (#27): 색별 커스텀 이름. 비우면 기본 색 이름 표시 ──
                     settings_section_panel(ui, tr(lang, "색 태그 이름"), |ui| {
+                        settings_section_note(
+                            ui,
+                            tr(lang, "색 태그의 이름을 정합니다. Shift+1~5로 태그를 붙입니다."),
+                        );
                         for (i, tag) in ColorTag::ALL.iter().enumerate() {
                             if i > 0 {
                                 settings_inner_rule(ui);
@@ -885,47 +876,182 @@ impl RawBlowApp {
                         }
                     });
 
+                    // 단축키: 지금은 표시만(변경 기능 예정 자리).
+                    settings_section_panel(ui, tr(lang, "단축키"), |ui| {
+                        settings_section_note(ui, tr(lang, "셀렉 단축키입니다."));
+                        let km = &self.cfg.keymap;
+                        let keys = [
+                            (Label::Pick, &km.pick),
+                            (Label::Hold, &km.hold),
+                            (Label::Reject, &km.reject),
+                            (Label::Unrated, &km.clear),
+                        ];
+                        for (i, (lbl, key)) in keys.into_iter().enumerate() {
+                            if i > 0 {
+                                settings_inner_rule(ui);
+                            }
+                            settings_field_row(ui, SIcon::Key, lbl.name(lang), None, |ui| {
+                                kbd(ui, key);
+                            });
+                        }
+                    });
+
+                    settings_section_panel(ui, tr(lang, "전송"), |ui| {
+                        // 전송 dest 기본값(#113).
+                        {
+                            let sel = if self.cfg.transfer_dest_mode == TransferDestMode::Fixed {
+                                1
+                            } else {
+                                0
+                            };
+                            if let Some(i) = settings_choice_block(
+                                ui,
+                                SIcon::Send,
+                                tr(lang, "전송 폴더"),
+                                tr(lang, "전송할 때 처음 지정되는 폴더를 정합니다."),
+                                &[(tr(lang, "원래 폴더 아래"), ""), (tr(lang, "지정된 폴더"), "")],
+                                sel,
+                            ) {
+                                if i == 0 {
+                                    self.cfg.transfer_dest_mode = TransferDestMode::CurrentFolder;
+                                } else {
+                                    self.cfg.transfer_dest_mode = TransferDestMode::Fixed;
+                                    if self.cfg.transfer_dest_folder.trim().is_empty() {
+                                        self.cfg.transfer_dest_folder =
+                                            nfc_hangul(&config::pictures_dir().to_string_lossy());
+                                    }
+                                }
+                                self.persist_cfg();
+                            }
+                        }
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.set_min_height(SETTINGS_BTN_H);
+                            // 첫 항목 앞의 add_space 뒤에는 item_spacing이 붙지 않는다 → 제목 x 그대로.
+                            ui.add_space(SICON + SICON_GAP);
+                            // TextEdit은 desired_width 바깥에 좌우 안쪽 여백을 더 그린다 — 버튼(128)과 합쳐 카드 폭을 넘지 않게.
+                            let pad = ui.spacing().button_padding.x * 2.0;
+                            let rest = (ui.available_width() - 128.0 - ui.spacing().item_spacing.x - pad).max(120.0);
+                            let pictures = nfc_hangul(&config::pictures_dir().to_string_lossy());
+                            if ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut self.cfg.transfer_dest_folder)
+                                        .font(mono(13.0))
+                                        .desired_width(rest)
+                                        .hint_text(pictures)
+                                        .vertical_align(Align::Center)
+                                        .min_size(Vec2::new(0.0, SETTINGS_BTN_H)),
+                                )
+                                .changed()
+                            {
+                                if !self.cfg.transfer_dest_folder.trim().is_empty() {
+                                    self.cfg.transfer_dest_mode = TransferDestMode::Fixed;
+                                }
+                                self.persist_cfg();
+                            }
+                            if settings_action_btn(ui, tr(lang, "찾아보기…")).clicked() {
+                                if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                                    self.cfg.transfer_dest_folder = nfc_path_label(&d);
+                                    self.cfg.transfer_dest_mode = TransferDestMode::Fixed;
+                                    self.persist_cfg();
+                                }
+                            }
+                        });
+                        ui.add_space(10.0);
+                    });
+
+                    settings_section_panel(ui, tr(lang, "앱"), |ui| {
+                        // 언어 선택(#30): 시스템(자동)/한국어/English/日本語. 변경 즉시 적용·저장.
+                        {
+                            let sys = tr(lang, "시스템 (자동)");
+                            let opts = [
+                                (sys, ""),
+                                (Lang::Ko.native_name(), ""),
+                                (Lang::En.native_name(), ""),
+                                (Lang::Ja.native_name(), ""),
+                            ];
+                            let sel = match self.cfg.lang {
+                                None => 0,
+                                Some(Lang::Ko) => 1,
+                                Some(Lang::En) => 2,
+                                Some(Lang::Ja) => 3,
+                            };
+                            if let Some(i) = settings_choice_block(
+                                ui,
+                                SIcon::Lang,
+                                tr(lang, "언어"),
+                                tr(lang, "표시 언어를 정합니다."),
+                                &opts,
+                                sel,
+                            ) {
+                                let new_lang = match i {
+                                    1 => Some(Lang::Ko),
+                                    2 => Some(Lang::En),
+                                    3 => Some(Lang::Ja),
+                                    _ => None,
+                                };
+                                if new_lang != self.cfg.lang {
+                                    self.cfg.lang = new_lang;
+                                    self.lang = crate::i18n::effective_lang(&self.cfg);
+                                    // 폰트도 새 언어의 폰트를 primary로 교체(#32 후속: 세로 어긋남 방지).
+                                    crate::fonts::install(ui.ctx(), self.lang);
+                                    self.persist_cfg();
+                                }
+                            }
+                        }
+                        settings_inner_rule(ui);
+                        if settings_toggle_row(
+                            ui,
+                            SIcon::Update,
+                            tr(lang, "업데이트"),
+                            &mut self.cfg.check_updates,
+                            tr(lang, "실행할 때 새 버전을 확인합니다."),
+                        ) {
+                            self.persist_cfg();
+                        }
+                    });
+
                     // ── CACHE (#22): 썸네일 디스크 캐시 사용량 + 비우기 ──
                     settings_section_panel(ui, tr(lang, "캐시"), |ui| {
+                        settings_section_note(ui, tr(lang, "썸네일을 저장해 두고 폴더를 다시 열 때 씁니다."));
                         if self.cache_size.is_none() {
                             self.cache_size = Some(cache::dir_size(&config::cache_dir()));
                         }
                         let size = self.cache_size.unwrap_or(0);
-                        ui.add_space(6.0);
-                        ui.label(
-                            egui::RichText::new(trf(lang, "썸네일 캐시 사용량 · {}", &[&fmt_bytes(size)]))
-                                .font(prop(15.0))
-                                .color(theme::INK2),
-                        );
-                        ui.add_space(10.0);
-                        ui.horizontal(|ui| {
-                            if settings_action_btn(ui, tr(lang, "캐시 비우기")).clicked() {
-                                let _ = cache::clear(&config::cache_dir());
-                                self.cache_size = Some(cache::dir_size(&config::cache_dir()));
-                                self.toast_info(tr(lang, "썸네일 캐시를 비웠습니다").into());
-                            }
+                        let usage = trf(lang, "썸네일 캐시 사용량 · {}", &[&fmt_bytes(size)]);
+                        settings_field_row(ui, SIcon::Cache, &usage, None, |ui| {
+                            // right_to_left: 먼저 넣은 것이 오른쪽.
                             if settings_action_btn(ui, tr(lang, "새로고침")).clicked() {
                                 self.cache_size = Some(cache::dir_size(&config::cache_dir()));
                             }
+                            if settings_action_btn(ui, tr(lang, "캐시 삭제")).clicked() {
+                                let _ = cache::clear(&config::cache_dir());
+                                self.cache_size = Some(cache::dir_size(&config::cache_dir()));
+                                self.toast_info(tr(lang, "썸네일 캐시를 삭제했습니다").into());
+                            }
                         });
-                        settings_field_row(ui, SIcon::Cache, tr(lang, "자동 상한"), |ui| {
-                            if ui
-                                .add(
+                        settings_inner_rule(ui);
+                        settings_field_row(
+                            ui,
+                            SIcon::Cache,
+                            tr(lang, "자동 상한"),
+                            Some(tr(lang, "이 크기를 넘으면 오래된 썸네일부터 삭제합니다. 0으로 두면 제한하지 않습니다.")),
+                            |ui| {
+                                if settings_drag(
+                                    ui,
+                                    110.0,
                                     egui::DragValue::new(&mut self.cfg.cache_limit_mb)
                                         .speed(64.0)
                                         .range(0..=1_048_576)
                                         .suffix(" MB"),
                                 )
                                 .changed()
-                            {
-                                self.persist_cfg(); // 캐시 상한 변경 즉시 저장(#69).
-                            }
-                            ui.label(
-                                egui::RichText::new(tr(lang, "(0 = 무제한)"))
-                                    .font(prop(14.0))
-                                    .color(INK_HELP),
-                            );
-                        });
+                                {
+                                    self.persist_cfg(); // 캐시 상한 변경 즉시 저장(#69).
+                                }
+                            },
+                        );
+                        ui.add_space(4.0);
                         // 캐시 경로: 클릭하면 OS 파일 관리자에서 캐시 폴더를 연다(#69). hover 시 밝게 + 손가락 커서.
                         let cache_path = config::cache_dir();
                         let cache_path_str = cache_path.to_string_lossy().to_string();
@@ -933,7 +1059,16 @@ impl RawBlowApp {
                         let galley =
                             ui.painter()
                                 .layout_no_wrap(cache_path_str.clone(), cache_font.clone(), INK_HELP);
-                        let (cp_rect, cp_resp) = ui.allocate_exact_size(galley.size(), Sense::click());
+                        let cp_indent = SICON + SICON_GAP;
+                        let (cp_row, _) = ui.allocate_exact_size(
+                            Vec2::new(ui.available_width(), galley.size().y + 8.0),
+                            Sense::hover(),
+                        );
+                        let cp_rect = Rect::from_min_size(
+                            Pos2::new(cp_row.left() + cp_indent, cp_row.top()),
+                            galley.size(),
+                        );
+                        let cp_resp = ui.interact(cp_rect, ui.id().with("settings_cache_path"), Sense::click());
                         let cp_col = if cp_resp.hovered() { theme::INK2 } else { INK_HELP };
                         ui.painter().text(
                             cp_rect.left_top(),
@@ -952,15 +1087,16 @@ impl RawBlowApp {
 
                     // ── RESET (#69): 모든 설정을 기본값으로 — 2단 인라인 확인(모달 없이) ──
                     settings_section_panel(ui, tr(lang, "초기화"), |ui| {
+                        settings_section_note(ui, tr(lang, "설정을 처음 상태로 되돌립니다. 라벨과 별점은 그대로입니다."));
                         if !self.settings_reset_armed {
-                            settings_field_row(ui, SIcon::Reset, tr(lang, "기본값"), |ui| {
+                            settings_field_row(ui, SIcon::Reset, tr(lang, "기본값"), None, |ui| {
                                 if settings_action_btn(ui, tr(lang, "복원")).clicked() {
                                     self.settings_reset_armed = true;
                                 }
                             });
                         } else {
                             // '복원'은 경고색(WARN) 테두리. 실행은 패널을 그린 뒤 do_reset에서.
-                            settings_field_row(ui, SIcon::Reset, tr(lang, "기본값"), |ui| {
+                            settings_field_row(ui, SIcon::Reset, tr(lang, "기본값"), None, |ui| {
                                 // right_to_left: 먼저 넣은 복원이 오른쪽, 취소가 그 왼쪽.
                                 if settings_action_btn_sized(
                                     ui,
@@ -1429,10 +1565,10 @@ mod tests {
         qa.click_exact("크게");
         assert!(qa.app.cfg.large_badges, "크게 클릭이 large_badges=true");
 
-        qa.click_exact("유지");
-        assert_eq!(qa.app.cfg.view_carry, ViewCarry::Keep);
-        qa.click_exact("확대 시");
-        assert_eq!(qa.app.cfg.view_carry, ViewCarry::ZoomOnly);
+        qa.click_exact("원본보기 유지");
+        assert_eq!(qa.app.cfg.view_carry, ViewCarry::Keep, "원본보기 유지 켬 = Keep");
+        qa.click_exact("원본보기 유지");
+        assert_eq!(qa.app.cfg.view_carry, ViewCarry::ZoomOnly, "끔 = 확대 중일 때만");
 
         qa.click_exact("지정된 폴더");
         assert_eq!(qa.app.cfg.transfer_dest_mode, TransferDestMode::Fixed);
@@ -1592,9 +1728,9 @@ mod tests {
             "정렬",
             "파일명순",
             "촬영시간순",
-            "ORIG",
-            "확대 시",
-            "유지",
+            "원본보기 유지",
+            "미니 지도",
+            "AF 포인트",
             "전송 폴더",
             "원래 폴더 아래",
             "지정된 폴더",
@@ -1603,7 +1739,7 @@ mod tests {
             "시스템 (자동)",
             "사진 배경",
             "색 태그 이름",
-            "캐시 비우기",
+            "캐시 삭제",
             "새로고침",
             "기본값",
             "라이선스",
@@ -1617,6 +1753,9 @@ mod tests {
             "show_exif",
             "show_histogram",
             "check_updates",
+            "show_map",
+            "show_af",
+            "settings_row_head",
             "preload",
             "grid_cols",
             "large_badges",
@@ -1707,15 +1846,15 @@ mod tests {
         );
 
         let texts = texts_from(&out);
-        let l1 = texts.iter().find(|(t, _)| t == "자동 전진").map(|(_, r)| r.min.x);
-        let l2 = texts.iter().find(|(t, _)| t == "하위 폴더").map(|(_, r)| r.min.x);
+        let l1 = texts.iter().find(|(t, _)| t == "하위 폴더").map(|(_, r)| r.min.x);
+        let l2 = texts.iter().find(|(t, _)| t == "원본보기 유지").map(|(_, r)| r.min.x);
         let l3 = texts.iter().find(|(t, _)| t == "프리로드").map(|(_, r)| r.min.x);
         match (l1, l2, l3) {
             (Some(a), Some(b), Some(c)) => {
                 assert!((a - b).abs() < 1.5, "토글 라벨 x 불일치 {a} vs {b}");
                 assert!((a - c).abs() < 1.5, "토글/필드 라벨 x 불일치 {a} vs {c}");
             }
-            _ => panic!("일반 섹션 라벨이 화면에 없다: {texts:?}"),
+            _ => panic!("폴더·보기 섹션 라벨이 화면에 없다: {texts:?}"),
         }
     }
 
@@ -1805,7 +1944,14 @@ mod tests {
         }
         let names: Vec<f32> = ["주황", "분홍", "청록", "파랑", "보라"]
             .iter()
-            .filter_map(|n| texts.iter().find(|(t, _)| t == n).map(|(_, r)| r.min.x))
+            // 빈 입력칸의 힌트도 같은 글자라 가장 왼쪽(행 제목)을 잡는다.
+            .filter_map(|n| {
+                texts
+                    .iter()
+                    .filter(|(t, _)| t == n)
+                    .map(|(_, r)| r.min.x)
+                    .reduce(f32::min)
+            })
             .collect();
         assert_eq!(names.len(), 5, "기본 색 이름이 다 보여야 한다");
         let nx = names[0];

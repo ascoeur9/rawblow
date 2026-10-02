@@ -83,6 +83,10 @@ fn fmt_lookup(ko: &str) -> Option<(&'static str, &'static str)> {
             "Failed to delete {} originals — the source files remain",
             "元ファイル {} 個の削除に失敗 — 元ファイルが残っています",
         ),
+        "그대로 둠 {} — 이미 대상 폴더에 있습니다" => (
+            "Left in place {} — already in the destination folder",
+            "そのまま {} — すでに出力先フォルダにあります",
+        ),
         "{} 건 매칭" => ("{} matched", "{} 件一致"),
         "매칭 {}건" => ("{} matched", "一致 {} 件"),
         "{}건 → {}" => ("{} → {}", "{} 件 → {}"),
@@ -222,9 +226,9 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
             "Puts selected photos in one destination folder. The currently open folder cannot be chosen.",
             "選んだ写真を出力先フォルダ1つにまとめます。今開いているフォルダは選べません。",
         ),
-        "pick / hold / reject 폴더를 만듭니다. 제외도 여기로 빠집니다." => (
-            "Creates pick / hold / reject folders. Rejects go there too.",
-            "pick / hold / reject フォルダを作ります。除外もここに入ります。",
+        "pick / hold / reject 폴더를 만듭니다. 제외도 여기로 빠집니다. 미선택은 unrated, 별점만 있으면 1star … 5star." => (
+            "Creates pick / hold / reject folders. Rejects go there too. Unlabeled photos go to unrated, star-only photos to 1star … 5star.",
+            "pick / hold / reject フォルダを作ります。除外もここに入ります。未選択は unrated、星だけなら 1star … 5star。",
         ),
         "1star … 5star 폴더를 만듭니다. 무별점은 unrated." => (
             "Creates 1star … 5star folders. Unrated photos go to unrated.",
@@ -653,9 +657,6 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         // #72 툴바 툴팁 보완(Single/Grid 토글·⚙ 설정 버튼).
         "T 키로 전환" => ("Press T to switch", "Tキーで切替"),
         "설정" => ("Settings", "設定"),
-        // #74 설정 화면 헤더 전용 캡션 — 재사용 키("설정")의 En이 "Settings"라 영어 UI에서
-        // 기존 "Settings — Keyboard & General"이 축약됐던 문제. 헤더 전용 키로 전체 제목을 복원한다.
-        "설정 — 키보드 · 일반" => ("Settings — Keyboard & General", "設定 — キーボードと一般"),
         // #75 디코드 실패 고착 회복 — ⚠ 상태에서 수동 재시도 안내.
         "클릭하여 재시도" => ("Click to retry", "クリックで再試行"),
         // #78 컬링 되돌리기(Undo/Redo) 토스트 피드백.
@@ -717,6 +718,56 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "캐시" => ("CACHE", "キャッシュ"),
         "초기화" => ("RESET", "リセット"), // 기존 "복원"(Reset, 버튼)과 별개 키(섹션 캡션용).
         "정보" => ("ABOUT", "情報"),
+        "폴더" => ("FOLDER", "フォルダ"),
+        "표시" => ("OVERLAYS", "オーバーレイ"),
+        "셀렉" => ("CULLING", "セレクト"),
+        "앱" => ("APP", "アプリ"),
+        // 설정 행 설명(제목 아래 항상 표시).
+        "원본보기 유지" => ("Keep original view", "原寸表示を維持"),
+        "미니 지도" => ("Mini map", "ミニマップ"),
+        "캐시 삭제" => ("Delete Cache", "キャッシュを削除"),
+        "썸네일 캐시를 삭제했습니다" => ("Thumbnail cache deleted", "サムネイルキャッシュを削除しました"),
+        "하위 폴더의 사진까지 함께 불러옵니다." => ("Also loads photos in subfolders.", "サブフォルダの写真もまとめて読み込みます。"),
+        "사진을 보여 주는 순서를 정합니다." => ("Sets the order photos are shown in.", "写真を表示する順序を設定します。"),
+        "켜면 창맞춤 상태에서도 다음 사진을 원본보기로 엽니다." => (
+            "When on, the next photo opens in original view even at Fit.",
+            "オンにすると、フィット時でも次の写真を原寸表示で開きます。",
+        ),
+        "미리 로딩할 사진 수를 정합니다." => ("Sets how many photos to preload.", "先読みする写真の枚数を設定します。"),
+        "한 줄에 보여 줄 썸네일 수를 정합니다." => ("Sets how many thumbnails fit in a row.", "1行に表示するサムネイルの数を設定します。"),
+        "썸네일의 라벨, 별점, 색 태그 크기를 정합니다." => (
+            "Sets the size of labels, stars and color tags on thumbnails.",
+            "サムネイルのラベル・星・カラータグの大きさを設定します。",
+        ),
+        "사진 위에 EXIF를 표시합니다. I 키로 켜고 끕니다." => ("Shows EXIF over the photo. Press I to turn it on or off.", "写真の上にEXIFを表示します。Iキーでオン・オフします。"),
+        "히스토그램을 표시합니다. H 키로 켜고 끕니다." => ("Shows the histogram. Press H to turn it on or off.", "ヒストグラムを表示します。Hキーでオン・オフします。"),
+        "촬영 위치를 미니 지도로 표시합니다. M 키로 켜고 끕니다." => (
+            "Shows where the photo was taken on a mini map. Press M to turn it on or off.",
+            "撮影位置をミニマップに表示します。Mキーでオン・オフします。",
+        ),
+        "AF 포인트를 표시합니다. A 키로 켜고 끕니다." => ("Shows AF points. Press A to turn them on or off.", "AFポイントを表示します。Aキーでオン・オフします。"),
+        "사진 보기 화면의 배경색을 정합니다." => ("Sets the background color behind the photo.", "写真表示画面の背景色を設定します。"),
+        "셀렉하면 다음 사진으로 넘어갑니다." => ("Moves to the next photo after you label one.", "セレクトすると次の写真に進みます。"),
+        "셀렉 단축키입니다." => ("Culling shortcuts.", "セレクトのショートカットです。"),
+        "색 태그의 이름을 정합니다. Shift+1~5로 태그를 붙입니다." => (
+            "Sets names for color tags. Press Shift+1–5 to tag a photo.",
+            "カラータグの名前を設定します。Shift+1〜5でタグを付けます。",
+        ),
+        "전송할 때 처음 지정되는 폴더를 정합니다." => ("Sets the folder preselected when you transfer.", "転送時に最初に指定されるフォルダを設定します。"),
+        "표시 언어를 정합니다." => ("Sets the display language.", "表示言語を設定します。"),
+        "실행할 때 새 버전을 확인합니다." => ("Checks for a new version at launch.", "起動時に新しいバージョンを確認します。"),
+        "썸네일을 저장해 두고 폴더를 다시 열 때 씁니다." => (
+            "Stores thumbnails and reuses them when you reopen a folder.",
+            "サムネイルを保存し、フォルダを開き直すときに使います。",
+        ),
+        "이 크기를 넘으면 오래된 썸네일부터 삭제합니다. 0으로 두면 제한하지 않습니다." => (
+            "Deletes the oldest thumbnails once the cache exceeds this size. Set 0 for no limit.",
+            "このサイズを超えると古いサムネイルから削除します。0にすると制限しません。",
+        ),
+        "설정을 처음 상태로 되돌립니다. 라벨과 별점은 그대로입니다." => (
+            "Restores all settings to their defaults. Labels and stars are kept.",
+            "設定を初期状態に戻します。ラベルと星はそのまま残ります。",
+        ),
         // 설정 행: 짧은 라벨(문장형 금지). 긴 설명은 호버로.
         "자동 전진" => ("Auto-advance", "自動送り"),
         "하위 폴더" => ("Subfolders", "サブフォルダ"),
@@ -872,6 +923,10 @@ mod tests {
         );
         assert_eq!(trf(Lang::Ja, "건너뜀 {} — 동명 파일 존재", &["3"]), "スキップ 3 — 同名ファイルあり");
         assert_eq!(
+            trf(Lang::En, "그대로 둠 {} — 이미 대상 폴더에 있습니다", &["4"]),
+            "Left in place 4 — already in the destination folder"
+        );
+        assert_eq!(
             trf(Lang::En, "원본 삭제 실패 {} — 원본 파일이 남아 있습니다", &["2"]),
             "Failed to delete 2 originals — the source files remain"
         );
@@ -931,5 +986,15 @@ mod tests {
         // Ja 대표 확인(레일 헤더 + 컬링 캡션).
         assert_eq!(tr(Lang::Ja, "결과 지정"), "結果の割り当て");
         assert_eq!(tr(Lang::Ja, "색 필터"), "色フィルタ");
+        // 라벨별 분기 안내는 실제로 만드는 unrated·1star … 5star 폴더까지 적는다.
+        let label_hint = "pick / hold / reject 폴더를 만듭니다. 제외도 여기로 빠집니다. 미선택은 unrated, 별점만 있으면 1star … 5star.";
+        assert_eq!(
+            tr(Lang::En, label_hint),
+            "Creates pick / hold / reject folders. Rejects go there too. Unlabeled photos go to unrated, star-only photos to 1star … 5star."
+        );
+        assert_eq!(
+            tr(Lang::Ja, label_hint),
+            "pick / hold / reject フォルダを作ります。除外もここに入ります。未選択は unrated、星だけなら 1star … 5star。"
+        );
     }
 }

@@ -1285,8 +1285,14 @@ impl RawBlowApp {
         const MW: u32 = 220;
         const MH: u32 = 150;
         let zoom = self.map_zoom;
+        // 다른 사진이면 옛 지도·좌표는 합성 대기 중에도 보이지 않게 바로 버린다. 인덱스만으론
+        // 폴더 전환·재정렬 뒤 같은 자리의 다른 사진과 구분이 안 돼 generation까지 본다.
+        let gen = self.generation;
+        if self.map_state.as_ref().is_some_and(|m| m.gen != gen || m.real != real) {
+            self.map_state = None;
+        }
         // 항목·줌이 바뀌면 새로 합성. 단, 시작은 디코딩 유휴 시에만(사진 표시가 우선, #33 패턴).
-        let stale = self.map_state.as_ref().map(|m| m.real != real || m.zoom != zoom).unwrap_or(true);
+        let stale = self.map_state.as_ref().map(|m| m.zoom != zoom).unwrap_or(true);
         if stale {
             let idle = self.pending_preview.is_empty() && self.pending_thumb.is_empty();
             if idle {
@@ -1297,6 +1303,7 @@ impl RawBlowApp {
                     let _ = tx.send(crate::map::compose(lat, lon, zoom, MW, MH, &cache));
                 });
                 self.map_state = Some(MapState {
+                    gen: self.generation,
                     real,
                     zoom,
                     lat: gps.lat,

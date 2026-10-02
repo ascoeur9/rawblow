@@ -1757,3 +1757,422 @@ fn sidecar_recursive_same_stem_keeps_independent_labels() {
     assert_eq!(pick, 1);
     assert_eq!(rej, 1);
 }
+
+// ── 사이드카 키 안정성(페어링 병합·멤버 변화에도 분류 유지) ─────────────────────
+
+/// jpg/ · 원본/ 분리 레이아웃(같은 번호 RAW만/JPG만 → 한 항목).
+fn split_pair_tree(root: &Path, nums: std::ops::RangeInclusive<u32>, with_jpg: bool) {
+    std::fs::create_dir_all(root.join("원본")).unwrap();
+    std::fs::create_dir_all(root.join("jpg")).unwrap();
+    for n in nums {
+        std::fs::write(root.join(format!("원본/DAZ_000{n}.NEF")), b"r").unwrap();
+        if with_jpg {
+            std::fs::write(root.join(format!("jpg/DAZ_000{n}.JPG")), b"j").unwrap();
+        }
+    }
+}
+
+fn reload(root: &Path, recursive: bool) -> Vec<Entry> {
+    let mut entries = scan::scan_folder(root, recursive, rawblow_core::SortOrder::Name);
+    let session = sidecar::load(root).expect("세션 로드");
+    sidecar::apply(&session, &mut entries, root);
+    entries
+}
+
+fn by_stem<'a>(entries: &'a [Entry], stem: &str) -> &'a Entry {
+    entries.iter().find(|e| e.stem == stem).expect("항목")
+}
+
+fn by_stem_mut<'a>(entries: &'a mut [Entry], stem: &str) -> &'a mut Entry {
+    entries.iter_mut().find(|e| e.stem == stem).expect("항목")
+}
+
+#[test]
+fn sidecar_v061_split_keys_merge_into_paired_entry() {
+    // v0.6.1은 jpg/X와 원본/X를 두 항목(두 키)으로 저장했다. 병합된 한 항목이 둘 다 읽고,
+    // 저장·재로드 뒤에도 아무것도 잃지 않아야 한다.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    split_pair_tree(root, 4..=7, true);
+    std::fs::create_dir_all(sidecar::sidecar_dir(root)).unwrap();
+    let rec = |label: &str, stars: u8, tag: &str, m: &str| {
+        format!(r#"{{"label":"{label}","stars":{stars},"tag":"{tag}","members":["{m}"]}}"#)
+    };
+    let json = format!(
+        r#"{{"version":1,"folder":"x","updated_at":"t","items":{{
+            "jpg/DAZ_0004":{},"원본/DAZ_0004":{},"원본/DAZ_0005":{},
+            "jpg/DAZ_0006":{},"원본/DAZ_0006":{},"원본/DAZ_0007":{}}}}}"#,
+        rec("pick", 0, "None", "jpg/DAZ_0004.JPG"),
+        rec("pick", 0, "None", "원본/DAZ_0004.NEF"),
+        rec("pick", 5, "None", "원본/DAZ_0005.NEF"),
+        rec("reject", 0, "None", "jpg/DAZ_0006.JPG"),
+        rec("pick", 4, "None", "원본/DAZ_0006.NEF"),
+        rec("unrated", 0, "Teal", "원본/DAZ_0007.NEF"),
+    );
+    std::fs::write(sidecar::sidecar_path(root), json).unwrap();
+
+    let mut entries = reload(root, true);
+    assert_eq!(entries.len(), 4, "jpg/ · 원본/ 같은 번호는 한 항목");
+    let check = |entries: &[Entry]| {
+        assert_eq!(by_stem(entries, "DAZ_0005").label, Label::Pick);
+        assert_eq!(by_stem(entries, "DAZ_0005").stars, 5);
+        // 라벨 충돌은 항목 자신의 키(첫 멤버) 기록이 이기고, 별점은 0이 아닌 첫 값.
+        let e6 = by_stem(entries, "DAZ_0006");
+        let own_is_jpg = e6.members[0].parent().unwrap().ends_with("jpg");
+        assert_eq!(e6.label, if own_is_jpg { Label::Reject } else { Label::Pick });
+        assert_eq!(e6.stars, 4);
+        assert_eq!(by_stem(entries, "DAZ_0007").tag, ColorTag::Teal);
+    };
+    check(&entries);
+
+    // 무관한 한 장만 바꿔 저장해도(앱은 전체 항목을 저장) 나머지 분류가 남는다.
+    entries.iter_mut().find(|e| e.stem == "DAZ_0004").unwrap().label = Label::Hold;
+    sidecar::save(root, &entries).unwrap();
+    sidecar::save(root, &entries).unwrap();
+    let reloaded = reload(root, true);
+    check(&reloaded);
+    assert_eq!(by_stem(&reloaded, "DAZ_0004").label, Label::Hold);
+}
+
+#[test]
+fn sidecar_rating_survives_image_only_move() {
+    // 병합 항목(키 jpg/…)을 분류한 뒤 JPG만 트리 밖으로 옮겨도 남은 RAW 항목이 분류를 유지한다.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    split_pair_tree(root, 4..=5, true);
+    let mut entries = scan::scan_folder(root, true, rawblow_core::SortOrder::Name);
+    for e in &mut entries {
+        e.label = Label::Pick;
+        e.stars = 5;
+    }
+    sidecar::save(root, &entries).unwrap();
+    for n in 4..=5 {
+        std::fs::remove_file(root.join(format!("jpg/DAZ_000{n}.JPG"))).unwrap();
+    }
+    let reloaded = reload(root, true);
+    assert_eq!(reloaded.len(), 2);
+    assert!(reloaded.iter().all(|e| e.label == Label::Pick && e.stars == 5));
+}
+
+#[test]
+fn sidecar_rating_survives_jpgs_added_later() {
+    // RAW만 먼저 분류(키 원본/…) → 나중에 jpg/로 JPG를 내보내 항목 키가 바뀌어도 유지.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    split_pair_tree(root, 4..=5, false);
+    let mut entries = scan::scan_folder(root, true, rawblow_core::SortOrder::Name);
+    by_stem_mut(&mut entries, "DAZ_0004").label = Label::Pick;
+    by_stem_mut(&mut entries, "DAZ_0005").label = Label::Reject;
+    sidecar::save(root, &entries).unwrap();
+    split_pair_tree(root, 4..=5, true);
+    let reloaded = reload(root, true);
+    assert_eq!(reloaded.len(), 2);
+    assert_eq!(by_stem(&reloaded, "DAZ_0004").label, Label::Pick);
+    assert_eq!(by_stem(&reloaded, "DAZ_0005").label, Label::Reject);
+}
+
+#[test]
+fn sidecar_nonrecursive_save_keeps_subfolder_records() {
+    // 하위 폴더를 끄고 한 장만 분류해도 이전 재귀 세션의 하위 폴더 기록은 남는다.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    for f in ["A.JPG", "sub/B.JPG", "sub/C.JPG"] {
+        std::fs::write(root.join(f), b"x").unwrap();
+    }
+    let mut entries = scan::scan_folder(root, true, rawblow_core::SortOrder::Name);
+    for e in &mut entries {
+        e.label = Label::Pick;
+    }
+    sidecar::save(root, &entries).unwrap();
+
+    let mut flat = reload(root, false);
+    assert_eq!(flat.len(), 1);
+    flat[0].stars = 3;
+    sidecar::save_scoped(root, &flat, false).unwrap();
+    let session = sidecar::load(root).unwrap();
+    assert!(session.items.contains_key("sub/B") && session.items.contains_key("sub/C"));
+    let full = reload(root, true);
+    assert!(full.iter().all(|e| e.label == Label::Pick), "하위 폴더 분류 유지");
+    assert_eq!(by_stem(&full, "A").stars, 3);
+
+    // 재귀 목록 저장은 지금처럼 전체를 다시 써서, 사라진 파일의 기록은 정리된다.
+    std::fs::remove_file(root.join("sub/C.JPG")).unwrap();
+    let full = reload(root, true);
+    sidecar::save_scoped(root, &full, true).unwrap();
+    let session = sidecar::load(root).unwrap();
+    assert!(!session.items.contains_key("sub/C"), "재귀 저장은 묵은 키를 정리");
+    assert!(session.items.contains_key("sub/B"));
+}
+
+#[test]
+fn sidecar_nonrecursive_unrate_does_not_resurrect_merged_record() {
+    // 루트 RAW + 하위 JPG가 재귀에서 한 항목(키 0_jpg/A)이었다면, 비재귀에서 그 RAW를 미선택으로
+    // 되돌린 것이 하위 폴더 기록 보존 때문에 다시 살아나면 안 된다.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("0_jpg")).unwrap();
+    std::fs::write(root.join("A.NEF"), b"r").unwrap();
+    std::fs::write(root.join("0_jpg/A.JPG"), b"j").unwrap();
+    let mut entries = scan::scan_folder(root, true, rawblow_core::SortOrder::Name);
+    assert_eq!(entries.len(), 1, "폴더 무관 페어링");
+    entries[0].label = Label::Pick;
+    sidecar::save(root, &entries).unwrap();
+    let session = sidecar::load(root).unwrap();
+    assert!(session.items.keys().all(|k| k.contains('/')), "기록 키가 하위 폴더 쪽: {:?}", session.items.keys());
+
+    let mut flat = reload(root, false);
+    assert_eq!(flat.len(), 1);
+    assert_eq!(flat[0].label, Label::Pick, "비재귀에서도 병합 기록을 읽는다");
+    flat[0].label = Label::Unrated;
+    sidecar::save_scoped(root, &flat, false).unwrap();
+    assert!(reload(root, true).iter().all(|e| e.label == Label::Unrated));
+    assert!(reload(root, false).iter().all(|e| e.label == Label::Unrated));
+}
+
+#[test]
+fn sidecar_non_utf8_main_recovers_from_bak() {
+    // UTF-8이 아닌 손상본도 파싱 실패와 똑같이: .corrupt로 치우고 .bak에서 복구, .bak은 보존.
+    let tmp = tempfile::tempdir().unwrap();
+    let folder = tmp.path();
+    std::fs::write(folder.join("IMG_1.JPG"), b"x").unwrap();
+    let mut entries = scan::scan_folder(folder, false, rawblow_core::SortOrder::Name);
+    entries[0].label = Label::Pick;
+    sidecar::save(folder, &entries).unwrap();
+    sidecar::save(folder, &entries).unwrap();
+    let dir = sidecar::sidecar_dir(folder);
+    let mut garbage = b"{\"version\":1,\"folder\":\"D:/".to_vec();
+    garbage.extend_from_slice(&"사진".as_bytes()[..4]); // 다중 바이트 문자 중간에서 잘림
+    std::fs::write(sidecar::sidecar_path(folder), &garbage).unwrap();
+
+    let session = sidecar::load(folder).expect("bak 복구");
+    assert_eq!(session.items.get("IMG_1").map(|r| r.label), Some(Label::Pick));
+    assert_eq!(std::fs::read(dir.join(sidecar::SIDECAR_CORRUPT)).unwrap(), garbage);
+    assert!(sidecar::sidecar_path(folder).exists(), "main 복원");
+
+    entries[0].label = Label::Hold;
+    sidecar::save(folder, &entries).unwrap();
+    let bak = std::fs::read(dir.join(sidecar::SIDECAR_BAK)).unwrap();
+    let bak = String::from_utf8(bak).expect(".bak이 손상본으로 덮이지 않음");
+    assert!(bak.contains("IMG_1"));
+}
+
+// ── 전송·정리 무손실: 한 항목 안 동명 파일, 덮어쓰기 금지, 제자리 파일 ─────────────
+
+/// 상대 경로·내용으로 파일을 만들고, 그 전부를 멤버로 한 항목을 직접 만든다.
+/// (스캔은 짝이 모호한 동명 세트를 합치지 않으므로 전송·정리 무손실은 항목을 직접 구성해 검증.)
+fn entry_of(root: &Path, stem: &str, files: &[(&str, &str)]) -> Entry {
+    let mut members = Vec::new();
+    for (rel, body) in files {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, body).unwrap();
+        members.push(p);
+    }
+    Entry::from_members(stem.into(), members)
+}
+
+/// cam1·cam2에 같은 번호가 있는 4멤버 한 항목.
+fn four_member_entry(root: &Path) -> Entry {
+    entry_of(
+        root,
+        "DSC_0001",
+        &[
+            ("cam1/RAW/DSC_0001.NEF", "cam1-raw"),
+            ("cam1/JPG/DSC_0001.JPG", "cam1-jpg"),
+            ("cam2/RAW/DSC_0001.NEF", "cam2-raw"),
+            ("cam2/JPG/DSC_0001.JPG", "cam2-jpg"),
+        ],
+    )
+}
+
+/// 폴더 바로 아래 파일들의 (이름, 내용) 정렬 목록.
+fn dir_contents(dir: &Path) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| e.path().is_file())
+                .map(|e| {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    (name, std::fs::read_to_string(e.path()).unwrap())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort();
+    out
+}
+
+fn bodies(list: &[(String, String)]) -> Vec<String> {
+    let mut v: Vec<String> = list.iter().map(|(_, b)| b.clone()).collect();
+    v.sort();
+    v
+}
+
+fn pick_req<'a>(entries: &'a [Entry], action: transfer::Action, dest: &Path) -> transfer::TransferRequest<'a> {
+    transfer::TransferRequest {
+        entries,
+        labels: vec![Label::Pick],
+        stars: vec![],
+        tags: vec![],
+        action,
+        companions: transfer::Companions::Both,
+        dest: dest.to_path_buf(),
+        split: transfer::TransferSplit::None,
+        conflict: transfer::ConflictPolicy::AutoIncrement,
+        rename: None,
+    }
+}
+
+#[test]
+fn transfer_same_name_members_in_one_entry_never_overwrite() {
+    for action in [transfer::Action::Move, transfer::Action::Copy] {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("wedding");
+        let mut entries = vec![four_member_entry(&root)];
+        assert_eq!(entries[0].members.len(), 4);
+        entries[0].label = Label::Pick;
+        let out = tmp.path().join("out");
+
+        let report = transfer::execute(&pick_req(&entries, action, &out));
+        assert_eq!(report.transferred, 4, "{action:?}: 4개 모두 도착");
+        assert!(report.failed.is_empty(), "{action:?}: {:?}", report.failed);
+        let got = dir_contents(&out);
+        assert_eq!(bodies(&got), ["cam1-jpg", "cam1-raw", "cam2-jpg", "cam2-raw"], "{action:?}: 덮어쓰기 없이 4개 내용 모두 존재");
+        // k번째 동명 파일은 종류와 무관하게 같은 접미사를 받는다(cam2 RAW·JPG 페어 유지).
+        let expect = [
+            ("DSC_0001.JPG", "cam1-jpg"),
+            ("DSC_0001.NEF", "cam1-raw"),
+            ("DSC_0001_001.JPG", "cam2-jpg"),
+            ("DSC_0001_001.NEF", "cam2-raw"),
+        ];
+        let expect: Vec<(String, String)> = expect.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        assert_eq!(got, expect, "{action:?}");
+        let left = entries[0].members.iter().filter(|m| m.exists()).count();
+        match action {
+            transfer::Action::Move => assert_eq!(left, 0, "이동: 도착한 파일만 원본 제거"),
+            transfer::Action::Copy => assert_eq!(left, 4, "복사: 원본 보존"),
+        }
+    }
+}
+
+#[test]
+fn transfer_same_name_differing_only_by_ext_case_keeps_both() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("shoot");
+    let files = [("jpg/DAZ_0004.JPG", "camera-jpg"), ("보정/DAZ_0004.jpg", "EDITED-jpg"), ("원본/DAZ_0004.NEF", "raw")];
+    let mut entries = vec![entry_of(&root, "DAZ_0004", &files)];
+    assert_eq!(entries[0].members.len(), 3);
+    entries[0].label = Label::Pick;
+    for action in [transfer::Action::Copy, transfer::Action::Move] {
+        let out = tmp.path().join(format!("out-{action:?}"));
+        let report = transfer::execute(&pick_req(&entries, action, &out));
+        assert_eq!(report.transferred, 3, "{action:?}");
+        assert!(report.failed.is_empty(), "{action:?}: {:?}", report.failed);
+        assert_eq!(bodies(&dir_contents(&out)), ["EDITED-jpg", "camera-jpg", "raw"], "{action:?}: 확장자 대소문자만 다른 동명 파일도 보존");
+    }
+}
+
+#[test]
+fn transfer_rename_template_duplicate_out_names_keep_all() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("wedding");
+    let mut entries = vec![four_member_entry(&root)];
+    entries[0].label = Label::Pick;
+    let out = tmp.path().join("out");
+    let mut req = pick_req(&entries, transfer::Action::Move, &out);
+    req.rename = Some(transfer::RenameRule {
+        template: "{seq:03}".into(),
+        numbering: transfer::Numbering::Order,
+    });
+    let report = transfer::execute(&req);
+    assert_eq!(report.transferred, 4);
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    let got = dir_contents(&out);
+    assert_eq!(bodies(&got), ["cam1-jpg", "cam1-raw", "cam2-jpg", "cam2-raw"], "템플릿이 같은 이름을 만들어도 덮어쓰지 않음");
+    let names: Vec<&str> = got.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["001.JPG", "001.NEF", "001_001.JPG", "001_001.NEF"]);
+}
+
+#[test]
+fn organize_move_same_name_members_never_overwrite() {
+    use rawblow_core::organize::{self, OrganizeKey, OrganizeRequest};
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("wedding");
+    let entries = vec![four_member_entry(&root)];
+    // EXIF 없는 더미 → 한 항목 4멤버가 모두 unknown-camera로 모인다.
+    let report = organize::organize(&OrganizeRequest {
+        entries: &entries,
+        key: OrganizeKey::Camera,
+        action: transfer::Action::Move,
+        dest_root: root.clone(),
+        conflict: transfer::ConflictPolicy::AutoIncrement,
+    });
+    assert_eq!(report.transferred, 4);
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    assert_eq!(bodies(&dir_contents(&root.join("unknown-camera"))), ["cam1-jpg", "cam1-raw", "cam2-jpg", "cam2-raw"]);
+    assert_eq!(entries[0].members.iter().filter(|m| m.exists()).count(), 0);
+}
+
+#[test]
+fn organize_by_extension_same_name_members_never_overwrite() {
+    use rawblow_core::organize::{self, OrganizeKey, OrganizeRequest};
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("wedding");
+    let entries = vec![four_member_entry(&root)];
+    let report = organize::organize(&OrganizeRequest {
+        entries: &entries,
+        key: OrganizeKey::Extension,
+        action: transfer::Action::Copy,
+        dest_root: root.clone(),
+        conflict: transfer::ConflictPolicy::AutoIncrement,
+    });
+    assert_eq!(report.transferred, 4);
+    assert_eq!(bodies(&dir_contents(&root.join("JPG"))), ["cam1-jpg", "cam2-jpg"]);
+    assert_eq!(bodies(&dir_contents(&root.join("NEF"))), ["cam1-raw", "cam2-raw"]);
+}
+
+/// 나누기 모드 기본 dest는 원본 폴더 자체다. 재귀 스캔으로 다시 보내면 이미 제 폴더에 있는
+/// 파일은 그대로 둬야 한다(복사 중복·이동 중 `_001` 제자리 리네임 금지).
+#[test]
+fn transfer_split_rerun_into_source_root_leaves_files_in_place() {
+    for action in [transfer::Action::Move, transfer::Action::Copy] {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("shoot");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("IMG_0001.CR2"), b"raw1").unwrap();
+        std::fs::write(root.join("IMG_0001.JPG"), b"jpg1").unwrap();
+        std::fs::write(root.join("IMG_0002.JPG"), b"jpg2").unwrap();
+        let label_of = |e: &Entry| if e.stem == "IMG_0001" { Label::Pick } else { Label::Hold };
+        let run = |entries: &[Entry], action| {
+            let mut req = pick_req(entries, action, &root);
+            req.split = transfer::TransferSplit::Label;
+            transfer::execute(&req)
+        };
+
+        // 첫 실행(이동)으로 라벨 폴더에 나눠 둔다.
+        let mut entries = scan::scan_folder(&root, true, rawblow_core::SortOrder::Name);
+        for e in entries.iter_mut() {
+            e.label = label_of(e);
+        }
+        let first = run(&entries, transfer::Action::Move);
+        assert_eq!(first.transferred, 3);
+
+        // 다시 열고(재귀) 같은 나누기 전송을 한 번 더.
+        let mut entries = scan::scan_folder(&root, true, rawblow_core::SortOrder::Name);
+        for e in entries.iter_mut() {
+            e.label = label_of(e);
+        }
+        let second = run(&entries, action);
+        assert_eq!(second.transferred, 0, "{action:?}: 이미 제 폴더에 있으면 보내지 않음");
+        assert!(second.failed.is_empty(), "{action:?}: {:?}", second.failed);
+        assert!(second.renamed.is_empty(), "{action:?}: 제자리 리네임 없음");
+        assert_eq!(second.in_place, 3, "{action:?}: 제자리 파일로 정직하게 센다");
+        assert_eq!(
+            dir_contents(&root.join("pick")),
+            [("IMG_0001.CR2".to_string(), "raw1".to_string()), ("IMG_0001.JPG".to_string(), "jpg1".to_string())],
+            "{action:?}: _001 없음"
+        );
+        assert_eq!(dir_contents(&root.join("hold")), [("IMG_0002.JPG".to_string(), "jpg2".to_string())], "{action:?}");
+    }
+}

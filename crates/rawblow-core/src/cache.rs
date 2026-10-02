@@ -18,6 +18,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 ///    그대로이므로 버전을 올리지 않으면 이미 캐시된 CR3 썸네일·프리뷰가 영영 눕혀진 채로
 ///    남고 ORIG만 바로 서는 불일치가 생긴다.
 const CACHE_VERSION: u32 = 2;
+/// HEIC/HEIF 키에만 섞는 염. v0.6.1은 HEIC 썸네일을 **회전 없이** 저장했다(컨테이너 JPEG를
+/// orient=1로 디코딩). v0.6.2가 회전을 고쳐도 키가 같으면 그 눕힌 썸네일이 계속 뜬다 —
+/// CACHE_VERSION을 올리면 모든 포맷 캐시가 날아가므로 HEIC만 무효화한다.
+const HEIC_KEY_SALT: &[u8] = b"heic-orient-1";
 /// 저장 JPEG 품질(썸네일이라 85면 충분히 작고 깨끗하다). env `RB_CACHE_Q`로 스윕 가능.
 fn jpeg_quality() -> u8 {
     static C: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
@@ -61,6 +65,9 @@ pub fn thumb_key(path: &Path, max_edge: u32) -> Option<String> {
     fnv1a(&mut h, &len.to_le_bytes());
     fnv1a(&mut h, &mtime.to_le_bytes());
     fnv1a(&mut h, &max_edge.to_le_bytes());
+    if crate::heif::is_heic_path(path) {
+        fnv1a(&mut h, HEIC_KEY_SALT);
+    }
     Some(format!("{h:016x}"))
 }
 
@@ -198,4 +205,43 @@ pub fn clear(cache_dir: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// v0.6.1 키 공식 그대로(염 없음).
+    fn old_key(path: &Path, max_edge: u32) -> String {
+        let meta = std::fs::metadata(path).unwrap();
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        fnv1a(&mut h, &CACHE_VERSION.to_le_bytes());
+        fnv1a(&mut h, path.to_string_lossy().as_bytes());
+        fnv1a(&mut h, &meta.len().to_le_bytes());
+        fnv1a(&mut h, &mtime.to_le_bytes());
+        fnv1a(&mut h, &max_edge.to_le_bytes());
+        format!("{h:016x}")
+    }
+
+    #[test]
+    fn heic_keys_change_other_keys_stay() {
+        // v0.6.1이 회전 없이 저장한 HEIC 썸네일만 버리고, 다른 포맷 캐시는 그대로 쓴다.
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.heic", "b.HEIF"] {
+            let p = dir.path().join(name);
+            std::fs::write(&p, b"x").unwrap();
+            assert_ne!(thumb_key(&p, 320).unwrap(), old_key(&p, 320), "{name}");
+        }
+        for name in ["a.jpg", "b.CR3"] {
+            let p = dir.path().join(name);
+            std::fs::write(&p, b"x").unwrap();
+            assert_eq!(thumb_key(&p, 320).unwrap(), old_key(&p, 320), "{name}");
+        }
+    }
 }

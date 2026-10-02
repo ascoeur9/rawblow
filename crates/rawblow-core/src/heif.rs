@@ -38,6 +38,13 @@ pub fn orig_long_edge(path: &Path) -> Option<u32> {
 pub fn decode(path: &Path, max_edge: Option<u32>, want_orig: bool) -> Result<DecodedImage, DecodeError> {
     let bytes = std::fs::read(path).map_err(|e| DecodeError::Io(e.to_string()))?;
     crate::decode::count_read(bytes.len());
+    // 확장자만 HEIC이고 내용은 JPEG(Dropbox 카메라 업로드 등): 일반 JPG처럼 EXIF 방향을 적용해
+    // 푼다. HEVC로 보내면 그리드 외 모든 요청이 실패한다.
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        let mut img = crate::decode::decode_jpeg_scaled(&bytes, crate::meta::orientation(path), max_edge)?;
+        img.full_raw = want_orig; // 본 이미지 그 자체(#109)
+        return Ok(img);
+    }
     decode_bytes(&bytes, max_edge, want_orig)
 }
 
@@ -153,7 +160,18 @@ fn decode_hevc(bytes: &[u8], max_edge: Option<u32>, orient_fix: u16) -> Result<D
     Ok(crate::decode::finish(dynimg, None, false, orient_fix, max_edge))
 }
 
+/// 박스 중첩 상한. 실제 HEIF는 meta>iprp>ipco>ispe 정도(3~4단)라 넉넉하다. 상한이 없으면
+/// 'meta'를 수만 겹 쌓은 파일이 메타 스레드 스택을 넘쳐 프로세스가 통째로 죽는다.
+const MAX_BOX_DEPTH: usize = 16;
+
 fn walk_boxes(data: &[u8], f: &mut dyn FnMut(&[u8; 4], &[u8])) {
+    walk_boxes_at(data, f, 0);
+}
+
+fn walk_boxes_at(data: &[u8], f: &mut dyn FnMut(&[u8; 4], &[u8]), depth: usize) {
+    if depth >= MAX_BOX_DEPTH {
+        return;
+    }
     let mut i = 0usize;
     let mut n = 0usize;
     while i + 8 <= data.len() && n < 4096 {
@@ -177,10 +195,39 @@ fn walk_boxes(data: &[u8], f: &mut dyn FnMut(&[u8; 4], &[u8])) {
         let body = &data[i + hdr..i + size];
         f(&typ, body);
         if matches!(&typ, b"moov" | b"iprp" | b"ipco" | b"dinf") {
-            walk_boxes(body, f);
+            walk_boxes_at(body, f, depth + 1);
         } else if &typ == b"meta" && body.len() >= 4 {
-            walk_boxes(&body[4..], f);
+            walk_boxes_at(&body[4..], f, depth + 1);
         }
         i += size;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deep_nested_meta_does_not_overflow_stack() {
+        // 'meta' 10만 겹(각 12바이트: 크기·타입·version/flags). 깊이 상한이 없으면 작은 스택에서
+        // 재귀가 넘쳐 프로세스가 죽는다(catch_unwind로 못 잡음).
+        const N: usize = 100_000;
+        let mut data = vec![0u8; 12 * N];
+        for k in 0..N {
+            let at = 12 * k;
+            data[at..at + 4].copy_from_slice(&((12 * (N - k)) as u32).to_be_bytes());
+            data[at + 4..at + 8].copy_from_slice(b"meta");
+        }
+        let seen = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                let mut n = 0usize;
+                walk_boxes(&data, &mut |_, _| n += 1);
+                n
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(seen > 0 && seen < N);
     }
 }

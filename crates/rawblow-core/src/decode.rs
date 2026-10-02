@@ -165,7 +165,7 @@ pub fn decode_file(path: &Path, opts: DecodeOptions) -> Result<DecodedImage, Dec
                 // ORIG(원본 보기): 먼저 IFD가 가리키는 **풀해상도 임베디드 JPEG**를 그 구간만
                 // 읽어 디코딩한다(예: RW2 0x0127의 8144px). 전체파일(수십 MB) 읽기와 rawloader
                 // 패닉을 모두 피해 가장 빠르고, 카메라 풀해상도 JPEG라 컬링에 충분한 디테일.
-                if let Some(mut img) = decode_ifd_embedded(path, orient, opts.max_edge, orig_gate(), false) {
+                if let Some((mut img, _)) = decode_ifd_embedded(path, orient, opts.max_edge, orig_gate(), false) {
                     img.full_raw = true; // 풀해상도 임베디드 = ORIG 성공(#109)
                     return Ok(img);
                 }
@@ -180,16 +180,35 @@ pub fn decode_file(path: &Path, opts: DecodeOptions) -> Result<DecodedImage, Dec
                 // **가장 큰** 임베디드(크기 무관, 보통 1920)를 그 구간만 읽어 쓴다 — 전체파일(수십 MB)
                 // 읽기를 피한다. 출력은 decode_largest_embedded와 동일(가용 최대)하면서 I/O만
                 // 36MB→0.5MB로 줄인다(느린 드라이브서 결정적). IFD가 비면 전체파일 폴백(최후).
-                if let Some(img) = decode_ifd_embedded(path, orient, opts.max_edge, 0, false) {
-                    return Ok(img);
-                }
-                decode_largest_embedded(path, orient, opts.max_edge)
+                let (mut img, native) = match decode_ifd_embedded(path, orient, opts.max_edge, 0, false) {
+                    Some(r) => r,
+                    None => decode_largest_embedded(path, orient, opts.max_edge)?,
+                };
+                // 폴백이어도 임베디드가 원본 해상도면 ORIG 성공이다(#109). CR3는 TIFF IFD가 없어
+                // 위 경로를 못 타지만 풀해상도 JPEG(6960)를 담는다. ORF는 3200이라 센서(5220)에 못 미친다.
+                // 원본 크기 읽기(EXIF)는 게이트를 넘은 경우에만.
+                let gate = orig_gate();
+                img.full_raw = native >= gate && embedded_is_full_res(native, gate, raw_orig_long_hint(path));
+                Ok(img)
             } else {
                 decode_raw_embedded(path, orient, opts.max_edge)
             }
         }
         None => Err(DecodeError::Unsupported),
     }
+}
+
+/// ORIG 폴백이 고른 임베디드가 원본 해상도인지(#109). `native_long`은 축소 전 임베디드 긴 변.
+/// 게이트 이상이고, 원본 긴 변을 알면 그 90% 이상이어야 한다. 원본 크기가 임베디드보다 작게
+/// 적힌 경우(RW2 EXIF 1920)는 항상 통과하므로 작은 EXIF 값이 판정을 막지 못한다.
+fn embedded_is_full_res(native_long: u32, gate: u32, orig_long: Option<u32>) -> bool {
+    native_long >= gate && orig_long.is_none_or(|o| native_long as u64 * 10 >= o as u64 * 9)
+}
+
+/// RAW 원본 긴 변 추정: IFD 최대 임베디드(`orig_long_edge`)와 EXIF 크기 중 큰 값. 둘 다 모르면 None.
+fn raw_orig_long_hint(path: &Path) -> Option<u32> {
+    let exif = crate::meta::read_exif(path).and_then(|e| e.display_size()).map(|(w, h)| w.max(h));
+    orig_long_edge(path).max(exif)
 }
 
 /// RAW의 임베디드 JPEG를 추출해 축소 디코딩.
@@ -221,7 +240,7 @@ fn decode_raw_embedded(
     // 0x0127 같은 풀해상도 JPEG를 DCT 축소해 더 선명한 단일뷰를 제공한다(풀 RAW 현상은 여전히 회피).
     // max_edge=None인 하위호환 호출은 기존처럼 ≥1600 후보를 고른다.
     if !thumb {
-        if let Some(img) = decode_ifd_embedded(path, orient, decode_edge, min_long_edge, true) {
+        if let Some((img, _)) = decode_ifd_embedded(path, orient, decode_edge, min_long_edge, true) {
             return Ok(img);
         }
     }
@@ -259,14 +278,16 @@ fn decode_raw_embedded(
 /// ORIG 폴백: RAW의 **가장 큰** 임베디드 JPEG를 요청 크기(`max_edge`)로 디코딩한다.
 /// 풀 RAW 현상이 안 되는 카메라(예: 일부 RW2)에서도 원본 사이즈 프리뷰(예: 8144급)를
 /// 보여주기 위함. 전체 파일을 읽어야 가장 큰 임베디드를 찾을 수 있어 다소 느리다(의도된 비용).
+/// 축소 전 임베디드 긴 변을 함께 돌려준다(ORIG 판정용).
 fn decode_largest_embedded(
     path: &Path,
     orient: u16,
     max_edge: Option<u32>,
-) -> Result<DecodedImage, DecodeError> {
+) -> Result<(DecodedImage, u32), DecodeError> {
     let bytes = read_whole(path)?;
     let jpeg = extract_embedded_jpeg(&bytes).ok_or(DecodeError::NoEmbeddedPreview)?;
-    decode_jpeg_scaled(jpeg, orient, max_edge)
+    let native = jpeg_dimensions(jpeg).map(|(w, h)| w.max(h) as u32).unwrap_or(0);
+    Ok((decode_jpeg_scaled(jpeg, orient, max_edge)?, native))
 }
 
 /// 후보 임베디드 JPEG들을 선호 순서로 디코딩 시도해, 처음 성공한 것을 반환.
@@ -548,13 +569,14 @@ pub fn orig_long_edge(path: &Path) -> Option<u32> {
 /// IFD가 가리키는 임베디드 JPEG 중 `min_long_edge` 이상인 것을 그 구간만 읽어 디코딩한다.
 /// `prefer_smallest=false`(ORIG): 큰 것부터 → 가장 큰 풀해상도. `true`(프리뷰): 작은 것부터
 /// → 화면에 충분한 **가장 작은** 임베디드(거대 임베디드 디코딩 회피, 전체파일·blind prefix 회피).
+/// 결과와 함께 축소 전 임베디드 긴 변을 돌려준다(ORIG 판정용).
 fn decode_ifd_embedded(
     path: &Path,
     orient: u16,
     max_edge: Option<u32>,
     min_long_edge: u32,
     prefer_smallest: bool,
-) -> Option<DecodedImage> {
+) -> Option<(DecodedImage, u32)> {
     let blobs = tiff_ifd0_jpeg_blobs(path);
     if blobs.is_empty() {
         return None;
@@ -608,7 +630,7 @@ fn decode_ifd_embedded(
                     decode_jpeg_scaled(&bytes, orient, max_edge)
                 };
                 if let Ok(img) = result {
-                    return Some(img);
+                    return Some((img, le));
                 }
             }
         }
@@ -1001,4 +1023,25 @@ fn jpeg_dimensions(b: &[u8]) -> Option<(u16, u16)> {
         i += 2 + len;
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_embedded_full_res_rule() {
+        // CR3(R6 III): 임베디드 6960 = EXIF 6960 → 원본.
+        assert!(embedded_is_full_res(6960, 3000, Some(6960)));
+        // OM SYSTEM ORF: 임베디드 3200, 센서 5220 → 게이트는 넘어도 원본 아님.
+        assert!(!embedded_is_full_res(3200, 3000, Some(5220)));
+        // RW2: EXIF가 1920으로 작게 적혀도 막지 않는다.
+        assert!(embedded_is_full_res(8144, 3000, Some(1920)));
+        // 원본 크기를 모르면 게이트만 본다.
+        assert!(embedded_is_full_res(3200, 3000, None));
+        assert!(!embedded_is_full_res(1920, 3000, None));
+        // 90% 경계: 6264 = 6960 × 0.9.
+        assert!(embedded_is_full_res(6264, 3000, Some(6960)));
+        assert!(!embedded_is_full_res(6263, 3000, Some(6960)));
+    }
 }

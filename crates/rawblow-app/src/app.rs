@@ -203,7 +203,7 @@ pub struct RawBlowApp {
     grid_visible_rows: std::ops::Range<usize>,
 
     // 컬링 되돌리기(#78): 라벨·별점·태그 변경 이력. Ctrl/⌘Z로 직전 편집을 취소, ⇧를 더해 재실행.
-    // 폴더 전환·재정렬(real 인덱스 재배정) 시 비운다. 새 편집이 생기면 redo_stack은 무효화.
+    // 폴더 전환 시 비우고, 재정렬(#56)은 같은 사진의 새 인덱스로 옮긴다. 새 편집이 생기면 redo_stack은 무효화.
     undo_stack: Vec<CullEdit>,
     redo_stack: Vec<CullEdit>,
 
@@ -224,6 +224,9 @@ pub struct RawBlowApp {
     generation: u64,
 
     sidecar_dirty: bool,
+    // 지금 items를 만든 스캔이 재귀였는지. 설정(cfg.recursive)은 재스캔 없이 바뀔 수 있어
+    // 사이드카 저장 범위는 이 값으로 정한다(비재귀 목록이 하위 폴더 기록을 지우지 않게).
+    scan_recursive: bool,
     last_save: Instant,
     // 사이드카 저장 실패 표면화(#62). 예전엔 save 결과를 버리고 dirty를 내려, 읽기 전용
     // 폴더·권한·용량 부족에서 상태바가 "saved"인 채 세션 전체가 무음 유실됐다.
@@ -277,6 +280,8 @@ pub struct RawBlowApp {
     bulk_exact: bool,
     bulk_target: Label,
     bulk_hits: Vec<usize>,
+    // bulk_hits(real)를 만든 세대. 적용 때 다르면 옛 인덱스 대신 다시 찾는다(재정렬은 reorder_items가 맞춤).
+    bulk_hits_gen: u64,
     bulk_searched: bool,
 
     // 단축키 치트시트 오버레이(#66). ?/F1·툴바 ? 버튼으로 여닫는다. 열려 있는 동안은
@@ -335,6 +340,8 @@ struct MetaResult {
 
 /// GPS 미니 지도(#38) 패널 상태. (항목, 줌)당 하나 — 바뀌면 새로 만든다.
 struct MapState {
+    /// 만든 때의 `generation`. 폴더 전환·재정렬 뒤엔 같은 `real`이 다른 사진이다.
+    gen: u64,
     real: usize,
     zoom: u8,
     lat: f64,
@@ -421,6 +428,7 @@ impl RawBlowApp {
             histo: std::collections::HashMap::new(),
             generation: 0,
             sidecar_dirty: false,
+            scan_recursive: false,
             last_save: Instant::now(),
             save_error: None,
             save_fail_count: 0,
@@ -450,6 +458,7 @@ impl RawBlowApp {
             bulk_exact: false,
             bulk_target: Label::Pick,
             bulk_hits: Vec::new(),
+            bulk_hits_gen: 0,
             bulk_searched: false,
             show_help: false,
             toast: None,
@@ -572,6 +581,7 @@ impl RawBlowApp {
             histo: std::collections::HashMap::new(),
             generation: 0,
             sidecar_dirty: false,
+            scan_recursive: false,
             last_save: Instant::now(),
             save_error: None,
             save_fail_count: 0,
@@ -601,6 +611,7 @@ impl RawBlowApp {
             bulk_exact: false,
             bulk_target: Label::Pick,
             bulk_hits: Vec::new(),
+            bulk_hits_gen: 0,
             bulk_searched: false,
             show_help: false,
             toast: None,
@@ -652,7 +663,7 @@ impl RawBlowApp {
         if self.sidecar_dirty {
             if let Some(cur) = &self.folder {
                 let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
-                if sidecar::save(cur, &entries).is_err() {
+                if sidecar::save_scoped(cur, &entries, self.scan_recursive).is_err() {
                     // 안내용 옛 폴더명(마지막 경로 요소, lossy). 루트 등 file_name이 없으면 전체 경로.
                     flush_failed = Some(
                         cur.file_name()
@@ -708,6 +719,7 @@ impl RawBlowApp {
         self.scanning = true;
         let gen = self.generation;
         let recursive = self.cfg.recursive;
+        self.scan_recursive = recursive;
         let sort = self.sort;
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.scan_rx = Some(rx);
@@ -888,16 +900,26 @@ impl RawBlowApp {
 
     /// items를 주어진 순열로 재배열하고 인덱스 기반 상태를 리셋한다(#56).
     /// real 인덱스가 전부 바뀌므로 open_folder와 동일하게 세대를 올려 in-flight 디코딩
-    /// 결과를 무효화하고 캐시·pending·히스토그램·선택을 비운다. 라벨·별점은 Item과 함께
+    /// 결과를 무효화하고 캐시·pending·히스토그램을 비운다. 라벨·별점은 Item과 함께
     /// 이동하고 사이드카는 파일명 키라 안전. 현재 보던 사진은 새 위치로 따라간다.
+    /// 사용자 작업에 묶인 인덱스(선택·되돌리기·일괄 분류 매칭·진행 중 AI 컬링)는 같은 사진의
+    /// 새 인덱스로 옮긴다 — 같은 폴더에서 순서만 바뀐 것이라 작업 중 재정렬이 티 나지 않게.
     fn reorder_items(&mut self, order: &[usize]) {
         let cur_path = self
             .current_real()
             .and_then(|r| self.items.get(r))
             .map(|it| it.entry.display.clone());
+        let (_, anchor) = self.filter_keep();
+        let gen_before = self.generation;
         let mut old: Vec<Option<Item>> =
             std::mem::take(&mut self.items).into_iter().map(Some).collect();
         self.items = order.iter().map(|&i| old[i].take().expect("순열 인덱스 중복")).collect();
+        // 옛 real → 새 real.
+        let mut inv = vec![0; order.len()];
+        for (n, &o) in order.iter().enumerate() {
+            inv[o] = n;
+        }
+        let anchor = anchor.and_then(|r| inv.get(r).copied());
         self.generation += 1;
         self.worker.set_generation(self.generation);
         self.sort_scan_gen = Some(self.generation); // 방금 정렬한 결과 — 재수집 루프 방지.
@@ -912,20 +934,37 @@ impl RawBlowApp {
         self.orig_fallback.clear();
         self.decode_fails.clear(); // real 인덱스가 재배정되므로 실패 카운터도 함께 리셋(#64).
         self.meta_inflight = false; // 이전 폴더 EXIF 읽기가 새 폴더 메타를 막지 않게(#105).
-        self.undo_stack.clear(); // real 인덱스 재배정 → 되돌리기 스냅샷도 무효(#78).
-        self.redo_stack.clear();
+        // 되돌리기 스냅샷(#78)은 같은 사진의 새 인덱스로. index(필터 위치)는 폴백이라 그대로 둔다.
+        for edit in self.undo_stack.iter_mut().chain(self.redo_stack.iter_mut()) {
+            for e in &mut edit.prev {
+                e.0 = inv.get(e.0).copied().unwrap_or(e.0);
+            }
+        }
         self.histo.clear();
-        self.selected.clear();
-        self.sel_anchor = None;
+        self.selected = self.selected.iter().filter_map(|&r| inv.get(r).copied()).collect();
         self.grid_scroll_to = None;
         self.grid_visible_rows = 0..0;
         self.zoom_for = None;
-        // 보던 사진의 새 위치로 index 복원(필터 목록 기준).
+        // 일괄 분류 매칭(#3): 이 목록에서 찾은 것만 옮긴다(다른 세대 것은 적용 때 다시 찾음).
+        if self.bulk_hits_gen == gen_before {
+            self.bulk_hits = self.bulk_hits.iter().filter_map(|&r| inv.get(r).copied()).collect();
+            self.bulk_hits.sort_unstable();
+            self.bulk_hits_gen = self.generation;
+        }
+        // 진행 중 AI 컬링(#50)은 시작 때 real로 결과를 낸다 — 이 목록에서 시작한 작업이면 매핑을
+        // 이어 붙이고 세대도 따라 올린다. 폴더 전환으로 이미 어긋난 작업은 그대로 둬 폐기되게.
+        if let Some(job) = self.ai_cull.as_mut().filter(|j| j.generation == gen_before) {
+            job.remap = Some(match job.remap.take() {
+                Some(m) => m.iter().map(|&r| inv[r]).collect(),
+                None => inv,
+            });
+            job.generation = self.generation;
+        }
+        // 보던 사진·Shift 앵커 사진의 새 위치로 복원(필터 목록 기준).
+        let f = self.filtered();
+        self.sel_anchor = anchor.and_then(|r| f.iter().position(|&x| x == r));
         self.index = cur_path
-            .and_then(|p| {
-                let f = self.filtered();
-                f.iter().position(|&r| self.items[r].entry.display == p)
-            })
+            .and_then(|p| f.iter().position(|&r| self.items[r].entry.display == p))
             .unwrap_or(0);
     }
 
@@ -1032,43 +1071,54 @@ impl RawBlowApp {
 
     /// 라벨 필터를 바꾸고, 인덱스를 새 목록 안에 두며 안 보이는 그리드 선택을 뺀다(#102).
     fn apply_label_filter(&mut self, filt: Filter) {
-        let keep = self.current_real();
+        let keep = self.filter_keep();
         self.filter = filt;
         self.relocate_after_filter(keep);
     }
 
     /// 별점 필터 변경(#102). 보던 사진이 새 목록에 있으면 그 자리를 유지한다.
     fn apply_star_filter(&mut self, sf: StarFilter) {
-        let keep = self.current_real();
+        let keep = self.filter_keep();
         self.star_filter = sf;
         self.relocate_after_filter(keep);
     }
 
     /// 색 태그 필터 변경(#102).
     fn apply_tag_filter(&mut self, tf: TagFilter) {
-        let keep = self.current_real();
+        let keep = self.filter_keep();
         self.tag_filter = tf;
         self.relocate_after_filter(keep);
     }
 
     /// 필터 세 축을 모두 기본값으로 되돌린다(#67). 보던 사진 위치는 유지한다(#102).
     fn reset_filters(&mut self) {
-        let keep = self.current_real();
+        let keep = self.filter_keep();
         self.filter = Filter::All;
         self.star_filter = StarFilter::Any;
         self.tag_filter = TagFilter::Any;
         self.relocate_after_filter(keep);
     }
 
+    /// 필터 바꾸기 전에 (보던 사진, Shift 범위 앵커 사진)을 원본 인덱스로 잡아 둔다.
+    /// sel_anchor는 필터 목록 안 위치라 목록이 바뀌면 다른 사진을 가리킨다.
+    fn filter_keep(&self) -> (Option<usize>, Option<usize>) {
+        let f = self.filtered();
+        let anchor = self.sel_anchor.and_then(|a| f.get(a).copied());
+        (self.current_real(), anchor)
+    }
+
     /// 필터 변경 후 인덱스를 새 목록 안에 두고(보던 사진이 남아 있으면 그 자리),
     /// 화면에서 빠진 그리드 선택을 지운다(#102) — 안 보이는 사진에 일괄 분류가 새지 않게.
-    fn relocate_after_filter(&mut self, keep: Option<usize>) {
+    /// 앵커는 같은 사진의 새 위치로 옮기고(빠졌으면 버림), 그리드면 보던 사진 행으로 스크롤한다.
+    fn relocate_after_filter(&mut self, (keep, anchor): (Option<usize>, Option<usize>)) {
         let f = self.filtered();
         self.index = index_after_filter(&f, keep);
+        self.sel_anchor = anchor.and_then(|r| f.iter().position(|&x| x == r));
         let vis: std::collections::HashSet<usize> = f.into_iter().collect();
         self.selected.retain(|r| vis.contains(r));
-        if self.selected.is_empty() {
-            self.sel_anchor = None;
+        if self.view == ViewMode::Grid {
+            let cols = self.grid_cols.clamp(4, 12);
+            self.grid_scroll_to = Some(self.index / cols);
         }
     }
 
@@ -1426,7 +1476,7 @@ impl RawBlowApp {
         if self.sidecar_dirty && self.last_save.elapsed() > sidecar_retry_interval(self.save_fail_count) {
             if let Some(folder) = &self.folder {
                 let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
-                match sidecar::save(folder, &entries) {
+                match sidecar::save_scoped(folder, &entries, self.scan_recursive) {
                     Ok(()) => {
                         self.sidecar_dirty = false;
                         self.last_save = Instant::now();
@@ -1692,7 +1742,7 @@ impl eframe::App for RawBlowApp {
                 let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
                 // 결과는 버린다 — 창이 이미 닫히는 중이라 실패해도 알릴 UI가 없다(재시도 불가,
                 // 다음 실행이 직전 정상 사이드카를 복원하는 것이 최선의 폴백).
-                let _ = sidecar::save(folder, &entries);
+                let _ = sidecar::save_scoped(folder, &entries, self.scan_recursive);
             }
         }
         // 다음 실행에서 이어볼 수 있게 지금 보던 사진을 기록(#86). 바로 아래 저장에 실려 나간다.
@@ -2057,6 +2107,210 @@ mod tests {
         assert_eq!(index_after_filter(&[3, 9], Some(7)), 0, "빠졌으면 맨 앞");
         assert_eq!(index_after_filter(&[], Some(7)), 0);
         assert_eq!(index_after_filter(&[3, 9], None), 0);
+    }
+
+    fn filter_app(n: usize) -> super::RawBlowApp {
+        let mut app = super::RawBlowApp::for_settings_qa();
+        app.items = (0..n)
+            .map(|i| {
+                let mut entry = rawblow_core::model::Entry::from_members(
+                    format!("IMG_{i:04}"),
+                    vec![std::path::PathBuf::from(format!("Z:/filter/IMG_{i:04}.JPG"))],
+                );
+                // 3장마다 pick — Pick 필터 목록은 [0, 3, 6, …].
+                if i % 3 == 0 {
+                    entry.label = rawblow_core::model::Label::Pick;
+                }
+                super::Item {
+                    entry,
+                    exif: None,
+                    exif_loaded: false,
+                    af: None,
+                    af_loaded: false,
+                    orient: None,
+                    orig_long: None,
+                    cull_note: None,
+                }
+            })
+            .collect();
+        app.view = super::ViewMode::Grid;
+        app.grid_cols = 4;
+        app
+    }
+
+    #[test]
+    fn filter_change_scrolls_grid_to_current_and_rebases_anchor() {
+        use rawblow_core::model::Filter;
+        // 전체 목록에서 27(앵커)~30(현재)을 Shift 선택한 상태.
+        let mut app = filter_app(40);
+        app.index = 30;
+        app.sel_anchor = Some(27);
+        app.selected = [27, 28, 29, 30].into_iter().collect();
+        app.apply_label_filter(Filter::Pick);
+        // Pick 목록 [0,3,…,39]: 30은 10번째, 27은 9번째.
+        assert_eq!(app.index, 10, "보던 사진 자리 유지");
+        assert_eq!(app.grid_scroll_to, Some(10 / 4), "그리드가 보던 사진 행으로 스크롤");
+        assert_eq!(app.sel_anchor, Some(9), "앵커도 같은 사진의 새 위치로");
+
+        // 앵커 사진이 필터에서 빠지면 앵커를 버린다(엉뚱한 범위 방지).
+        let mut app = filter_app(40);
+        app.index = 30;
+        app.sel_anchor = Some(28);
+        app.selected = [28, 29, 30].into_iter().collect();
+        app.apply_label_filter(Filter::Pick);
+        assert_eq!(app.grid_scroll_to, Some(2));
+        assert_eq!(app.sel_anchor, None);
+
+        // 필터를 풀어도 같은 사진·같은 앵커 사진을 따라간다.
+        app.sel_anchor = Some(9); // Pick 목록의 27
+        app.reset_filters();
+        assert_eq!(app.index, 30);
+        assert_eq!(app.grid_scroll_to, Some(30 / 4));
+        assert_eq!(app.sel_anchor, Some(27));
+    }
+
+    #[test]
+    fn filter_change_in_single_view_does_not_schedule_grid_scroll() {
+        use rawblow_core::model::Filter;
+        let mut app = filter_app(40);
+        app.view = super::ViewMode::Single;
+        app.index = 30;
+        app.apply_label_filter(Filter::Pick);
+        assert_eq!(app.index, 10);
+        assert_eq!(app.grid_scroll_to, None);
+    }
+
+    fn stems(app: &super::RawBlowApp, reals: impl IntoIterator<Item = usize>) -> Vec<String> {
+        reals.into_iter().map(|r| app.items[r].entry.stem.clone()).collect()
+    }
+
+    fn labelled(app: &super::RawBlowApp, label: rawblow_core::model::Label) -> Vec<String> {
+        app.items.iter().filter(|it| it.entry.label == label).map(|it| it.entry.stem.clone()).collect()
+    }
+
+    #[test]
+    fn bulk_hits_follow_the_same_photos_after_capture_resort() {
+        use rawblow_core::model::Label;
+        let mut app = filter_app(6);
+        app.bulk_open = true;
+        app.bulk_exact = true;
+        app.bulk_text = "IMG_0000, IMG_0001".into();
+        app.bulk_search();
+        app.bulk_target = Label::Reject;
+        // 대화상자가 열린 사이 촬영시간순 정렬이 끝남(뒤집힌 순서).
+        app.reorder_items(&[5, 4, 3, 2, 1, 0]);
+        assert_eq!(stems(&app, app.bulk_hits.clone()), ["IMG_0001", "IMG_0000"], "목록도 같은 사진");
+        app.bulk_apply();
+        assert_eq!(labelled(&app, Label::Reject), ["IMG_0001", "IMG_0000"]);
+        // 일괄 변경 되돌리기도 같은 사진으로.
+        app.undo();
+        assert!(labelled(&app, Label::Reject).is_empty());
+        assert_eq!(labelled(&app, Label::Pick), ["IMG_0003", "IMG_0000"]);
+    }
+
+    #[test]
+    fn bulk_apply_does_not_use_hits_from_a_previous_folder() {
+        use rawblow_core::model::Label;
+        let mut app = filter_app(6);
+        app.bulk_exact = true;
+        app.bulk_text = "IMG_0004".into();
+        app.bulk_search(); // [4]
+        app.bulk_target = Label::Hold;
+        // 다른 폴더로 바뀜(세대 증가) — 같은 4번 자리에 다른 사진.
+        app.items = filter_app(8).items.into_iter().skip(2).collect();
+        app.generation += 1;
+        app.bulk_apply();
+        assert_eq!(labelled(&app, Label::Hold), ["IMG_0004"], "옛 인덱스 대신 같은 조건으로 다시 찾는다");
+    }
+
+    fn with_gps(app: &mut super::RawBlowApp, real: usize, lat: f64, lon: f64) {
+        app.items[real].exif = Some(rawblow_core::meta::ExifInfo {
+            camera: None,
+            lens: None,
+            focal_length: None,
+            aperture: None,
+            shutter: None,
+            iso: None,
+            exposure_bias: None,
+            datetime: None,
+            white_balance: None,
+            width: None,
+            height: None,
+            orientation: 1,
+            gps: Some(rawblow_core::meta::GpsCoord { lat, lon, alt: None }),
+        });
+    }
+
+    /// 지도 패널만 그린다. 디코딩 중(pending_preview)으로 두면 새 합성(네트워크)은 시작하지 않는다.
+    fn run_map_overlay(app: &mut super::RawBlowApp, real: usize) {
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let rect = ui.max_rect();
+                app.ui_map_overlay(ui, rect, real);
+            });
+        });
+    }
+
+    fn old_map(app: &super::RawBlowApp, real: usize, lat: f64, lon: f64) -> super::MapState {
+        super::MapState { gen: app.generation, real, zoom: app.map_zoom, lat, lon, rx: None, tex: None, failed: true }
+    }
+
+    #[test]
+    fn map_overlay_does_not_show_previous_folders_map_at_the_same_index() {
+        let mut app = filter_app(3);
+        app.show_map = true;
+        app.map_state = Some(old_map(&app, 1, 48.85837, 2.29448)); // 이전 폴더 1번 사진(파리).
+        // 폴더 전환(세대 증가) — 같은 1번 자리에 GPS가 있는 다른 사진(서울).
+        app.generation += 1;
+        with_gps(&mut app, 1, 37.56654, 126.97797);
+        app.pending_preview.insert(1);
+        run_map_overlay(&mut app, 1);
+        assert!(
+            app.map_state.as_ref().is_none_or(|m| m.lat == 37.56654 && m.lon == 126.97797),
+            "이전 사진의 지도·좌표를 그대로 보여 주면 안 된다"
+        );
+    }
+
+    #[test]
+    fn map_overlay_keeps_map_for_the_same_photo() {
+        let mut app = filter_app(3);
+        app.show_map = true;
+        with_gps(&mut app, 1, 37.56654, 126.97797);
+        app.map_state = Some(old_map(&app, 1, 37.56654, 126.97797));
+        app.pending_preview.insert(1);
+        run_map_overlay(&mut app, 1);
+        assert!(app.map_state.is_some(), "같은 사진·줌이면 다시 합성하지 않고 그대로 둔다");
+        // 줌만 바뀌면 새 지도가 올 때까지 옛 지도를 둔다(같은 사진 — 좌표는 그대로 맞다).
+        app.map_zoom += 1;
+        run_map_overlay(&mut app, 1);
+        assert!(app.map_state.is_some());
+    }
+
+    #[test]
+    fn capture_resort_keeps_undo_and_selection_on_the_same_photos() {
+        use rawblow_core::model::Label;
+        let mut app = filter_app(6);
+        // 그리드에서 IMG_0001·IMG_0002를 Shift 선택(앵커 1) 후 탈락.
+        app.index = 2;
+        app.sel_anchor = Some(1);
+        app.selected = [1, 2].into_iter().collect();
+        app.set_label(Label::Reject);
+        app.reorder_items(&[5, 4, 3, 2, 1, 0]);
+        let mut sel: Vec<usize> = app.selected.iter().copied().collect();
+        sel.sort_unstable();
+        assert_eq!(stems(&app, sel), ["IMG_0002", "IMG_0001"], "선택이 같은 사진에 남는다");
+        assert_eq!(app.sel_anchor.map(|a| app.filtered()[a]).map(|r| stems(&app, [r])), Some(vec!["IMG_0001".into()]));
+        app.undo();
+        assert!(labelled(&app, Label::Reject).is_empty(), "재정렬 전 편집도 되돌린다");
+        assert_eq!(labelled(&app, Label::Unrated), ["IMG_0005", "IMG_0004", "IMG_0002", "IMG_0001"]);
+        app.redo();
+        assert_eq!(labelled(&app, Label::Reject), ["IMG_0002", "IMG_0001"]);
     }
 
     #[test]

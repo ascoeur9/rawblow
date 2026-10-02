@@ -8,7 +8,7 @@
 
 use crate::meta::read_exif;
 use crate::model::{ext_lower, Entry};
-use crate::transfer::{move_file, unique_group, Action, ConflictPolicy, Progress, TransferReport};
+use crate::transfer::{copy_file, move_file, unique_group, Action, ConflictPolicy, Progress, TransferReport};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -198,6 +198,7 @@ pub fn organize_with_progress(
             let folder = entry_folder.clone().unwrap_or_else(|| ext_folder(src));
             let target_dir = req.dest_root.join(&folder);
             if src.parent() == Some(target_dir.as_path()) {
+                report.in_place += 1;
                 progress.done += 1;
                 continue;
             }
@@ -219,15 +220,13 @@ pub fn organize_with_progress(
                 continue;
             }
             let names: Vec<String> = group.iter().map(|(_, n)| n.clone()).collect();
-            let resolved = match unique_group(&target_dir, &names, req.conflict) {
-                Some(v) => v,
-                None => {
-                    report.skipped += group.len();
-                    progress.done += group.len();
+            let resolved = unique_group(&target_dir, &names, req.conflict);
+            for ((src, file_name), slot) in group.into_iter().zip(resolved) {
+                let Some((dst, conflict_renamed)) = slot else {
+                    report.skipped += 1;
+                    progress.done += 1;
                     continue;
-                }
-            };
-            for ((src, file_name), (dst, conflict_renamed)) in group.into_iter().zip(resolved) {
+                };
                 progress.current = file_name.clone();
                 if !on_progress(&progress) {
                     report.canceled = true;
@@ -235,7 +234,7 @@ pub fn organize_with_progress(
                 }
                 let size = std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
                 let result = match req.action {
-                    Action::Copy => std::fs::copy(&src, &dst).map(|_| ()),
+                    Action::Copy => copy_file(&src, &dst),
                     Action::Move => move_file(&src, &dst),
                 };
                 match result {
