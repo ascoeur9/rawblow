@@ -340,6 +340,8 @@ struct MetaResult {
 
 /// GPS 미니 지도(#38) 패널 상태. (항목, 줌)당 하나 — 바뀌면 새로 만든다.
 struct MapState {
+    /// 만든 때의 `generation`. 폴더 전환·재정렬 뒤엔 같은 `real`이 다른 사진이다.
+    gen: u64,
     real: usize,
     zoom: u8,
     lat: f64,
@@ -2219,6 +2221,75 @@ mod tests {
         app.generation += 1;
         app.bulk_apply();
         assert_eq!(labelled(&app, Label::Hold), ["IMG_0004"], "옛 인덱스 대신 같은 조건으로 다시 찾는다");
+    }
+
+    fn with_gps(app: &mut super::RawBlowApp, real: usize, lat: f64, lon: f64) {
+        app.items[real].exif = Some(rawblow_core::meta::ExifInfo {
+            camera: None,
+            lens: None,
+            focal_length: None,
+            aperture: None,
+            shutter: None,
+            iso: None,
+            exposure_bias: None,
+            datetime: None,
+            white_balance: None,
+            width: None,
+            height: None,
+            orientation: 1,
+            gps: Some(rawblow_core::meta::GpsCoord { lat, lon, alt: None }),
+        });
+    }
+
+    /// 지도 패널만 그린다. 디코딩 중(pending_preview)으로 두면 새 합성(네트워크)은 시작하지 않는다.
+    fn run_map_overlay(app: &mut super::RawBlowApp, real: usize) {
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let rect = ui.max_rect();
+                app.ui_map_overlay(ui, rect, real);
+            });
+        });
+    }
+
+    fn old_map(app: &super::RawBlowApp, real: usize, lat: f64, lon: f64) -> super::MapState {
+        super::MapState { gen: app.generation, real, zoom: app.map_zoom, lat, lon, rx: None, tex: None, failed: true }
+    }
+
+    #[test]
+    fn map_overlay_does_not_show_previous_folders_map_at_the_same_index() {
+        let mut app = filter_app(3);
+        app.show_map = true;
+        app.map_state = Some(old_map(&app, 1, 48.85837, 2.29448)); // 이전 폴더 1번 사진(파리).
+        // 폴더 전환(세대 증가) — 같은 1번 자리에 GPS가 있는 다른 사진(서울).
+        app.generation += 1;
+        with_gps(&mut app, 1, 37.56654, 126.97797);
+        app.pending_preview.insert(1);
+        run_map_overlay(&mut app, 1);
+        assert!(
+            app.map_state.as_ref().is_none_or(|m| m.lat == 37.56654 && m.lon == 126.97797),
+            "이전 사진의 지도·좌표를 그대로 보여 주면 안 된다"
+        );
+    }
+
+    #[test]
+    fn map_overlay_keeps_map_for_the_same_photo() {
+        let mut app = filter_app(3);
+        app.show_map = true;
+        with_gps(&mut app, 1, 37.56654, 126.97797);
+        app.map_state = Some(old_map(&app, 1, 37.56654, 126.97797));
+        app.pending_preview.insert(1);
+        run_map_overlay(&mut app, 1);
+        assert!(app.map_state.is_some(), "같은 사진·줌이면 다시 합성하지 않고 그대로 둔다");
+        // 줌만 바뀌면 새 지도가 올 때까지 옛 지도를 둔다(같은 사진 — 좌표는 그대로 맞다).
+        app.map_zoom += 1;
+        run_map_overlay(&mut app, 1);
+        assert!(app.map_state.is_some());
     }
 
     #[test]

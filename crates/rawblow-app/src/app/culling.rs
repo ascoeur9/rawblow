@@ -553,6 +553,17 @@ impl RawBlowApp {
         Self::model_path(spec).exists()
     }
 
+    /// 모델 다운로드용 HTTP 에이전트. 기본 에이전트는 읽기 제한이 없어 연결이 멈추면(와이파이
+    /// 끊김·절전 복귀·프록시) 읽기에서 영원히 막혀 진행 모달이 닫히지 않는다. 제한은 읽기
+    /// **한 번**마다라 큰 파일도 받는 동안은 끊기지 않는다. 테스트는 `read`를 짧게 준다.
+    #[cfg(feature = "model-download")]
+    pub(super) fn model_dl_agent(read: Duration) -> ureq::Agent {
+        ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(15))
+            .timeout_read(read)
+            .build()
+    }
+
     /// 모델 파일을 백그라운드 스레드로 다운로드(#50). ureq 스트리밍 + sha256 검증.
     #[cfg(feature = "model-download")]
     pub(super) fn start_model_download(&mut self, spec: config::ModelSpec, label: String) {
@@ -572,8 +583,13 @@ impl RawBlowApp {
                     return;
                 }
             }
-            let resp = match ureq::get(&url).call() {
+            let resp = match Self::model_dl_agent(Duration::from_secs(30)).get(&url).call() {
                 Ok(r) => r,
+                // 응답을 기다리다 시간 초과로 끝났는데 그사이 취소했으면 실패가 아니라 취소로 알린다.
+                Err(_) if cancel_t.load(Ordering::Relaxed) => {
+                    let _ = tx.send(ModelDlMsg::Canceled);
+                    return;
+                }
                 Err(e) => {
                     let _ = tx.send(ModelDlMsg::Done(Err(trf(lang, "HTTP 오류: {}", &[&e.to_string()]))));
                     return;
@@ -609,6 +625,8 @@ impl RawBlowApp {
                         downloaded += n as u64;
                         let _ = tx.send(ModelDlMsg::Progress(downloaded, expected));
                     }
+                    // 멈춘 연결이 읽기 시간 초과로 풀렸는데 그사이 취소했으면 위의 취소 정리로.
+                    Err(_) if cancel_t.load(Ordering::Relaxed) => continue,
                     Err(e) => {
                         let _ = tx.send(ModelDlMsg::Done(Err(trf(lang, "읽기 오류: {}", &[&e.to_string()]))));
                         return;
@@ -2326,6 +2344,54 @@ pub(super) fn cull_decode_cv(
 #[cfg(test)]
 mod tests {
     use super::{load_cull_cache_from, save_cull_cache_to, CullCacheEntry};
+
+    /// 응답 헤더와 본문 일부만 보내고 멈춘 서버(와이파이 끊김·절전 복귀 흉내). 반환한 송신단을
+    /// 드롭할 때까지 연결을 붙잡아 둔다 — 끊으면 EOF라 "멈춤"이 아니게 된다.
+    #[cfg(feature = "model-download")]
+    fn stalled_server() -> (String, std::sync::mpsc::Sender<()>) {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/model.onnx", listener.local_addr().unwrap());
+        let (hold_tx, hold_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let Ok((mut s, _)) = listener.accept() else { return };
+            let mut req = [0u8; 1024];
+            let _ = std::io::Read::read(&mut s, &mut req);
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\n\r\nabc");
+            let _ = s.flush();
+            let _ = hold_rx.recv(); // 송신단이 드롭될 때까지 아무것도 보내지 않는다.
+        });
+        (url, hold_tx)
+    }
+
+    #[cfg(feature = "model-download")]
+    #[test]
+    fn model_download_read_fails_when_the_connection_stalls() {
+        use std::io::Read;
+        use std::time::{Duration, Instant};
+        let (url, _hold) = stalled_server();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let agent = super::RawBlowApp::model_dl_agent(Duration::from_millis(300));
+            let res = agent.get(&url).call().map_err(|e| e.to_string()).and_then(|resp| {
+                let mut reader = resp.into_reader();
+                let mut buf = [0u8; 4096];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => return Ok(()),
+                        Ok(_) => {}
+                        Err(e) => return Err(e.to_string()),
+                    }
+                }
+            });
+            let _ = tx.send((res, started.elapsed()));
+        });
+        // 기본 에이전트는 읽기 제한이 없어 여기서 영원히 기다린다(진행 모달이 닫히지 않던 원인).
+        let (res, took) = rx.recv_timeout(Duration::from_secs(10)).expect("멈춘 연결에서 읽기가 끝나지 않음");
+        assert!(res.is_err(), "멈춘 연결은 기존 오류 경로로 실패해야 한다");
+        assert!(took < Duration::from_secs(5), "읽기 한 번 제한 안에 실패: {took:?}");
+    }
 
     #[test]
     fn cull_cache_disk_round_trips() {
