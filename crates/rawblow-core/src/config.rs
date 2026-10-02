@@ -215,7 +215,7 @@ pub struct AiCullConfig {
     /// 조리개 f값 상한(이하만 통과 — 밝은 렌즈/얕은 심도 컷만).
     pub aperture_max: f32,
     pub use_shutter_min: bool,
-    /// 셔터속도 하한(초). 미만(더 느림)이면 손떨림 후보로 제외.
+    /// 셔터속도 하한(초, 1/N). 노출이 이보다 길면(더 느림) 손떨림 후보로 제외.
     pub shutter_min_secs: f32,
     /// 카메라/렌즈 모델 부분일치(빈 문자열=무제한).
     pub camera_contains: String,
@@ -378,8 +378,10 @@ impl AiCullConfig {
             iso_min: None,
             aperture_max: self.use_aperture_max.then_some(self.aperture_max),
             aperture_min: None,
-            shutter_min_secs: self.use_shutter_min.then_some(self.shutter_min_secs),
-            shutter_max_secs: None,
+            // "셔터 하한 1/N"은 셔터 **속도** 하한 = 노출 시간 상한(더 길면 손떨림 후보로 제외).
+            // 설정 필드 이름은 config.json 호환을 위해 그대로 둔다.
+            shutter_min_secs: None,
+            shutter_max_secs: self.use_shutter_min.then_some(self.shutter_min_secs),
             focal_min_mm: self.use_focal_range.then_some(self.focal_min_mm),
             focal_max_mm: self.use_focal_range.then_some(self.focal_max_mm),
             camera_contains: {
@@ -933,6 +935,21 @@ mod tests {
         assert_eq!(GPU_MODEL.sha256.len(), 64);
         // fp32 RN50 ≈ 153MB — 상수 비교라 컴파일타임 검증으로 둔다(clippy: 상수 assert 지양).
         const _: () = assert!(GPU_MODEL.bytes > 100_000_000);
+    }
+
+    #[test]
+    fn shutter_limit_excludes_slower_shots_only() {
+        // "셔터 하한 1/60초(손떨림)": 1/60초보다 긴(느린) 노출만 제외, 빠른 셔터는 통과.
+        let c = AiCullConfig { use_shutter_min: true, shutter_min_secs: 1.0 / 60.0, ..Default::default() };
+        let f = c.meta_filter();
+        let shot = |s: f32| crate::cull_ext::PhotoMeta { shutter_secs: Some(s), ..Default::default() };
+        assert!(f.passes(&shot(1.0 / 1000.0)), "1/1000초는 통과");
+        assert!(f.passes(&shot(1.0 / 60.0)), "경계값은 통과");
+        assert!(!f.passes(&shot(1.0 / 15.0)), "1/15초는 손떨림 후보로 제외");
+        assert!(f.passes(&crate::cull_ext::PhotoMeta::default()), "셔터 미상은 통과");
+        // 끄면 무제한.
+        let off = AiCullConfig { use_shutter_min: false, ..c };
+        assert!(off.meta_filter().passes(&shot(1.0 / 15.0)));
     }
 
     #[test]

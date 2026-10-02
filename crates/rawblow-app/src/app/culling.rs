@@ -264,6 +264,35 @@ pub(super) struct CullCacheEntry {
     pub(super) dhash: Option<u64>,
 }
 
+/// 이번 실행에서 이 컷의 미적 점수가 필요한가. 상위 N 모드는 점수 없으면 탈락이라 전부 필요하고,
+/// 임계 모드는 CV 통과 컷만 채점한다(CLIP-skip). `criteria.use_aesthetic`은 모델이 있을 때만 켜진다.
+pub(super) fn needs_aesthetic(
+    criteria: rawblow_core::quality::CullCriteria,
+    top_n: usize,
+    cv: rawblow_core::quality::Verdict,
+) -> bool {
+    criteria.use_aesthetic && (top_n > 0 || matches!(cv, rawblow_core::quality::Verdict::Good))
+}
+
+/// 캐시 항목을 이번 실행에 재사용할 수 있는가. 같은 파일(mtime)·같은 설정(sig)이고 필요한 dHash가
+/// 있어야 하며, 이번에 미적 점수가 필요한 컷이면 점수도 있어야 한다 — 임계 모드의 CV 탈락 컷은
+/// 점수 없이 저장되므로, 임계를 완화하거나 상위 N으로 바꾼 실행에서 그대로 쓰면 점수 없음으로 오판한다.
+pub(super) fn cull_cache_usable(
+    e: &CullCacheEntry,
+    mtime: std::time::SystemTime,
+    sig: u64,
+    need_dhash: bool,
+    criteria: rawblow_core::quality::CullCriteria,
+    top_n: usize,
+) -> bool {
+    if e.mtime != mtime || e.sig != sig || (need_dhash && e.dhash.is_none()) {
+        return false;
+    }
+    let mut cv_only = criteria;
+    cv_only.use_aesthetic = false;
+    e.report.aesthetic.is_some() || !needs_aesthetic(criteria, top_n, cv_only.verdict(&e.report))
+}
+
 /// 디스크 직렬화용 미러(세션 간 재컬링 즉시화). SystemTime은 UNIX epoch 나노초로 저장.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct CullCacheDisk {
@@ -1456,8 +1485,7 @@ impl RawBlowApp {
         let cfg = self.cfg.ai_cull.clone();
         let mut criteria = cfg.criteria();
         let use_af = cfg.use_af_focus && cfg.use_focus;
-        // top_n은 미적 채점(ai 게이트) 분기에서만 쓰인다 — ai off 빌드에선 바인딩 자체를 제거.
-        #[cfg(feature = "ai")]
+        // top_n: 미적 채점 대상과 캐시 재사용 판단(점수가 필요한 컷인지)에 쓴다.
         let top_n = cfg.top_n;
         // 디코드 해상도를 가장 디테일이 필요한 켜진 신호에 맞춘다(디코드가 실파이프라인 병목):
         //   초점 ON → 1024(블러 판별 디테일) / 기울기 ON → 512(엣지 방향) / 둘 다 OFF → 256
@@ -1692,10 +1720,11 @@ impl RawBlowApp {
                         let (real, path) = &targets[idx];
                         let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
                         // 캐시 적중: 같은 파일(mtime)·같은 설정(sig)이면 보고서 재사용(디코드/추론 생략).
+                        // 이번에 필요한 미적 점수가 빠진 보고서는 미스로 본다(cull_cache_usable).
                         let cached = mtime.and_then(|mt| {
                             cache.lock().ok().and_then(|c| {
                                 c.get(path)
-                                    .filter(|e| e.mtime == mt && e.sig == sig && (!need_dhash || e.dhash.is_some()))
+                                    .filter(|e| cull_cache_usable(e, mt, sig, need_dhash, criteria, top_n))
                                     .map(|e| (e.report, e.dhash))
                             })
                         });
@@ -1795,8 +1824,12 @@ impl RawBlowApp {
                         }
                     }
                     // 4단계: 미스 보고서를 캐시에 저장(다음 재컬링에서 디코드/추론 생략).
+                    // 필요한 미적 채점이 실패한 보고서는 저장하지 않는다(다음 실행에서 다시 채점).
                     if let Ok(mut c) = cache.lock() {
-                        for (k, ((_, q, _), (path, mtime))) in metas.iter().zip(miss_keys.iter()).enumerate() {
+                        for (k, ((_, q, cv), (path, mtime))) in metas.iter().zip(miss_keys.iter()).enumerate() {
+                            if q.aesthetic.is_none() && needs_aesthetic(criteria, top_n, *cv) {
+                                continue;
+                            }
                             if let Some(mt) = mtime {
                                 c.insert(
                                     path.clone(),
@@ -2028,6 +2061,13 @@ impl RawBlowApp {
             it.cull_note = None;
         }
 
+        // 워커는 끝낸 순서대로 결과를 쌓는다 — 촬영 순서(시각 없는 컷은 뒤, 같으면 items 순서)로
+        // 정렬해야 연사 묶기(인접 컷)와 순위 동점 처리가 실행마다 같다.
+        results.sort_by_key(|(real, ..)| {
+            let t = extras.get(real).and_then(|e| e.shot_time);
+            (t.is_none(), t, *real)
+        });
+
         // 판정 근거(#91)용 미적 순위 — finalize와 같은 정렬.
         let aesthetic_ranks = rawblow_core::quality::aesthetic_ranks(&results);
         // 미적 설정에 따른 최종 Good/Bad 조합(top-N 랭킹 또는 임계). 코어의 테스트된 함수에 위임.
@@ -2043,49 +2083,10 @@ impl RawBlowApp {
             format!(" (P(good) {:.2}–{:.2})", min, max)
         };
 
-        // 그룹 컬링(메타 제외 → 연사 베스트 → 시각중복). 활성 시에만. None=제외(손대지 않음).
-        let meta_active = c.filter_orientation != config::OrientationFilter::Any
-            || c.use_iso_max
-            || c.use_focal_range
-            || c.use_aperture_max
-            || c.use_shutter_min
-            || !c.camera_contains.trim().is_empty()
-            || !c.lens_contains.trim().is_empty();
-        let group_active = meta_active || c.use_burst || c.use_dedup;
-        let group_verdicts: Vec<rawblow_core::cull_ext::GroupOutcome> = if group_active {
-            use rawblow_core::cull_ext::{CullItem, GroupCullParams};
-            let items: Vec<CullItem> = results
-                .iter()
-                .map(|(real, v, a)| {
-                    let ex = extras.get(real);
-                    CullItem {
-                        good: matches!(v, Verdict::Good),
-                        rank: a.unwrap_or_else(|| ex.map(|e| e.sharp).unwrap_or(0.0)),
-                        dhash: ex.and_then(|e| e.dhash),
-                        shot_time: ex.and_then(|e| e.shot_time),
-                        meta: ex.map(|e| e.meta.clone()).unwrap_or_default(),
-                    }
-                })
-                .collect();
-            let p = GroupCullParams {
-                use_meta: meta_active,
-                meta_filter: c.meta_filter(),
-                use_burst: c.use_burst,
-                burst_gap_secs: c.burst_gap_secs as i64,
-                burst_keep: c.burst_keep as usize,
-                use_dedup: c.use_dedup,
-                dedup_hamming: c.dedup_hamming,
-                dedup_keep: c.dedup_keep as usize,
-            };
-            rawblow_core::cull_ext::explain_group_culling(&items, &p)
-        } else {
-            Vec::new()
-        };
-
-        let (mut good, mut bad, mut skipped) = (0usize, 0usize, 0usize);
         // 얼굴/장르 하드필터(YuNet): 조건 불충족이면 탈락으로 강등(미적·CV 점수와 무관, #51 후속).
         //   얼굴 있는 컷만 → 얼굴 없으면 탈락 / 장르 인물 → 얼굴 없으면 탈락 / 장르 풍경 → 얼굴 있으면 탈락.
         //   face=None(모델 없음·미검출)은 안전하게 제외하지 않는다.
+        //   그룹 컬링 전에 반영해, 이 필터로 탈락할 컷이 연사·중복 유지 슬롯을 차지하지 않게 한다.
         let face_excluded = |real: &usize| -> bool {
             let ex = extras.get(real);
             // 얼굴/장르(YuNet).
@@ -2109,6 +2110,57 @@ impl RawBlowApp {
                 && ex.and_then(|e| e.object_match).map(|has| !has).unwrap_or(false);
             face_bad || sharp_bad || object_bad
         };
+
+        // 그룹 컬링(메타 제외 → 연사 베스트 → 시각중복). 활성 시에만. None=제외(손대지 않음).
+        let meta_active = c.filter_orientation != config::OrientationFilter::Any
+            || c.use_iso_max
+            || c.use_focal_range
+            || c.use_aperture_max
+            || c.use_shutter_min
+            || !c.camera_contains.trim().is_empty()
+            || !c.lens_contains.trim().is_empty();
+        let group_active = meta_active || c.use_burst || c.use_dedup;
+        let group_verdicts: Vec<rawblow_core::cull_ext::GroupOutcome> = if group_active {
+            use rawblow_core::cull_ext::{CullItem, GroupCullParams};
+            let items: Vec<CullItem> = results
+                .iter()
+                .map(|(real, v, a)| {
+                    let ex = extras.get(real);
+                    CullItem {
+                        good: matches!(v, Verdict::Good) && !face_excluded(real),
+                        rank: a.unwrap_or_else(|| ex.map(|e| e.sharp).unwrap_or(0.0)),
+                        dhash: ex.and_then(|e| e.dhash),
+                        shot_time: ex.and_then(|e| e.shot_time),
+                        meta: ex.map(|e| e.meta.clone()).unwrap_or_default(),
+                    }
+                })
+                .collect();
+            let p = GroupCullParams {
+                use_meta: meta_active,
+                meta_filter: c.meta_filter(),
+                use_burst: c.use_burst,
+                burst_gap_secs: c.burst_gap_secs as i64,
+                burst_keep: c.burst_keep as usize,
+                use_dedup: c.use_dedup,
+                dedup_hamming: c.dedup_hamming,
+                dedup_keep: c.dedup_keep as usize,
+            };
+            rawblow_core::cull_ext::explain_group_culling(&items, &p)
+        } else {
+            Vec::new()
+        };
+
+        let (mut good, mut bad, mut skipped) = (0usize, 0usize, 0usize);
+
+        // 이번 실행이 덮어쓸 사진들을 한 번에 스냅샷 — Ctrl+Z 한 번으로 실행 전 분류로 되돌린다(#78).
+        // 메타 조건 밖(included=false) 컷은 손대지 않으므로 뺀다.
+        let touched: Vec<usize> = results
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| group_verdicts.get(*i).is_none_or(|g| g.included))
+            .map(|(_, (real, ..))| *real)
+            .collect();
+        self.push_undo(&touched);
 
         for (i, (real, v, _)) in results.iter().enumerate() {
             // 그룹 컬링 결과가 본 판정을 덮어쓴다(None=제외, 손대지 않음).
@@ -2435,6 +2487,131 @@ mod tests {
         let one = AfInfo { points: vec![pt(false), pt(true)], source: "test" };
         assert_eq!(super::af_focus_regions(&one, 1).len(), 1);
     }
+    // ── 판정 적용(apply_cull_verdicts) ──
+    fn cull_app(n: usize) -> super::RawBlowApp {
+        let mut app = super::RawBlowApp::for_settings_qa();
+        app.items = (0..n)
+            .map(|i| super::Item {
+                entry: rawblow_core::model::Entry::from_members(
+                    format!("IMG_{i:04}"),
+                    vec![std::path::PathBuf::from(format!("Z:/cull/IMG_{i:04}.JPG"))],
+                ),
+                exif: None,
+                exif_loaded: false,
+                af: None,
+                af_loaded: false,
+                orient: None,
+                orig_long: None,
+                cull_note: None,
+            })
+            .collect();
+        app
+    }
+
+    fn timed_extra(t: Option<i64>) -> super::CullExtra {
+        super::CullExtra { shot_time: t, ..Default::default() }
+    }
+
+    #[test]
+    fn cull_verdicts_do_not_depend_on_worker_completion_order() {
+        use rawblow_core::quality::Verdict;
+        // 연사 0·1·2(100~102초) + 떨어진 3 + 시각 없는 4. 연사는 rank 최고(1)만 유지.
+        let times = [Some(100), Some(101), Some(102), Some(500), None];
+        let scores = [0.5f32, 0.9, 0.4, 0.3, 0.8];
+        let extras: std::collections::HashMap<usize, super::CullExtra> =
+            times.iter().enumerate().map(|(i, &t)| (i, timed_extra(t))).collect();
+        let cfg = rawblow_core::config::AiCullConfig { use_burst: true, burst_gap_secs: 2, burst_keep: 1, ..note_cfg() };
+        let run = |order: &[usize]| {
+            let mut app = cull_app(5);
+            let results = order.iter().map(|&i| (i, Verdict::Good, Some(scores[i]))).collect();
+            app.apply_cull_verdicts(results, extras.clone(), 0, cfg.clone());
+            app.items.iter().map(|it| (it.entry.label, it.cull_note.clone())).collect::<Vec<_>>()
+        };
+        let sorted = run(&[0, 1, 2, 3, 4]);
+        let labels: Vec<_> = sorted.iter().map(|s| s.0).collect();
+        use rawblow_core::model::Label::{Pick, Reject};
+        assert_eq!(labels, vec![Reject, Pick, Reject, Pick, Pick]);
+        // 워커가 끝낸 순서가 달라도(연사 사이에 다른 컷이 끼어도) 판정·근거가 같아야 한다.
+        for order in [[2, 3, 0, 4, 1], [4, 3, 2, 1, 0], [1, 4, 0, 3, 2]] {
+            assert_eq!(run(&order), sorted, "결과 순서 {order:?}");
+        }
+    }
+
+    #[test]
+    fn hard_filtered_shot_does_not_take_burst_slot() {
+        use super::{CullFact, CullOutcome};
+        use rawblow_core::model::Label::{Pick, Reject};
+        use rawblow_core::quality::Verdict;
+        // 연사 2장: 0은 rank가 높지만 얼굴이 없어(얼굴 조건) 탈락 — 유지 슬롯은 얼굴 있는 1에게.
+        let extras: std::collections::HashMap<usize, super::CullExtra> = [
+            (0, super::CullExtra { face: Some(false), ..timed_extra(Some(100)) }),
+            (1, super::CullExtra { face: Some(true), ..timed_extra(Some(101)) }),
+        ]
+        .into_iter()
+        .collect();
+        let cfg = rawblow_core::config::AiCullConfig {
+            use_burst: true, burst_gap_secs: 2, burst_keep: 1, use_face: true, ..note_cfg()
+        };
+        let mut app = cull_app(2);
+        let results = vec![(0, Verdict::Good, Some(0.9)), (1, Verdict::Good, Some(0.5))];
+        app.apply_cull_verdicts(results, extras, 0, cfg);
+        assert_eq!(app.items.iter().map(|it| it.entry.label).collect::<Vec<_>>(), vec![Reject, Pick]);
+        let n0 = app.items[0].cull_note.clone().unwrap();
+        assert_eq!(n0.primary, vec![CullFact::FaceMissing], "탈락 사유는 얼굴 조건뿐(연사 순위 아님)");
+        assert_eq!(app.items[1].cull_note.as_ref().unwrap().outcome, CullOutcome::Good);
+    }
+
+    #[test]
+    fn cull_verdicts_are_one_undo_step() {
+        use rawblow_core::model::Label;
+        use rawblow_core::quality::Verdict;
+        let mut app = cull_app(3);
+        app.items[0].entry.label = Label::Hold;
+        app.items[2].entry.label = Label::Pick;
+        let before: Vec<Label> = app.items.iter().map(|it| it.entry.label).collect();
+        let results = vec![(0, Verdict::Good, None), (1, Verdict::Bad, None), (2, Verdict::Bad, None)];
+        app.apply_cull_verdicts(results, Default::default(), 0, note_cfg());
+        let after: Vec<Label> = app.items.iter().map(|it| it.entry.label).collect();
+        assert_eq!(after, vec![Label::Pick, Label::Reject, Label::Reject]);
+        assert_eq!(app.undo_stack.len(), 1, "컬링 한 번 = 되돌리기 한 단계");
+        app.undo();
+        let undone: Vec<Label> = app.items.iter().map(|it| it.entry.label).collect();
+        assert_eq!(undone, before, "Ctrl+Z 한 번으로 실행 전 분류 전부 복원");
+        app.redo();
+        let redone: Vec<Label> = app.items.iter().map(|it| it.entry.label).collect();
+        assert_eq!(redone, after);
+    }
+
+    #[test]
+    fn cull_cache_without_needed_aesthetic_is_a_miss() {
+        use rawblow_core::quality::{CullCriteria, Verdict};
+        use std::time::{Duration, UNIX_EPOCH};
+        let mtime = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let mut report = sample_report();
+        report.aesthetic = None;
+        let e = CullCacheEntry { mtime, sig: 7, report, dhash: None };
+        let crit = CullCriteria { use_aesthetic: true, ..CullCriteria::default() };
+        let cv = { let mut c = crit; c.use_aesthetic = false; c.verdict(&report) };
+        assert_eq!(cv, Verdict::Good, "샘플 보고서는 CV 통과");
+        // 미적 점수가 필요한 실행(임계 모드 CV 통과 / 상위 N)이면 점수 없는 보고서는 재사용하지 않는다.
+        assert!(!super::cull_cache_usable(&e, mtime, 7, false, crit, 0));
+        assert!(!super::cull_cache_usable(&e, mtime, 7, false, crit, 20));
+        // 미적을 쓰지 않으면 그대로 적중.
+        let no_ae = CullCriteria { use_aesthetic: false, ..crit };
+        assert!(super::cull_cache_usable(&e, mtime, 7, false, no_ae, 0));
+        // 점수가 있으면 적중, mtime·sig·dHash 조건은 그대로.
+        let scored = CullCacheEntry { report: sample_report(), ..e.clone() };
+        assert!(super::cull_cache_usable(&scored, mtime, 7, false, crit, 20));
+        assert!(!super::cull_cache_usable(&scored, mtime, 8, false, crit, 20));
+        assert!(!super::cull_cache_usable(&scored, mtime + Duration::from_secs(1), 7, false, crit, 20));
+        assert!(!super::cull_cache_usable(&scored, mtime, 7, true, crit, 20));
+        // 임계 모드에서 CV 탈락 컷은 점수가 필요 없다(CLIP-skip) → 점수 없이도 적중.
+        let strict = CullCriteria { focus_thresh: 0.99, ..crit };
+        assert!(super::cull_cache_usable(&e, mtime, 7, false, strict, 0));
+        // …하지만 상위 N 모드에선 모든 컷에 점수가 필요하다.
+        assert!(!super::cull_cache_usable(&e, mtime, 7, false, strict, 20));
+    }
+
     #[test]
     fn tilt_text_never_shows_negative_zero() {
         use rawblow_core::config::Lang;
