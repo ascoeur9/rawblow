@@ -226,9 +226,9 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
             "Puts selected photos in one destination folder. The currently open folder cannot be chosen.",
             "選んだ写真を出力先フォルダ1つにまとめます。今開いているフォルダは選べません。",
         ),
-        "pick / hold / reject 폴더를 만듭니다. 제외도 여기로 빠집니다." => (
-            "Creates pick / hold / reject folders. Rejects go there too.",
-            "pick / hold / reject フォルダを作ります。除外もここに入ります。",
+        "pick / hold / reject 폴더를 만듭니다. 제외도 여기로 빠집니다. 미선택은 unrated, 별점만 있으면 1star … 5star." => (
+            "Creates pick / hold / reject folders. Rejects go there too. Unlabeled photos go to unrated, star-only photos to 1star … 5star.",
+            "pick / hold / reject フォルダを作ります。除外もここに入ります。未選択は unrated、星だけなら 1star … 5star。",
         ),
         "1star … 5star 폴더를 만듭니다. 무별점은 unrated." => (
             "Creates 1star … 5star folders. Unrated photos go to unrated.",
@@ -986,5 +986,15 @@ mod tests {
         // Ja 대표 확인(레일 헤더 + 컬링 캡션).
         assert_eq!(tr(Lang::Ja, "결과 지정"), "結果の割り当て");
         assert_eq!(tr(Lang::Ja, "색 필터"), "色フィルタ");
+        // 라벨별 분기 안내는 실제로 만드는 unrated·1star … 5star 폴더까지 적는다.
+        let label_hint = "pick / hold / reject 폴더를 만듭니다. 제외도 여기로 빠집니다. 미선택은 unrated, 별점만 있으면 1star … 5star.";
+        assert_eq!(
+            tr(Lang::En, label_hint),
+            "Creates pick / hold / reject folders. Rejects go there too. Unlabeled photos go to unrated, star-only photos to 1star … 5star."
+        );
+        assert_eq!(
+            tr(Lang::Ja, label_hint),
+            "pick / hold / reject フォルダを作ります。除外もここに入ります。未選択は unrated、星だけなら 1star … 5star。"
+        );
     }
 }

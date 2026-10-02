@@ -429,7 +429,7 @@ impl RawBlowApp {
                                 ui.label(
                                     egui::RichText::new(match st.split {
                                         TransferSplit::None => tr(lang, "선택한 사진을 대상 폴더 한곳에 둡니다. 지금 열린 폴더는 고를 수 없습니다."),
-                                        TransferSplit::Label => tr(lang, "pick / hold / reject 폴더를 만듭니다. 제외도 여기로 빠집니다."),
+                                        TransferSplit::Label => tr(lang, "pick / hold / reject 폴더를 만듭니다. 제외도 여기로 빠집니다. 미선택은 unrated, 별점만 있으면 1star … 5star."),
                                         TransferSplit::Stars => tr(lang, "1star … 5star 폴더를 만듭니다. 무별점은 unrated."),
                                         TransferSplit::Tag => tr(lang, "@teal 같은 색 태그 폴더를 만듭니다. 무태그는 @untagged."),
                                     })
