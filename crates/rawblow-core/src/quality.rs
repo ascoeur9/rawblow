@@ -496,11 +496,26 @@ impl CullCriteria {
     }
 }
 
+/// 모델 점수(미적·AI 선명도)를 저장할 때 거른다. NaN·무한대는 점수 없음(None)으로 —
+/// 판정에선 비교가 늘 거짓이라 엉뚱하게 통과하고, 캐시 JSON엔 null로 적힌다.
+pub fn finite_score(s: Option<f32>) -> Option<f32> {
+    s.filter(|v| v.is_finite())
+}
+
+/// 점수 내림차순 비교(전순서). NaN·무한대는 최하위로 모으고 -0은 0과 동점이다.
+/// `partial_cmp(..).unwrap_or(Equal)`은 NaN에서 전순서가 깨져 `sort_by`가 패닉할 수 있다(Rust 1.81+).
+pub fn score_desc(a: f32, b: f32) -> std::cmp::Ordering {
+    let key = |s: f32| if s.is_finite() { s + 0.0 } else { f32::NEG_INFINITY };
+    key(b).total_cmp(&key(a))
+}
+
 /// 미적 점수 순위(1부터, 높은 점수가 1위)(#91). 점수 없는 항목은 빠진다.
 /// [`finalize_cull_verdicts`]의 상위 N 선택과 **같은 정렬**이라 "상위 N 밖" 근거와 판정이 일치한다.
+/// NaN·무한대 점수도 점수 없음으로 본다. 동점은 입력 순서(안정 정렬).
 pub fn aesthetic_ranks(results: &[(usize, Verdict, Option<f32>)]) -> std::collections::HashMap<usize, usize> {
-    let mut scored: Vec<(usize, f32)> = results.iter().filter_map(|(i, _, a)| a.map(|s| (*i, s))).collect();
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut scored: Vec<(usize, f32)> =
+        results.iter().filter_map(|(i, _, a)| finite_score(*a).map(|s| (*i, s))).collect();
+    scored.sort_by(|a, b| score_desc(a.1, b.1));
     scored.into_iter().enumerate().map(|(rank, (i, _))| (i, rank + 1)).collect()
 }
 
@@ -936,6 +951,45 @@ mod tests {
         let mut few = vec![(0, Verdict::Bad, Some(0.3)), (1, Verdict::Bad, Some(0.8))];
         finalize_cull_verdicts(&mut few, true, 99, 0.5);
         assert_eq!(verdicts(&few), vec![(0, Verdict::Good), (1, Verdict::Good)]);
+    }
+
+    #[test]
+    fn nan_aesthetic_counts_as_missing_in_ranks_and_top_n() {
+        // 25장(20장 넘음 — 작은 배열 삽입정렬이 아닌 경로) 중 4장마다 하나가 NaN. NaN은 점수 없음과
+        // 같아야 한다: 순위에 끼지 않고, 상위 N 모드에선 탈락. 유한 점수(서로 다름)는 내림차순 순위.
+        let score = |i: usize| (i * 7 % 25) as f32 / 25.0;
+        let nan = |i: usize| i % 4 == 1;
+        let results: Vec<(usize, Verdict, Option<f32>)> =
+            (0..25).map(|i| (i, Verdict::Good, Some(if nan(i) { f32::NAN } else { score(i) }))).collect();
+        let ranks = aesthetic_ranks(&results);
+        let mut finite: Vec<usize> = (0..25).filter(|&i| !nan(i)).collect();
+        finite.sort_by(|&a, &b| score(b).total_cmp(&score(a)));
+        assert_eq!(ranks.len(), finite.len(), "NaN은 순위에서 빠진다");
+        for (pos, i) in finite.iter().enumerate() {
+            assert_eq!(ranks.get(i), Some(&(pos + 1)), "{i}번 순위");
+        }
+        let mut r = results.clone();
+        finalize_cull_verdicts(&mut r, true, 3, 0.5);
+        let good: Vec<usize> = r.iter().filter(|x| x.1 == Verdict::Good).map(|x| x.0).collect();
+        let mut top3 = finite[..3].to_vec();
+        top3.sort();
+        assert_eq!(good, top3);
+    }
+
+    #[test]
+    fn score_desc_is_total_with_non_finite_lowest() {
+        use std::cmp::Ordering::*;
+        assert_eq!(score_desc(0.9, 0.1), Less, "높은 점수가 앞");
+        assert_eq!(score_desc(0.0, -0.0), Equal, "0과 -0은 동점(인덱스로 가른다)");
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(score_desc(0.0, bad), Less, "{bad}는 최하위");
+            assert_eq!(score_desc(bad, 0.0), Greater);
+            assert_eq!(score_desc(bad, f32::NAN), Equal);
+        }
+        assert_eq!(finite_score(Some(f32::NAN)), None);
+        assert_eq!(finite_score(Some(f32::INFINITY)), None);
+        assert_eq!(finite_score(Some(0.4)), Some(0.4));
+        assert_eq!(finite_score(None), None);
     }
 
     #[test]

@@ -8,6 +8,7 @@
 //! 모두 모델 불필요(순수 CV/메타). CLIP 임베딩 기반 의미적 클러스터링·프롬프트 축은 `cull_clip`(별도).
 
 use crate::decode::DecodedImage;
+use crate::quality::score_desc;
 use std::collections::HashSet;
 
 // ───────────────────────── Tier1: EXIF 수치 파싱 ─────────────────────────
@@ -245,7 +246,7 @@ pub fn group_bursts(times: &[Option<i64>], max_gap_secs: i64) -> Vec<Vec<usize>>
 }
 
 /// 각 그룹에서 점수 상위 `top_n`개 인덱스를 채택(Good) 집합으로 반환. 나머지는 제외(Bad).
-/// 점수 동률은 인덱스 작은 쪽(먼저 찍힌 컷) 우선.
+/// 점수 동률은 인덱스 작은 쪽(먼저 찍힌 컷) 우선, NaN 점수는 최하위.
 pub fn select_best_per_group(
     groups: &[Vec<usize>],
     scores: &[f32],
@@ -254,12 +255,7 @@ pub fn select_best_per_group(
     let mut keep = HashSet::new();
     for g in groups {
         let mut idx: Vec<usize> = g.clone();
-        idx.sort_by(|&a, &b| {
-            scores[b]
-                .partial_cmp(&scores[a])
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.cmp(&b))
-        });
+        idx.sort_by(|&a, &b| score_desc(scores[a], scores[b]).then(a.cmp(&b)));
         for &i in idx.iter().take(top_n.max(1)) {
             keep.insert(i);
         }
@@ -367,12 +363,10 @@ pub struct GroupCullParams {
     pub dedup_keep: usize,
 }
 
-/// rank 내림차순(동점은 인덱스 오름차순)으로 정렬한 그룹. 앞의 keep개가 살아남는다.
+/// rank 내림차순(동점은 인덱스 오름차순, NaN은 맨 뒤)으로 정렬한 그룹. 앞의 keep개가 살아남는다.
 fn sorted_by_rank(orig: &[usize], ranks: &[f32]) -> Vec<usize> {
     let mut v = orig.to_vec();
-    v.sort_by(|&a, &b| {
-        ranks[b].partial_cmp(&ranks[a]).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(&b))
-    });
+    v.sort_by(|&a, &b| score_desc(ranks[a], ranks[b]).then(a.cmp(&b)));
     v
 }
 
@@ -756,5 +750,50 @@ mod tests {
         assert_eq!(out.iter().map(|o| o.good).collect::<Vec<_>>(), vec![true, false, true]);
         assert_eq!(out[1].dedup, None, "연사에서 이미 탈락 — 중복 슬롯을 차지하지 않음");
         assert_eq!(out[2].dedup, Some(GroupRank { rank: 2, size: 2, keep: 2 }));
+    }
+
+    /// 30장 중 3장마다 하나가 NaN, 나머지 점수는 서로 다르다(30 > 20 — 패닉할 수 있는 정렬 경로).
+    fn nan_scores() -> Vec<f32> {
+        (0..30).map(|i| if i % 3 == 0 { f32::NAN } else { (i * 11 % 30) as f32 / 30.0 }).collect()
+    }
+
+    #[test]
+    fn nan_scores_rank_last_in_best_per_group() {
+        let scores = nan_scores();
+        let group = vec![(0..30).collect::<Vec<usize>>()];
+        let keep = select_best_per_group(&group, &scores, 3);
+        let mut finite: Vec<usize> = (0..30).filter(|i| i % 3 != 0).collect();
+        finite.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
+        assert_eq!(keep, finite[..3].iter().copied().collect::<HashSet<_>>());
+        // 전부 NaN이면 동점 — 인덱스 작은 쪽(먼저 찍힌 컷) 우선.
+        let all_nan = vec![f32::NAN; 30];
+        assert_eq!(select_best_per_group(&group, &all_nan, 2), HashSet::from([0, 1]));
+    }
+
+    #[test]
+    fn nan_rank_is_demoted_in_burst_and_dedup() {
+        let scores = nan_scores();
+        let h = dhash(&gradient(120, 90, 0));
+        let items: Vec<CullItem> = scores
+            .iter()
+            .enumerate()
+            .map(|(i, &r)| CullItem { good: true, rank: r, dhash: Some(h), shot_time: Some(100 + i as i64), meta: PhotoMeta::default() })
+            .collect();
+        let mut finite: Vec<usize> = (0..30).filter(|i| i % 3 != 0).collect();
+        finite.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
+        for (use_burst, use_dedup) in [(true, false), (false, true)] {
+            let p = GroupCullParams {
+                use_meta: false, meta_filter: MetaFilter::default(),
+                use_burst, burst_gap_secs: 2, burst_keep: 2,
+                use_dedup, dedup_hamming: 6, dedup_keep: 2,
+            };
+            let out = explain_group_culling(&items, &p);
+            let good: HashSet<usize> = (0..30).filter(|&i| out[i].good).collect();
+            assert_eq!(good, finite[..2].iter().copied().collect(), "burst={use_burst}");
+            // NaN 컷은 유한 점수 컷 뒤, 서로는 인덱스 순.
+            let r = |i: usize| if use_burst { out[i].burst } else { out[i].dedup }.unwrap().rank;
+            assert_eq!(r(0), finite.len() + 1);
+            assert_eq!(r(27), 30);
+        }
     }
 }
