@@ -679,3 +679,58 @@ fn e2e_split_subfolder_pair_scan_sidecar_transfer() {
     assert!(dest.join("DAZ_0004.JPG").exists());
     assert!(dest.join("DAZ_0004.NEF").exists());
 }
+
+/// JPEG에 EXIF Orientation(APP1)만 끼운다. 방향 적용 검사용.
+fn with_exif_orientation(jpeg: &[u8], orient: u16) -> Vec<u8> {
+    let mut tiff = b"II*\0\x08\0\0\0\x01\0".to_vec();
+    tiff.extend_from_slice(&0x0112u16.to_le_bytes());
+    tiff.extend_from_slice(&3u16.to_le_bytes());
+    tiff.extend_from_slice(&1u32.to_le_bytes());
+    tiff.extend_from_slice(&orient.to_le_bytes());
+    tiff.extend_from_slice(&[0, 0, 0, 0, 0, 0]); // 값 패딩 + next IFD 0
+    let mut app1 = b"Exif\0\0".to_vec();
+    app1.extend_from_slice(&tiff);
+    let mut out = jpeg[..2].to_vec();
+    out.extend_from_slice(&[0xFF, 0xE1]);
+    out.extend_from_slice(&((app1.len() + 2) as u16).to_be_bytes());
+    out.extend_from_slice(&app1);
+    out.extend_from_slice(&jpeg[2..]);
+    out
+}
+
+#[test]
+fn e2e_jpeg_named_heic_decodes_as_jpeg() {
+    // Dropbox 카메라 업로드 등: 확장자만 .heic이고 내용은 JPEG. 그리드뿐 아니라 본 화면·ORIG도
+    // JPEG로 풀려야 하고, EXIF 방향(6 = 시계 90°)도 적용돼야 한다.
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("x.heic");
+    std::fs::write(&p, with_exif_orientation(&marked_jpeg(64, 32), 6)).unwrap();
+    let view = decode::decode_file(&p, decode::DecodeOptions { full_raw: false, max_edge: Some(1920) })
+        .expect("jpeg content in .heic");
+    assert_eq!((view.width, view.height), (32, 64));
+    assert_eq!(red_corner(&view), (true, false));
+    assert!(!view.full_raw);
+    let orig = decode::decode_file(&p, decode::DecodeOptions { full_raw: true, max_edge: Some(8192) })
+        .expect("jpeg content in .heic orig");
+    assert_eq!((orig.width, orig.height), (32, 64));
+    assert!(orig.full_raw, "#109: 본 이미지를 풀었으면 ORIG 성공");
+}
+
+#[test]
+fn e2e_raw_fallback_full_res_embedded_is_orig() {
+    // #109: TIFF IFD가 없는 RAW(CR3 등)는 가장 큰 임베디드로 폴백한다. 그게 원본급(게이트 3000
+    // 이상, 원본 크기 모름)이면 ORIG 성공, 작은 프리뷰(1600)면 아니다.
+    let dir = tempfile::tempdir().unwrap();
+    let raw = |name: &str, w: u32, h: u32| {
+        let p = dir.path().join(name);
+        let mut bytes = b"notaraw!".to_vec();
+        bytes.extend_from_slice(&jpeg_bytes(w, h));
+        std::fs::write(&p, bytes).unwrap();
+        decode::decode_file(&p, decode::DecodeOptions { full_raw: true, max_edge: Some(8192) }).expect(name)
+    };
+    let big = raw("big.CR3", 3200, 2400);
+    assert_eq!((big.width, big.height), (3200, 2400));
+    assert!(big.full_raw, "원본급 임베디드는 ORIG 성공");
+    let small = raw("small.CR3", 1600, 1200);
+    assert!(!small.full_raw, "작은 프리뷰는 원본 아님");
+}
