@@ -1,8 +1,8 @@
 //! 폴더 스캔, stem 페어링, 자연 정렬 (F3).
 
-use crate::model::{is_supported, kind_of, Entry, Kind, SortOrder};
+use crate::model::{ext_lower, is_supported, kind_of, Entry, Kind, SortOrder, IMAGE_EXTENSIONS};
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -11,8 +11,10 @@ use walkdir::WalkDir;
 /// 페어링 키는 `(부모 디렉토리, 소문자 stem)` — 다른 하위 폴더의 동일 번호는
 /// 원칙적으로 별개 항목이다. RAW+JPG/HEIC가 같은 폴더·같은 stem이면 한 항목.
 ///
-/// 예외(폴더 분리 동반 페어): 같은 stem이 스캔 범위 안 여러 폴더에 있고 한쪽은 RAW만,
-/// 다른쪽은 이미지만이면 폴더 이름·위치와 무관하게 한 항목으로 합친다(`jpg/`·`원본/` 등).
+/// 예외(폴더 분리 동반 페어): 같은 stem이 여러 폴더에 있고 RAW만 폴더가 정확히 하나,
+/// 이미지만 폴더가 형식 계열(jpg·heic·png·tif·webp)마다 하나 이하이며 RAW+이미지가 이미 같이 있는
+/// 폴더가 없으면 폴더 이름·위치와 무관하게 한 항목으로 합친다(`jpg/`·`원본/` 등).
+/// 짝이 모호하면(RAW만 폴더 둘, 같은 계열 이미지 폴더 둘 등) 그 stem은 폴더마다 별개 항목.
 pub fn scan_folder(folder: &Path, recursive: bool, sort: SortOrder) -> Vec<Entry> {
     let max_depth = if recursive { usize::MAX } else { 1 };
     let mut groups: BTreeMap<(PathBuf, String), Vec<PathBuf>> = BTreeMap::new();
@@ -39,8 +41,8 @@ pub fn scan_folder(folder: &Path, recursive: bool, sort: SortOrder) -> Vec<Entry
         }
     }
 
-    // 폴더 분리 동반 페어 병합: stem 기준으로 재묶고, RAW-only 집합과 Image-only 집합을
-    // 합친다(#97). RAW+HEIC+JPG처럼 폴더가 셋이어도(RAW/ · JPG/ · HEIC/) 한 항목이 된다.
+    // 폴더 분리 동반 페어 병합: stem 기준으로 재묶고, 짝이 분명할 때만 RAW-only 집합과
+    // Image-only 집합을 합친다(#97). RAW/ · JPG/ · HEIC/처럼 폴더가 셋이어도 한 항목이 된다.
     let mut by_stem: BTreeMap<String, Vec<(PathBuf, Vec<PathBuf>)>> = BTreeMap::new();
     for ((parent, stem_l), members) in groups {
         by_stem.entry(stem_l).or_default().push((parent, members));
@@ -71,41 +73,48 @@ fn only_kind(ms: &[PathBuf], k: Kind) -> bool {
     !ms.is_empty() && ms.iter().all(|p| kind_of(p) == Some(k))
 }
 
-/// RAW-only 집합과 Image-only 집합을 폴더와 무관하게 한 덩어리로 합친다.
-/// 혼합 집합(이미 한 폴더에 RAW+이미지)은 그대로 둔다.
-fn merge_related_sets(sets: Vec<(PathBuf, Vec<PathBuf>)>) -> Vec<Vec<PathBuf>> {
-    let n = sets.len();
-    if n <= 1 {
-        return sets.into_iter().map(|(_, m)| m).collect();
-    }
-    let mut parent: Vec<usize> = (0..n).collect();
-    for i in 0..n {
-        for j in (i + 1)..n {
-            let (ri, ii) = (only_kind(&sets[i].1, Kind::Raw), only_kind(&sets[i].1, Kind::Image));
-            let (rj, ij) = (only_kind(&sets[j].1, Kind::Raw), only_kind(&sets[j].1, Kind::Image));
-            let complementary = (ri && ij) || (ii && rj);
-            if complementary {
-                let (a, b) = (ufind(&mut parent, i), ufind(&mut parent, j));
-                if a != b {
-                    parent[a] = b;
-                }
-            }
-        }
-    }
-    let mut buckets: BTreeMap<usize, Vec<PathBuf>> = BTreeMap::new();
-    for (i, (_, members)) in sets.into_iter().enumerate() {
-        buckets.entry(ufind(&mut parent, i)).or_default().extend(members);
-    }
-    buckets.into_values().collect()
+/// 이미지 형식 계열: jpg=jpeg, heic=heif, tif=tiff, png, webp.
+fn image_family(p: &Path) -> Option<&'static str> {
+    let e = ext_lower(p)?;
+    let ext = IMAGE_EXTENSIONS.iter().copied().find(|x| *x == e)?;
+    Some(match ext {
+        "jpeg" => "jpg",
+        "heif" => "heic",
+        "tiff" => "tif",
+        x => x,
+    })
 }
 
-fn ufind(p: &mut [usize], mut x: usize) -> usize {
-    while p[x] != x {
-        let px = p[x];
-        p[x] = p[px];
-        x = px;
+/// 같은 stem의 폴더별 집합을 짝이 분명할 때만 한 항목으로 합친다(폴더 이름·내용은 안 보고 개수만):
+/// (a) RAW+이미지가 이미 같이 있는 집합이 없고 (b) RAW만 집합이 정확히 하나,
+/// (c) 이미지만 집합이 하나 이상이며 이미지 계열마다 한 집합에만 있을 때.
+/// 그러면 RAW만 + 이미지만 집합 전부가 한 항목(RAW/ · JPG/ · HEIC/ #97), 아니면 집합마다 제 항목
+/// (day1·day2 같은 번호, 카메라 JPG + 보정 JPG 폴더 등).
+fn merge_related_sets(sets: Vec<(PathBuf, Vec<PathBuf>)>) -> Vec<Vec<PathBuf>> {
+    let unambiguous = sets.len() > 1 && {
+        let raw_only = sets.iter().filter(|(_, m)| only_kind(m, Kind::Raw)).count();
+        let image_only: Vec<&Vec<PathBuf>> = sets
+            .iter()
+            .map(|(_, m)| m)
+            .filter(|m| only_kind(m, Kind::Image))
+            .collect();
+        let mut families: BTreeMap<&str, usize> = BTreeMap::new();
+        for ms in &image_only {
+            let fams: BTreeSet<&str> = ms.iter().filter_map(|p| image_family(p)).collect();
+            for f in fams {
+                *families.entry(f).or_default() += 1;
+            }
+        }
+        raw_only == 1
+            && !image_only.is_empty()
+            && raw_only + image_only.len() == sets.len()
+            && families.values().all(|&c| c == 1)
+    };
+    if unambiguous {
+        vec![sets.into_iter().flat_map(|(_, m)| m).collect()]
+    } else {
+        sets.into_iter().map(|(_, m)| m).collect()
     }
-    x
 }
 
 /// 주어진 기준으로 항목을 정렬한다.

@@ -1959,18 +1959,31 @@ fn sidecar_non_utf8_main_recovers_from_bak() {
 
 // ── 전송·정리 무손실: 한 항목 안 동명 파일, 덮어쓰기 금지, 제자리 파일 ─────────────
 
-/// cam1·cam2에 같은 번호가 있는 4멤버 항목(폴더 무관 페어링으로 한 항목이 된다).
-fn four_member_tree(root: &Path) {
-    for (rel, body) in [
-        ("cam1/RAW/DSC_0001.NEF", "cam1-raw"),
-        ("cam1/JPG/DSC_0001.JPG", "cam1-jpg"),
-        ("cam2/RAW/DSC_0001.NEF", "cam2-raw"),
-        ("cam2/JPG/DSC_0001.JPG", "cam2-jpg"),
-    ] {
+/// 상대 경로·내용으로 파일을 만들고, 그 전부를 멤버로 한 항목을 직접 만든다.
+/// (스캔은 짝이 모호한 동명 세트를 합치지 않으므로 전송·정리 무손실은 항목을 직접 구성해 검증.)
+fn entry_of(root: &Path, stem: &str, files: &[(&str, &str)]) -> Entry {
+    let mut members = Vec::new();
+    for (rel, body) in files {
         let p = root.join(rel);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(p, body).unwrap();
+        std::fs::write(&p, body).unwrap();
+        members.push(p);
     }
+    Entry::from_members(stem.into(), members)
+}
+
+/// cam1·cam2에 같은 번호가 있는 4멤버 한 항목.
+fn four_member_entry(root: &Path) -> Entry {
+    entry_of(
+        root,
+        "DSC_0001",
+        &[
+            ("cam1/RAW/DSC_0001.NEF", "cam1-raw"),
+            ("cam1/JPG/DSC_0001.JPG", "cam1-jpg"),
+            ("cam2/RAW/DSC_0001.NEF", "cam2-raw"),
+            ("cam2/JPG/DSC_0001.JPG", "cam2-jpg"),
+        ],
+    )
 }
 
 /// 폴더 바로 아래 파일들의 (이름, 내용) 정렬 목록.
@@ -2016,9 +2029,7 @@ fn transfer_same_name_members_in_one_entry_never_overwrite() {
     for action in [transfer::Action::Move, transfer::Action::Copy] {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("wedding");
-        four_member_tree(&root);
-        let mut entries = scan::scan_folder(&root, true, rawblow_core::SortOrder::Name);
-        assert_eq!(entries.len(), 1, "같은 번호 4세트는 한 항목");
+        let mut entries = vec![four_member_entry(&root)];
         assert_eq!(entries[0].members.len(), 4);
         entries[0].label = Label::Pick;
         let out = tmp.path().join("out");
@@ -2049,13 +2060,8 @@ fn transfer_same_name_members_in_one_entry_never_overwrite() {
 fn transfer_same_name_differing_only_by_ext_case_keeps_both() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("shoot");
-    for (rel, body) in [("jpg/DAZ_0004.JPG", "camera-jpg"), ("보정/DAZ_0004.jpg", "EDITED-jpg"), ("원본/DAZ_0004.NEF", "raw")] {
-        let p = root.join(rel);
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(p, body).unwrap();
-    }
-    let mut entries = scan::scan_folder(&root, true, rawblow_core::SortOrder::Name);
-    assert_eq!(entries.len(), 1);
+    let files = [("jpg/DAZ_0004.JPG", "camera-jpg"), ("보정/DAZ_0004.jpg", "EDITED-jpg"), ("원본/DAZ_0004.NEF", "raw")];
+    let mut entries = vec![entry_of(&root, "DAZ_0004", &files)];
     assert_eq!(entries[0].members.len(), 3);
     entries[0].label = Label::Pick;
     for action in [transfer::Action::Copy, transfer::Action::Move] {
@@ -2071,8 +2077,7 @@ fn transfer_same_name_differing_only_by_ext_case_keeps_both() {
 fn transfer_rename_template_duplicate_out_names_keep_all() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("wedding");
-    four_member_tree(&root);
-    let mut entries = scan::scan_folder(&root, true, rawblow_core::SortOrder::Name);
+    let mut entries = vec![four_member_entry(&root)];
     entries[0].label = Label::Pick;
     let out = tmp.path().join("out");
     let mut req = pick_req(&entries, transfer::Action::Move, &out);
@@ -2094,9 +2099,7 @@ fn organize_move_same_name_members_never_overwrite() {
     use rawblow_core::organize::{self, OrganizeKey, OrganizeRequest};
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("wedding");
-    four_member_tree(&root);
-    let entries = scan::scan_folder(&root, true, rawblow_core::SortOrder::Name);
-    assert_eq!(entries.len(), 1);
+    let entries = vec![four_member_entry(&root)];
     // EXIF 없는 더미 → 한 항목 4멤버가 모두 unknown-camera로 모인다.
     let report = organize::organize(&OrganizeRequest {
         entries: &entries,
@@ -2116,8 +2119,7 @@ fn organize_by_extension_same_name_members_never_overwrite() {
     use rawblow_core::organize::{self, OrganizeKey, OrganizeRequest};
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("wedding");
-    four_member_tree(&root);
-    let entries = scan::scan_folder(&root, true, rawblow_core::SortOrder::Name);
+    let entries = vec![four_member_entry(&root)];
     let report = organize::organize(&OrganizeRequest {
         entries: &entries,
         key: OrganizeKey::Extension,
