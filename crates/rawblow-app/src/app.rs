@@ -1038,43 +1038,54 @@ impl RawBlowApp {
 
     /// 라벨 필터를 바꾸고, 인덱스를 새 목록 안에 두며 안 보이는 그리드 선택을 뺀다(#102).
     fn apply_label_filter(&mut self, filt: Filter) {
-        let keep = self.current_real();
+        let keep = self.filter_keep();
         self.filter = filt;
         self.relocate_after_filter(keep);
     }
 
     /// 별점 필터 변경(#102). 보던 사진이 새 목록에 있으면 그 자리를 유지한다.
     fn apply_star_filter(&mut self, sf: StarFilter) {
-        let keep = self.current_real();
+        let keep = self.filter_keep();
         self.star_filter = sf;
         self.relocate_after_filter(keep);
     }
 
     /// 색 태그 필터 변경(#102).
     fn apply_tag_filter(&mut self, tf: TagFilter) {
-        let keep = self.current_real();
+        let keep = self.filter_keep();
         self.tag_filter = tf;
         self.relocate_after_filter(keep);
     }
 
     /// 필터 세 축을 모두 기본값으로 되돌린다(#67). 보던 사진 위치는 유지한다(#102).
     fn reset_filters(&mut self) {
-        let keep = self.current_real();
+        let keep = self.filter_keep();
         self.filter = Filter::All;
         self.star_filter = StarFilter::Any;
         self.tag_filter = TagFilter::Any;
         self.relocate_after_filter(keep);
     }
 
+    /// 필터 바꾸기 전에 (보던 사진, Shift 범위 앵커 사진)을 원본 인덱스로 잡아 둔다.
+    /// sel_anchor는 필터 목록 안 위치라 목록이 바뀌면 다른 사진을 가리킨다.
+    fn filter_keep(&self) -> (Option<usize>, Option<usize>) {
+        let f = self.filtered();
+        let anchor = self.sel_anchor.and_then(|a| f.get(a).copied());
+        (self.current_real(), anchor)
+    }
+
     /// 필터 변경 후 인덱스를 새 목록 안에 두고(보던 사진이 남아 있으면 그 자리),
     /// 화면에서 빠진 그리드 선택을 지운다(#102) — 안 보이는 사진에 일괄 분류가 새지 않게.
-    fn relocate_after_filter(&mut self, keep: Option<usize>) {
+    /// 앵커는 같은 사진의 새 위치로 옮기고(빠졌으면 버림), 그리드면 보던 사진 행으로 스크롤한다.
+    fn relocate_after_filter(&mut self, (keep, anchor): (Option<usize>, Option<usize>)) {
         let f = self.filtered();
         self.index = index_after_filter(&f, keep);
+        self.sel_anchor = anchor.and_then(|r| f.iter().position(|&x| x == r));
         let vis: std::collections::HashSet<usize> = f.into_iter().collect();
         self.selected.retain(|r| vis.contains(r));
-        if self.selected.is_empty() {
-            self.sel_anchor = None;
+        if self.view == ViewMode::Grid {
+            let cols = self.grid_cols.clamp(4, 12);
+            self.grid_scroll_to = Some(self.index / cols);
         }
     }
 
@@ -2063,6 +2074,77 @@ mod tests {
         assert_eq!(index_after_filter(&[3, 9], Some(7)), 0, "빠졌으면 맨 앞");
         assert_eq!(index_after_filter(&[], Some(7)), 0);
         assert_eq!(index_after_filter(&[3, 9], None), 0);
+    }
+
+    fn filter_app(n: usize) -> super::RawBlowApp {
+        let mut app = super::RawBlowApp::for_settings_qa();
+        app.items = (0..n)
+            .map(|i| {
+                let mut entry = rawblow_core::model::Entry::from_members(
+                    format!("IMG_{i:04}"),
+                    vec![std::path::PathBuf::from(format!("Z:/filter/IMG_{i:04}.JPG"))],
+                );
+                // 3장마다 pick — Pick 필터 목록은 [0, 3, 6, …].
+                if i % 3 == 0 {
+                    entry.label = rawblow_core::model::Label::Pick;
+                }
+                super::Item {
+                    entry,
+                    exif: None,
+                    exif_loaded: false,
+                    af: None,
+                    af_loaded: false,
+                    orient: None,
+                    orig_long: None,
+                    cull_note: None,
+                }
+            })
+            .collect();
+        app.view = super::ViewMode::Grid;
+        app.grid_cols = 4;
+        app
+    }
+
+    #[test]
+    fn filter_change_scrolls_grid_to_current_and_rebases_anchor() {
+        use rawblow_core::model::Filter;
+        // 전체 목록에서 27(앵커)~30(현재)을 Shift 선택한 상태.
+        let mut app = filter_app(40);
+        app.index = 30;
+        app.sel_anchor = Some(27);
+        app.selected = [27, 28, 29, 30].into_iter().collect();
+        app.apply_label_filter(Filter::Pick);
+        // Pick 목록 [0,3,…,39]: 30은 10번째, 27은 9번째.
+        assert_eq!(app.index, 10, "보던 사진 자리 유지");
+        assert_eq!(app.grid_scroll_to, Some(10 / 4), "그리드가 보던 사진 행으로 스크롤");
+        assert_eq!(app.sel_anchor, Some(9), "앵커도 같은 사진의 새 위치로");
+
+        // 앵커 사진이 필터에서 빠지면 앵커를 버린다(엉뚱한 범위 방지).
+        let mut app = filter_app(40);
+        app.index = 30;
+        app.sel_anchor = Some(28);
+        app.selected = [28, 29, 30].into_iter().collect();
+        app.apply_label_filter(Filter::Pick);
+        assert_eq!(app.grid_scroll_to, Some(2));
+        assert_eq!(app.sel_anchor, None);
+
+        // 필터를 풀어도 같은 사진·같은 앵커 사진을 따라간다.
+        app.sel_anchor = Some(9); // Pick 목록의 27
+        app.reset_filters();
+        assert_eq!(app.index, 30);
+        assert_eq!(app.grid_scroll_to, Some(30 / 4));
+        assert_eq!(app.sel_anchor, Some(27));
+    }
+
+    #[test]
+    fn filter_change_in_single_view_does_not_schedule_grid_scroll() {
+        use rawblow_core::model::Filter;
+        let mut app = filter_app(40);
+        app.view = super::ViewMode::Single;
+        app.index = 30;
+        app.apply_label_filter(Filter::Pick);
+        assert_eq!(app.index, 10);
+        assert_eq!(app.grid_scroll_to, None);
     }
 
     #[test]
