@@ -256,6 +256,9 @@ pub(super) fn cull_note_lines(lang: Lang, note: &CullNote, detail: bool) -> Vec<
     out
 }
 
+/// (판정 목록, real→부가정보) — AiCullMsg::Done 페이로드와 동일 형태.
+pub(super) type CullDone = (Vec<(usize, Verdict, Option<f32>)>, std::collections::HashMap<usize, CullExtra>);
+
 /// 진행 중인 AI 컬링 채점(#50). 워커 풀(여러 스레드)이 디코딩+채점을 병렬로 수행하고,
 /// 코디네이터 스레드가 전원 합류 후 결과를 한 번에 보낸다. 진행 개수는 `progress` 원자로 읽는다.
 /// 백그라운드 비차단 실행: 채점 중에도 앱은 조작 가능하되, 결과가 덮어쓸 분류축(`target`)은
@@ -269,7 +272,10 @@ pub(super) struct AiCullJob {
     pub(super) cache_hits: Arc<AtomicUsize>,
     pub(super) total: usize,
     /// 작업 시작 시점의 폴더 세대. 완료 시 현재 세대와 다르면 인덱스가 무효 → 결과 폐기.
+    /// 같은 폴더의 재정렬(#56)은 reorder_items가 현재 세대로 올리고 `remap`을 이어 붙인다.
     pub(super) generation: u64,
+    /// 시작 때 real → 지금 real. None=시작 뒤 재정렬 없음(그대로).
+    pub(super) remap: Option<Vec<usize>>,
     /// 이 작업이 결과를 배정할 분류축. 채점 중 이 축의 수동 편집을 막는다.
     pub(super) target: AiCullTarget,
     /// 작업 시작 시점의 컬링 설정 스냅샷. 채점은 이 설정으로 했으므로 최종 판정·판정 근거(#91)도
@@ -1887,6 +1893,7 @@ impl RawBlowApp {
             cache_hits,
             total,
             generation: self.generation,
+            remap: None,
             target: cfg.target,
             cfg: cfg.clone(),
         });
@@ -1897,8 +1904,6 @@ impl RawBlowApp {
     pub(super) fn pump_ai_cull(&mut self, ctx: &egui::Context) {
         let Some(job) = self.ai_cull.take() else { return };
 
-        // (판정 목록, real→부가정보) — AiCullMsg::Done 페이로드와 동일 형태.
-        type CullDone = (Vec<(usize, Verdict, Option<f32>)>, std::collections::HashMap<usize, CullExtra>);
         let mut done_results: Option<CullDone> = None;
         let mut disconnected = false;
         match job.rx.try_recv() {
@@ -1911,7 +1916,7 @@ impl RawBlowApp {
             self.ai_cull = None;
             self.ai_cull_cancel_confirm = false;
             // 폴더가 바뀌면 캡처한 real 인덱스가 다른 사진을 가리킨다 → 결과 폐기(오염 방지).
-            if job.generation == self.generation {
+            if let Some((v, ex)) = self.cull_done_for_items(&job, (v, ex)) {
                 let hits = job.cache_hits.load(Ordering::Relaxed);
                 self.apply_cull_verdicts(v, ex, hits, job.cfg.clone());
                 // 갱신된 캐시를 디스크에 저장(다음 세션 재컬링 즉시화). 메인 스레드 I/O 히치를 피해
@@ -1937,6 +1942,18 @@ impl RawBlowApp {
         // 진행 중에는 빠른 리페인트로 진행률을 갱신(레일 버튼의 프로그레스바).
         ctx.request_repaint_after(Duration::from_millis(120));
         self.ai_cull = Some(job);
+    }
+
+    /// 완료된 컬링 결과를 지금 items 인덱스 기준으로 돌려준다. 폴더가 바뀌었으면 None(폐기).
+    /// 시작 뒤 재정렬(#56)만 있었으면 `remap`으로 같은 사진의 새 인덱스에 붙인다.
+    pub(super) fn cull_done_for_items(&self, job: &AiCullJob, (v, ex): CullDone) -> Option<CullDone> {
+        if job.generation != self.generation {
+            return None;
+        }
+        let Some(map) = job.remap.as_deref() else { return Some((v, ex)) };
+        let v = v.into_iter().filter_map(|(r, verdict, a)| Some((*map.get(r)?, verdict, a))).collect();
+        let ex = ex.into_iter().filter_map(|(r, e)| Some((*map.get(r)?, e))).collect();
+        Some((v, ex))
     }
 
     /// 진행 중 컬링을 취소한다(부분 결과는 적용하지 않음).
@@ -2769,5 +2786,71 @@ mod tests {
         // HEIC는 요청의 75% 이상인 썸네일 항목만 쓴다(heif.rs) — 640의 75%=480이라 iPhone thmb(~320)로
         // 떨어지지 않고, 256처럼 썸네일(≤384) 경로를 타지도 않는다.
         assert!(cull_decode_edge(false, false, true, false, false) > 384);
+    }
+
+    /// 진행 중인 컬링 작업(채널만 있는 껍데기) — 시작 시점 세대를 담는다.
+    fn idle_job(generation: u64) -> super::AiCullJob {
+        let (_tx, rx) = crossbeam_channel::unbounded();
+        super::AiCullJob {
+            rx,
+            cancel: Default::default(),
+            progress: Default::default(),
+            cache_hits: Default::default(),
+            total: 4,
+            generation,
+            remap: None,
+            target: rawblow_core::config::AiCullTarget::Label,
+            cfg: note_cfg(),
+        }
+    }
+
+    /// 시작 때 인덱스 기준 결과: 0·1 좋음, 2·3 탈락.
+    fn done_by_start_index() -> super::CullDone {
+        use rawblow_core::quality::Verdict;
+        let v = (0..4).map(|i| (i, if i < 2 { Verdict::Good } else { Verdict::Bad }, None)).collect();
+        let ex = (0..4).map(|i| (i, timed_extra(None))).collect();
+        (v, ex)
+    }
+
+    #[test]
+    fn ai_cull_results_follow_the_same_photos_after_capture_resort() {
+        use rawblow_core::model::Label;
+        let mut app = cull_app(4);
+        app.ai_cull = Some(idle_job(app.generation));
+        // 컬링 도중 촬영시간순 정렬이 끝나 같은 폴더의 순서만 바뀜.
+        app.reorder_items(&[2, 0, 3, 1]);
+        let job = app.ai_cull.take().unwrap();
+        let (v, ex) = app.cull_done_for_items(&job, done_by_start_index()).expect("재정렬만 했으면 결과를 쓴다");
+        app.apply_cull_verdicts(v, ex, 0, job.cfg.clone());
+        let labels: Vec<(String, Label)> = app.items.iter().map(|it| (it.entry.stem.clone(), it.entry.label)).collect();
+        let want = |s: &str, l| (s.to_string(), l);
+        assert_eq!(
+            labels,
+            vec![
+                want("IMG_0002", Label::Reject),
+                want("IMG_0000", Label::Pick),
+                want("IMG_0003", Label::Reject),
+                want("IMG_0001", Label::Pick),
+            ]
+        );
+        // 판정 근거(#91)도 같은 사진에.
+        assert!(app.items.iter().all(|it| it.cull_note.is_some()));
+    }
+
+    #[test]
+    fn ai_cull_results_are_still_dropped_when_the_folder_changes() {
+        // open_folder는 세대만 올리고 작업은 그대로 둔다(config 저장 때문에 테스트에선 세대만 올린다).
+        let mut app = cull_app(4);
+        let job = idle_job(app.generation);
+        app.generation += 1;
+        assert!(app.cull_done_for_items(&job, done_by_start_index()).is_none());
+
+        // 폴더를 바꾼 뒤 새 폴더의 촬영시간순 재정렬이 와도 옛 폴더 결과는 되살아나지 않는다.
+        let mut app = cull_app(4);
+        app.ai_cull = Some(idle_job(app.generation));
+        app.generation += 1;
+        app.reorder_items(&[3, 2, 1, 0]);
+        let job = app.ai_cull.take().unwrap();
+        assert!(app.cull_done_for_items(&job, done_by_start_index()).is_none());
     }
 }

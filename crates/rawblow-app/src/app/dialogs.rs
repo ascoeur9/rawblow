@@ -240,51 +240,67 @@ impl RawBlowApp {
             || (ctx.input(|i| i.key_pressed(egui::Key::Enter))
                 && !self.bulk_text.trim().is_empty())
         {
-            let terms = transfer::parse_terms(&self.bulk_text);
-            let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
-            let mode = if self.bulk_exact {
-                MatchMode::Exact
-            } else {
-                MatchMode::Contains
-            };
-            self.bulk_hits = transfer::match_indices(&entries, &terms, mode);
-            self.bulk_searched = true;
+            self.bulk_search();
         }
 
         // 적용: 매칭된 모든 항목에 라벨을 일괄 적용하고 사이드카 저장을 앞당긴다.
         if apply && !self.bulk_hits.is_empty() {
-            // 컬링이 라벨 축을 잠갔으면 일괄 라벨링도 막는다(결과 덮어쓰기 혼동 방지).
-            if self.cull_axis_locked(AiCullTarget::Label) {
-                self.bulk_open = false;
-                return;
-            }
-            let target = self.bulk_target;
-            let hits = self.bulk_hits.clone();
-            let mut changed = 0usize;
-            self.push_undo(&hits);
-            for &idx in &hits {
-                if let Some(it) = self.items.get_mut(idx) {
-                    if it.entry.label != target {
-                        it.entry.label = target;
-                        changed += 1;
-                    }
-                }
-            }
-            if changed > 0 {
-                self.sidecar_dirty = true;
-                // 다음 틱에서 즉시 사이드카가 저장되도록 last_save를 과거로.
-                self.last_save = Instant::now() - Duration::from_millis(400);
-            }
-            self.toast_info(
-                trf(lang, "{}건 → {}", &[&changed.to_string(), target.name(lang)]),
-            );
-            self.bulk_open = false;
+            self.bulk_apply();
             return;
         }
 
         if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.bulk_open = false;
         }
+    }
+
+    /// 일괄 분류 검색(#3): 입력한 파일명으로 매칭 항목(real)을 찾는다.
+    pub(super) fn bulk_search(&mut self) {
+        let terms = transfer::parse_terms(&self.bulk_text);
+        let entries: Vec<Entry> = self.items.iter().map(|i| i.entry.clone()).collect();
+        let mode = if self.bulk_exact {
+            MatchMode::Exact
+        } else {
+            MatchMode::Contains
+        };
+        self.bulk_hits = transfer::match_indices(&entries, &terms, mode);
+        self.bulk_hits_gen = self.generation;
+        self.bulk_searched = true;
+    }
+
+    /// 일괄 분류 적용(#3): 매칭 항목에 라벨을 한꺼번에 적용하고 모달을 닫는다.
+    pub(super) fn bulk_apply(&mut self) {
+        let lang = self.lang;
+        // 컬링이 라벨 축을 잠갔으면 일괄 라벨링도 막는다(결과 덮어쓰기 혼동 방지).
+        if self.cull_axis_locked(AiCullTarget::Label) {
+            self.bulk_open = false;
+            return;
+        }
+        // 검색 뒤 목록이 바뀌었으면(세대 불일치) 옛 인덱스는 다른 사진이다 — 같은 조건으로 다시 찾는다.
+        if self.bulk_hits_gen != self.generation {
+            self.bulk_search();
+        }
+        let target = self.bulk_target;
+        let hits = self.bulk_hits.clone();
+        let mut changed = 0usize;
+        self.push_undo(&hits);
+        for &idx in &hits {
+            if let Some(it) = self.items.get_mut(idx) {
+                if it.entry.label != target {
+                    it.entry.label = target;
+                    changed += 1;
+                }
+            }
+        }
+        if changed > 0 {
+            self.sidecar_dirty = true;
+            // 다음 틱에서 즉시 사이드카가 저장되도록 last_save를 과거로.
+            self.last_save = Instant::now() - Duration::from_millis(400);
+        }
+        self.toast_info(
+            trf(lang, "{}건 → {}", &[&changed.to_string(), target.name(lang)]),
+        );
+        self.bulk_open = false;
     }
 
     /// 단축키 치트시트 오버레이(#66). 키보드 중심 앱인데 단축키 안내가 앱 안에 없어
