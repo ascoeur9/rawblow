@@ -15,6 +15,8 @@ use walkdir::WalkDir;
 /// 이미지만 폴더가 형식 계열(jpg·heic·png·tif·webp)마다 하나 이하이며 RAW+이미지가 이미 같이 있는
 /// 폴더가 없으면 폴더 이름·위치와 무관하게 한 항목으로 합친다(`jpg/`·`원본/` 등).
 /// 짝이 모호하면(RAW만 폴더 둘, 같은 계열 이미지 폴더 둘 등) 그 stem은 폴더마다 별개 항목.
+///
+/// `._` 파일과 `$RECYCLE.BIN`·`.Trashes`·`System Volume Information` 폴더 안은 건너뛴다.
 pub fn scan_folder(folder: &Path, recursive: bool, sort: SortOrder) -> Vec<Entry> {
     let max_depth = if recursive { usize::MAX } else { 1 };
     let mut groups: BTreeMap<(PathBuf, String), Vec<PathBuf>> = BTreeMap::new();
@@ -23,6 +25,7 @@ pub fn scan_folder(folder: &Path, recursive: bool, sort: SortOrder) -> Vec<Entry
         .min_depth(1)
         .max_depth(max_depth)
         .into_iter()
+        .filter_entry(|e| !is_excluded(e))
         .filter_map(|e| e.ok())
     {
         let path = dent.path();
@@ -67,6 +70,23 @@ pub fn scan_folder(folder: &Path, recursive: bool, sort: SortOrder) -> Vec<Entry
 
     sort_entries(&mut entries, sort);
     entries
+}
+
+/// 스캔에서 건너뛰는 폴더(대소문자 무시): 윈도우 휴지통·시스템 폴더, macOS 휴지통.
+const EXCLUDED_DIRS: &[&str] = &["$RECYCLE.BIN", ".Trashes", "System Volume Information"];
+
+/// 열린 폴더 아래의 `._` 파일(macOS AppleDouble 메타데이터)과 휴지통·시스템 폴더 전체.
+/// 열린 폴더 자체(depth 0)는 거르지 않는다 — 사용자가 직접 열면 그 안 사진을 보인다.
+fn is_excluded(dent: &walkdir::DirEntry) -> bool {
+    if dent.depth() == 0 {
+        return false;
+    }
+    let name = dent.file_name().to_string_lossy();
+    if dent.file_type().is_dir() {
+        EXCLUDED_DIRS.iter().any(|d| name.eq_ignore_ascii_case(d))
+    } else {
+        name.starts_with("._")
+    }
 }
 
 fn only_kind(ms: &[PathBuf], k: Kind) -> bool {
