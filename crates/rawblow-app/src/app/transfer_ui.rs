@@ -986,6 +986,11 @@ impl RawBlowApp {
                     ui.add_space(4.0);
                     ui.label(egui::RichText::new(trf(lang, "건너뜀 {} — 동명 파일 존재", &[&report.skipped.to_string()])).font(mono(11.0)).color(theme::WARN));
                 }
+                // 이미 대상 폴더에 있어 손대지 않은 수(나누기 재실행 등): 전송 0건이 오류처럼 보이지 않게.
+                if report.in_place > 0 {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(trf(lang, "그대로 둠 {} — 이미 대상 폴더에 있습니다", &[&report.in_place.to_string()])).font(mono(11.0)).color(theme::INK2));
+                }
                 if !report.renamed.is_empty() {
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new(format!("{} · {}", tr(lang, "이름 변경"), report.renamed.len())).font(prop(10.0)).color(theme::WARN));

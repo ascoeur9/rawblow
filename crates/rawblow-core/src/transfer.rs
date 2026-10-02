@@ -86,6 +86,9 @@ pub struct TransferReport {
     pub image_count: usize,
     pub transferred: usize,
     pub skipped: usize,
+    /// 이미 대상 폴더에 같은 이름으로 있어 그대로 둔 파일 수(나누기 모드 재실행 등).
+    /// 전송·건너뜀과 따로 센다.
+    pub in_place: usize,
     pub failed: Vec<(PathBuf, String)>,
     /// (원래 파일명 → 변경된 파일명)
     pub renamed: Vec<(String, String)>,
@@ -151,54 +154,68 @@ pub fn plan(req: &TransferRequest) -> Vec<(PathBuf, Label, u8)> {
 }
 
 /// 한 항목의 동반 파일이 같은 새 이름을 공유하도록 충돌을 한 번에 피한다(#103).
-/// 한쪽만 `_001`이 되면 RAW+JPG 페어가 깨진다. Skip이면 그룹 전체를 건너뛴다.
+/// 한쪽만 `_001`이 되면 RAW+JPG 페어가 깨진다. Skip이면 묶음 전체를 건너뛴다.
+///
+/// 폴더 무관 페어링으로 한 항목에 동명 파일(대소문자 무시)이 여럿 들 수 있다(cam1·cam2의
+/// DSC_0001). 같은 이름의 k번째 등장끼리 한 묶음으로 보고 묶음마다 이름을 정한다 — cam2의
+/// NEF·JPG가 함께 `_001`이 된다. 앞 묶음이 차지한 이름도 충돌로 본다(그룹 안 덮어쓰기 방지).
+/// 결과는 입력 순서대로이며, 건너뛸 멤버는 None.
 pub(crate) fn unique_group(
     dir: &Path,
     file_names: &[String],
     policy: ConflictPolicy,
-) -> Option<Vec<(PathBuf, Option<String>)>> {
-    if file_names.is_empty() {
-        return Some(Vec::new());
-    }
-    let free = |names: &[String]| names.iter().all(|n| !dir.join(n).exists());
-    if free(file_names) {
-        return Some(file_names.iter().map(|n| (dir.join(n), None)).collect());
-    }
-    match policy {
-        ConflictPolicy::Skip => None,
-        ConflictPolicy::AutoIncrement => {
-            let parsed: Vec<(String, Option<String>)> = file_names
-                .iter()
-                .map(|n| {
-                    let p = Path::new(n);
-                    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or(n).to_string();
-                    let ext = p.extension().and_then(|s| s.to_str()).map(|s| s.to_string());
-                    (stem, ext)
-                })
-                .collect();
-            for n in 1..100_000u32 {
-                let names: Vec<String> = parsed
-                    .iter()
-                    .map(|(stem, ext)| match ext {
-                        Some(e) => format!("{stem}_{n:03}.{e}"),
-                        None => format!("{stem}_{n:03}"),
-                    })
-                    .collect();
-                if free(&names) {
-                    return Some(
-                        names
-                            .into_iter()
-                            .map(|name| {
-                                let p = dir.join(&name);
-                                (p, Some(name))
-                            })
-                            .collect(),
-                    );
-                }
+) -> Vec<Option<(PathBuf, Option<String>)>> {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let slot_of: Vec<usize> = file_names
+        .iter()
+        .map(|n| {
+            let k = seen.entry(n.to_lowercase()).or_insert(0);
+            *k += 1;
+            *k - 1
+        })
+        .collect();
+    let slots = slot_of.iter().max().map_or(0, |m| m + 1);
+    let mut out: Vec<Option<(PathBuf, Option<String>)>> = vec![None; file_names.len()];
+    let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new(); // 소문자
+    for slot in 0..slots {
+        let idx: Vec<usize> = (0..file_names.len()).filter(|&i| slot_of[i] == slot).collect();
+        let free = |names: &[String], taken: &std::collections::HashSet<String>| {
+            let mut mine = std::collections::HashSet::new();
+            names.iter().all(|n| {
+                let low = n.to_lowercase();
+                !taken.contains(&low) && mine.insert(low) && !dir.join(n).exists()
+            })
+        };
+        let originals: Vec<String> = idx.iter().map(|&i| file_names[i].clone()).collect();
+        let chosen: Option<Vec<(String, bool)>> = if free(&originals, &taken) {
+            Some(originals.into_iter().map(|n| (n, false)).collect())
+        } else {
+            match policy {
+                ConflictPolicy::Skip => None,
+                ConflictPolicy::AutoIncrement => (1..100_000u32).find_map(|n| {
+                    let names: Vec<String> = originals
+                        .iter()
+                        .map(|name| {
+                            let p = Path::new(name);
+                            let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
+                            match p.extension().and_then(|s| s.to_str()) {
+                                Some(e) => format!("{stem}_{n:03}.{e}"),
+                                None => format!("{stem}_{n:03}"),
+                            }
+                        })
+                        .collect();
+                    free(&names, &taken).then(|| names.into_iter().map(|n| (n, true)).collect())
+                }),
             }
-            None
+        };
+        if let Some(names) = chosen {
+            for (i, (name, renamed)) in idx.into_iter().zip(names) {
+                taken.insert(name.to_lowercase());
+                out[i] = Some((dir.join(&name), renamed.then_some(name)));
+            }
         }
     }
+    out
 }
 
 /// 별점(0~5) → 등급 문자(A=5★ … E=1★, 0★은 빈 문자)(#26).
@@ -345,6 +362,7 @@ pub fn execute_with_progress(
             for src in &members {
                 report.failed.push(((*src).clone(), err.to_string()));
             }
+            progress.done += members.len();
             continue;
         }
 
@@ -365,19 +383,24 @@ pub fn execute_with_progress(
                 },
                 None => file_name.clone(),
             };
+            // 이미 대상 폴더에 같은 이름으로 있으면 그대로 둔다(나누기 모드 기본 dest = 원본 폴더,
+            // 재귀 스캔 재실행). 보내면 복사는 `_001` 중복본, 이동은 제자리 리네임이 된다.
+            if out_name == file_name && src.parent().is_some_and(|p| crate::config::same_folder(p, &target_dir)) {
+                report.in_place += 1;
+                progress.done += 1;
+                continue;
+            }
             planned.push((src.clone(), file_name, out_name));
         }
         let names: Vec<String> = planned.iter().map(|(_, _, n)| n.clone()).collect();
-        let resolved = match unique_group(&target_dir, &names, req.conflict) {
-            Some(v) => v,
-            None => {
-                report.skipped += planned.len();
-                progress.done += planned.len();
-                continue;
-            }
-        };
+        let resolved = unique_group(&target_dir, &names, req.conflict);
 
-        for ((src, file_name, out_name), (dst, conflict_renamed)) in planned.into_iter().zip(resolved) {
+        for ((src, file_name, out_name), slot) in planned.into_iter().zip(resolved) {
+            let Some((dst, conflict_renamed)) = slot else {
+                report.skipped += 1;
+                progress.done += 1;
+                continue;
+            };
             progress.current = file_name.clone();
             if !on_progress(&progress) {
                 report.canceled = true;
@@ -386,7 +409,7 @@ pub fn execute_with_progress(
 
             let size = std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
             let result = match req.action {
-                Action::Copy => std::fs::copy(&src, &dst).map(|_| ()),
+                Action::Copy => copy_file(&src, &dst),
                 Action::Move => move_file(&src, &dst),
             };
 
@@ -473,15 +496,38 @@ pub fn rename_preview(req: &TransferRequest, limit: usize) -> Vec<(String, Strin
 /// - copy 성공 후 원본 삭제 실패 → **성공으로 처리**. 파일은 이미 대상에 온전히 있으므로,
 ///   실패로 보고하면 재시도가 `_001` 중복본을 만든다(원본 잔존이 중복 생성보다 안전).
 ///   Windows에서 흔한 원인인 읽기전용 속성(메모리카드에서 온 파일)은 해제 후 1회 재시도한다.
+/// - 대상이 이미 있으면 아무것도 건드리지 않고 실패(덮어쓰기 금지 — rename은 대상을 조용히 대체한다).
 pub(crate) fn move_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    ensure_absent(dst)?;
     if std::fs::rename(src, dst).is_ok() {
         return Ok(());
     }
     copy_then_remove(src, dst)
 }
 
+/// 덮어쓰지 않는 복사. 대상이 이미 있으면 실패하고, 복사 도중 실패하면 불완전 사본을 지운다
+/// (대상은 직전까지 없었으므로 지워도 남의 파일이 아니다).
+pub(crate) fn copy_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    ensure_absent(dst)?;
+    if let Err(e) = std::fs::copy(src, dst) {
+        let _ = std::fs::remove_file(dst);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// 전송·정리의 마지막 방어선: 대상 경로에 무엇이든 있으면 AlreadyExists.
+/// 이 앱에 덮어쓰기 정책은 없다(ConflictPolicy는 Skip/AutoIncrement뿐).
+fn ensure_absent(dst: &Path) -> std::io::Result<()> {
+    if std::fs::symlink_metadata(dst).is_ok() {
+        return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "destination already exists"));
+    }
+    Ok(())
+}
+
 /// 교차 디바이스 이동 폴백 본체(위 계약 참조). move_file에서 분리해 직접 테스트한다.
 fn copy_then_remove(src: &Path, dst: &Path) -> std::io::Result<()> {
+    ensure_absent(dst)?; // 아래 정리 remove_file이 기존 파일을 지우지 않게 먼저 막는다.
     if let Err(e) = std::fs::copy(src, dst) {
         let _ = std::fs::remove_file(dst); // 불완전 사본 정리(없으면 무시)
         return Err(e);
@@ -604,6 +650,40 @@ mod tests {
         assert!(copy_then_remove(&src, &dst).is_err());
         assert!(src.exists(), "실패 시 원본은 보존");
         assert!(!dst.exists(), "대상에 불완전 사본이 남지 않음");
+    }
+
+    /// 덮어쓰기 금지: 대상이 이미 있으면 세 경로(복사·이동·교차 디바이스 폴백) 모두 실패하고
+    /// 원본과 기존 대상 둘 다 그대로 남는다.
+    #[test]
+    fn file_ops_never_overwrite_existing_destination() {
+        type Op = fn(&Path, &Path) -> std::io::Result<()>;
+        let ops: [(&str, Op); 3] = [("copy_file", copy_file), ("move_file", move_file), ("copy_then_remove", copy_then_remove)];
+        for (name, op) in ops {
+            let tmp = tempfile::tempdir().unwrap();
+            let src = tmp.path().join("a.jpg");
+            let dst = tmp.path().join("b.jpg");
+            std::fs::write(&src, b"new").unwrap();
+            std::fs::write(&dst, b"old").unwrap();
+            let err = op(&src, &dst).expect_err(name);
+            assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists, "{name}");
+            assert_eq!(std::fs::read(&src).unwrap(), b"new", "{name}: 원본 보존");
+            assert_eq!(std::fs::read(&dst).unwrap(), b"old", "{name}: 기존 대상 보존");
+        }
+    }
+
+    #[test]
+    fn unique_group_separates_same_names_inside_group() {
+        let tmp = tempfile::tempdir().unwrap();
+        let names: Vec<String> = ["X.JPG", "X.NEF", "x.jpg", "X.NEF"].iter().map(|s| s.to_string()).collect();
+        let got: Vec<Option<String>> = unique_group(tmp.path(), &names, ConflictPolicy::AutoIncrement)
+            .into_iter()
+            .map(|r| r.map(|(p, _)| p.file_name().unwrap().to_string_lossy().into_owned()))
+            .collect();
+        let want = ["X.JPG", "X.NEF", "x_001.jpg", "X_001.NEF"];
+        assert_eq!(got, want.map(|s| Some(s.to_string())), "k번째 동명 파일끼리 같은 접미사");
+        // Skip: 원래 이름을 쓸 수 없는 두 번째 묶음만 건너뛴다.
+        let got = unique_group(tmp.path(), &names, ConflictPolicy::Skip);
+        assert_eq!(got.iter().map(|r| r.is_some()).collect::<Vec<_>>(), [true, true, false, false]);
     }
 
     /// copy 성공 후 원본 삭제가 거부돼도 성공으로 처리(재시도발 `_001` 중복 방지 계약).

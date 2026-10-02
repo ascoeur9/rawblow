@@ -83,6 +83,10 @@ fn fmt_lookup(ko: &str) -> Option<(&'static str, &'static str)> {
             "Failed to delete {} originals — the source files remain",
             "元ファイル {} 個の削除に失敗 — 元ファイルが残っています",
         ),
+        "그대로 둠 {} — 이미 대상 폴더에 있습니다" => (
+            "Left in place {} — already in the destination folder",
+            "そのまま {} — すでに出力先フォルダにあります",
+        ),
         "{} 건 매칭" => ("{} matched", "{} 件一致"),
         "매칭 {}건" => ("{} matched", "一致 {} 件"),
         "{}건 → {}" => ("{} → {}", "{} 件 → {}"),
@@ -918,6 +922,10 @@ mod tests {
             "Moving 12 originals — they will be removed from the source folder."
         );
         assert_eq!(trf(Lang::Ja, "건너뜀 {} — 동명 파일 존재", &["3"]), "スキップ 3 — 同名ファイルあり");
+        assert_eq!(
+            trf(Lang::En, "그대로 둠 {} — 이미 대상 폴더에 있습니다", &["4"]),
+            "Left in place 4 — already in the destination folder"
+        );
         assert_eq!(
             trf(Lang::En, "원본 삭제 실패 {} — 원본 파일이 남아 있습니다", &["2"]),
             "Failed to delete 2 originals — the source files remain"
