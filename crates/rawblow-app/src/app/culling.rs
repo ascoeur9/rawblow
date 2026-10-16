@@ -27,7 +27,7 @@ pub(super) enum AiCullMsg {
 /// 그룹 컬링(메타·연사·중복)용 컷별 부가정보. 본 판정 흐름과 분리해 워커가 부가 수집한다.
 #[derive(Clone, Default)]
 pub(super) struct CullExtra {
-    /// 그룹 내 베스트 랭킹용 선명도(미적 점수 없을 때 fallback).
+    /// 그룹 베스트의 선명도. 미적이 같거나 없거나 유한하지 않으면 이 값으로 순위를 가른다.
     pub(super) sharp: f32,
     pub(super) dhash: Option<u64>,
     pub(super) shot_time: Option<i64>,
@@ -2185,7 +2185,9 @@ impl RawBlowApp {
                     let ex = extras.get(real);
                     CullItem {
                         good: matches!(v, Verdict::Good) && !face_excluded(real),
-                        rank: a.unwrap_or_else(|| ex.map(|e| e.sharp).unwrap_or(0.0)),
+                        rank: 0.0,
+                        aesthetic: *a,
+                        sharp: Some(ex.map(|e| e.sharp).unwrap_or(0.0)),
                         dhash: ex.and_then(|e| e.dhash),
                         shot_time: ex.and_then(|e| e.shot_time),
                         meta: ex.map(|e| e.meta.clone()).unwrap_or_default(),
