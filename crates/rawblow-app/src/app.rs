@@ -221,6 +221,15 @@ pub struct RawBlowApp {
     // 항목(real)별 디코딩 누적 실패 횟수(#64). decode_dead()가 3 이상을 영구 손상으로 간주.
     decode_fails: std::collections::HashMap<usize, u8>,
     histo: std::collections::HashMap<usize, Histo>,
+    /// 단일 보기 프리뷰의 디코드 RGBA(#125). 룩을 바꿔도 다시 디코드하지 않으려고 둔다.
+    /// 썸네일은 넣지 않는다.
+    look_src: std::collections::HashMap<usize, LookSrc>,
+    /// 룩이나 `\` 비교가 바뀐 세대.
+    look_gen: u64,
+    /// `\`를 누르고 있는 동안 룩을 끈다(#125).
+    look_compare: bool,
+    /// `(이름\n경로, 파싱된 LUT)`. 키가 같으면 파일을 다시 읽지 않는다.
+    look_cache: Option<(String, Option<rawblow_core::lut::Lut3d>)>,
     generation: u64,
 
     sidecar_dirty: bool,
@@ -328,6 +337,15 @@ pub struct RawBlowApp {
 }
 
 
+/// 디코드된 프리뷰 한 장(#125). `graded`는 이 버퍼로 텍스처를 만든 `look_gen`.
+struct LookSrc {
+    rgba: Vec<u8>,
+    width: usize,
+    height: usize,
+    full: bool,
+    graded: u64,
+}
+
 /// 백그라운드 메타 로더 결과. 요청 시점에 없던 조각(exif/af)만 채워 보낸다.
 struct MetaResult {
     generation: u64,
@@ -426,6 +444,10 @@ impl RawBlowApp {
             orig_fallback: std::collections::HashSet::new(),
             decode_fails: std::collections::HashMap::new(),
             histo: std::collections::HashMap::new(),
+            look_src: std::collections::HashMap::new(),
+            look_gen: 0,
+            look_compare: false,
+            look_cache: None,
             generation: 0,
             sidecar_dirty: false,
             scan_recursive: false,
@@ -579,6 +601,10 @@ impl RawBlowApp {
             orig_fallback: std::collections::HashSet::new(),
             decode_fails: std::collections::HashMap::new(),
             histo: std::collections::HashMap::new(),
+            look_src: std::collections::HashMap::new(),
+            look_gen: 0,
+            look_compare: false,
+            look_cache: None,
             generation: 0,
             sidecar_dirty: false,
             scan_recursive: false,
@@ -695,6 +721,7 @@ impl RawBlowApp {
         self.undo_stack.clear(); // real 인덱스 재배정 → 되돌리기 스냅샷도 무효(#78).
         self.redo_stack.clear();
         self.histo.clear();
+        self.look_src.clear();
         self.selected.clear();
         self.sel_anchor = None;
         self.grid_scroll_to = None;
@@ -941,6 +968,7 @@ impl RawBlowApp {
             }
         }
         self.histo.clear();
+        self.look_src.clear();
         self.selected = self.selected.iter().filter_map(|&r| inv.get(r).copied()).collect();
         self.grid_scroll_to = None;
         self.grid_visible_rows = 0..0;
@@ -1586,6 +1614,8 @@ impl eframe::App for RawBlowApp {
 
         self.drain_results(ctx);
         self.drain_folder_scan(ctx);
+        // `\` 비교와, 지난 프레임에 못 올린 이웃 프리뷰(#125). 디코드 요청은 만들지 않는다.
+        self.poll_look_compare(ctx);
 
         // AI 컬링(#50)은 백그라운드 비차단 — 모달과 무관하게 매 프레임 진행률을 펌프하고
         // 완료 시 결과를 적용한다(좌측 레일 버튼이 프로그레스바로 표시).

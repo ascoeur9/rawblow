@@ -345,17 +345,8 @@ impl RawBlowApp {
                         uploads += 1;
                     }
                 } else {
-                    self.histo.insert(res.id, compute_histo(&img.rgba));
-                    let color = egui::ColorImage::from_rgba_unmultiplied(
-                        [img.width as usize, img.height as usize],
-                        &img.rgba,
-                    );
-                    let handle = ctx.load_texture(
-                        format!("tex{}", res.id),
-                        color,
-                        egui::TextureOptions::LINEAR,
-                    );
-                    self.cache.insert(res.id, handle, res.full_raw);
+                    // 히스토그램은 LUT 전(#125). 텍스처만 룩을 입힌다. 썸네일 분기는 위쪽.
+                    self.upload_look_preview(ctx, res.id, &img.rgba, img.width, img.height, res.full_raw);
                     uploads += 1;
                     if res.full_raw {
                         self.orig_fallback.remove(&res.id); // 원본을 받았으면 폴백 표시 해제
@@ -389,5 +380,179 @@ impl RawBlowApp {
         if !self.worker.rx.is_empty() {
             ctx.request_repaint();
         }
+    }
+
+    /// 프리뷰 RGBA를 보관하고, 지금 룩으로 만든 텍스처만 올린다(#125).
+    /// 히스토그램은 `rgba` 원본으로 계산한다. 워커에 다시 요청하지 않는다.
+    pub(super) fn upload_look_preview(
+        &mut self,
+        ctx: &egui::Context,
+        id: usize,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        full: bool,
+    ) {
+        self.histo.insert(id, compute_histo(rgba));
+        self.look_src.insert(
+            id,
+            LookSrc {
+                rgba: rgba.to_vec(),
+                width: width as usize,
+                height: height as usize,
+                full,
+                graded: self.look_gen,
+            },
+        );
+        self.reupload_look(ctx, id);
+    }
+
+    pub(super) fn set_look_name(&mut self, name: &str, ctx: &egui::Context) {
+        self.cfg.look.name = name.to_string();
+        self.look_cache = None;
+        self.persist_cfg();
+        self.look_gen = self.look_gen.wrapping_add(1);
+        self.regrade_looks(ctx, 4);
+    }
+
+    /// `.cube` 경로를 룩으로 둔다. 파싱에 실패하면 화면은 룩 없음이고 토스트를 띄운다.
+    pub(super) fn set_cube_path(&mut self, path: &std::path::Path, ctx: &egui::Context) -> bool {
+        self.cfg.look.name = "file".into();
+        self.cfg.look.cube_path = path.display().to_string();
+        self.look_cache = None;
+        let ok = self.cached_lut().is_some();
+        self.persist_cfg();
+        self.look_gen = self.look_gen.wrapping_add(1);
+        self.regrade_looks(ctx, 4);
+        if !ok {
+            self.toast_error(tr(self.lang, "LUT를 읽지 못했습니다").into());
+        }
+        ok
+    }
+
+    pub(super) fn poll_look_compare(&mut self, ctx: &egui::Context) {
+        let held = !self.has_modal()
+            && !ctx.wants_keyboard_input()
+            && ctx.input(|i| i.key_down(egui::Key::Backslash));
+        if held != self.look_compare {
+            self.look_compare = held;
+            self.look_gen = self.look_gen.wrapping_add(1);
+            self.regrade_looks(ctx, 4);
+        } else if self.look_src.values().any(|s| s.graded != self.look_gen) {
+            self.regrade_looks(ctx, 2);
+        }
+    }
+
+    fn cached_lut(&mut self) -> Option<&rawblow_core::lut::Lut3d> {
+        let key = format!("{}\n{}", self.cfg.look.name, self.cfg.look.cube_path);
+        let fresh = matches!(self.look_cache.as_ref(), Some((k, _)) if k == &key);
+        if !fresh {
+            let lut = resolve_look(&self.cfg.look);
+            self.look_cache = Some((key, lut));
+        }
+        self.look_cache.as_ref().and_then(|(_, lut)| lut.as_ref())
+    }
+
+    fn regrade_looks(&mut self, ctx: &egui::Context, budget: usize) {
+        let cur = self.current_real();
+        let mut stale: Vec<usize> = self
+            .look_src
+            .iter()
+            .filter(|(_, s)| s.graded != self.look_gen)
+            .map(|(id, _)| *id)
+            .collect();
+        stale.sort_by_key(|id| match cur {
+            Some(c) if *id == c => 0,
+            _ => 1,
+        });
+        for id in stale.into_iter().take(budget) {
+            self.reupload_look(ctx, id);
+        }
+    }
+
+    fn reupload_look(&mut self, ctx: &egui::Context, id: usize) {
+        let Some(src) = self.look_src.get(&id) else { return };
+        let rgba = src.rgba.clone();
+        let w = src.width;
+        let h = src.height;
+        let full = src.full;
+        let compare = self.look_compare;
+        let lut = self.cached_lut().cloned();
+        let pixels = rawblow_core::lut::display_rgba(&rgba, lut.as_ref(), compare);
+        let color = egui::ColorImage::from_rgba_unmultiplied([w, h], &pixels);
+        let handle = ctx.load_texture(format!("tex{id}"), color, egui::TextureOptions::LINEAR);
+        self.cache.insert(id, handle, full);
+        if let Some(s) = self.look_src.get_mut(&id) {
+            s.graded = self.look_gen;
+        }
+        self.prune_look_src();
+    }
+
+    fn prune_look_src(&mut self) {
+        let live: std::collections::HashSet<usize> = self.cache.ids().into_iter().collect();
+        self.look_src.retain(|id, _| live.contains(id));
+    }
+}
+
+fn resolve_look(pref: &rawblow_core::lut::LookPref) -> Option<rawblow_core::lut::Lut3d> {
+    if pref.name.is_empty() {
+        None
+    } else if let Some(lut) = rawblow_core::lut::builtin(&pref.name) {
+        Some(lut)
+    } else if pref.name == "file" {
+        std::fs::read_to_string(&pref.cube_path)
+            .ok()
+            .and_then(|text| rawblow_core::lut::parse_cube(&text).ok())
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx_run(mut f: impl FnMut(&mut RawBlowApp, &egui::Context)) {
+        RawBlowApp::settings_qa_begin();
+        let mut app = RawBlowApp::for_settings_qa();
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| f(&mut app, ctx));
+    }
+
+    #[test]
+    fn look_change_keeps_source_histogram_and_does_not_queue_decode() {
+        let rgba = [128u8, 128, 128, 255];
+        ctx_run(|app, ctx| {
+            app.pending_preview.insert(7);
+            app.upload_look_preview(ctx, 3, &rgba, 1, 1, false);
+            assert_eq!(app.histo.get(&3).map(|h| h.bins[0][32]), Some(1));
+            let pending = app.pending_preview.clone();
+            app.set_look_name("Warm", ctx);
+            assert_eq!(app.pending_preview, pending);
+            assert!(!app.pending_preview.contains(&3));
+            assert_eq!(app.look_src.get(&3).map(|s| s.rgba.as_slice()), Some(rgba.as_slice()));
+            assert_eq!(app.cfg.look.name, "Warm");
+            assert!(RawBlowApp::settings_qa_persist_count() > 0);
+            // 히스토그램은 룩을 입힌 뒤에도 원본 128이다.
+            assert_eq!(app.histo.get(&3).map(|h| h.bins[0][32]), Some(1));
+        });
+    }
+
+    #[test]
+    fn bad_cube_does_not_become_a_look_and_good_cube_does() {
+        let dir = std::env::temp_dir().join(format!("rb_lut_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let bad = dir.join("bad.cube");
+        let good = dir.join("good.cube");
+        std::fs::write(&bad, "LUT_1D_SIZE 2\n0 0 0\n").unwrap();
+        std::fs::write(&good, "LUT_3D_SIZE 2\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n").unwrap();
+        ctx_run(|app, ctx| {
+            assert!(!app.set_cube_path(&bad, ctx));
+            assert!(app.toast.as_ref().is_some());
+            assert!(app.set_cube_path(&good, ctx));
+            assert_eq!(app.cfg.look.name, "file");
+            assert!(app.cached_lut().is_some());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

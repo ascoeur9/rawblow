@@ -30,6 +30,9 @@ impl RawBlowApp {
 
     pub(super) fn ui_shell(&mut self, ctx: &egui::Context) {
         self.ui_toolbar(ctx);
+        if self.view == ViewMode::Single {
+            self.ui_look_bar(ctx);
+        }
         self.ui_status_bar(ctx);
         self.ui_left_rail(ctx);
         if self.view == ViewMode::Single {
@@ -146,6 +149,53 @@ impl RawBlowApp {
                     });
                 });
             });
+    }
+
+    /// 단일 보기·전체화면에서 룩을 고른다(#125). 그리드에는 두지 않는다. 단축키 순환은 없다.
+    pub(super) fn ui_look_bar(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
+        let path_label = std::path::Path::new(&self.cfg.look.cube_path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "LUT".into());
+        let mut picked: Option<std::path::PathBuf> = None;
+        let mut name = self.cfg.look.name.clone();
+        let before = name.clone();
+        egui::TopBottomPanel::top("look")
+            .exact_height(40.0)
+            .frame(egui::Frame::none().fill(theme::BG1).inner_margin(egui::Margin::symmetric(12.0, 6.0)))
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    let shown = if name == "file" {
+                        path_label.clone()
+                    } else if name.is_empty() {
+                        tr(lang, "없음").to_string()
+                    } else {
+                        name.clone()
+                    };
+                    egui::ComboBox::from_id_salt("look_pick")
+                        .selected_text(egui::RichText::new(shown).font(mono(12.0)))
+                        .width(160.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut name, String::new(), tr(lang, "없음"));
+                            for builtin in rawblow_core::lut::BUILTINS {
+                                ui.selectable_value(&mut name, builtin.to_string(), builtin);
+                            }
+                            if !self.cfg.look.cube_path.is_empty() {
+                                ui.selectable_value(&mut name, "file".to_string(), path_label.as_str());
+                            }
+                        });
+                    if ui.button("LUT").clicked() {
+                        picked = rfd::FileDialog::new().add_filter("cube", &["cube"]).pick_file();
+                    }
+                });
+            });
+        if name != before {
+            self.set_look_name(&name, ctx);
+        }
+        if let Some(path) = picked {
+            self.set_cube_path(&path, ctx);
+        }
     }
 
     pub(super) fn ui_left_rail(&mut self, ctx: &egui::Context) {
@@ -1407,6 +1457,7 @@ impl RawBlowApp {
     }
 
     pub(super) fn ui_fullscreen(&mut self, ctx: &egui::Context) {
+        self.ui_look_bar(ctx);
         let bg = self.photo_bg();
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(bg))
@@ -1483,5 +1534,49 @@ impl RawBlowApp {
                 self.toast = None;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shell_text(view: ViewMode) -> String {
+        RawBlowApp::settings_qa_begin();
+        let mut app = RawBlowApp::for_settings_qa();
+        app.view = view;
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        crate::fonts::install(&ctx, Lang::Ko);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))),
+            ..Default::default()
+        };
+        let out = ctx.run(input, |ctx| app.ui_shell(ctx));
+        let mut text = String::new();
+        fn walk(shapes: &[egui::Shape], text: &mut String) {
+            for s in shapes {
+                match s {
+                    egui::Shape::Text(t) => {
+                        text.push_str(t.galley.text());
+                        text.push('\n');
+                    }
+                    egui::Shape::Vec(v) => walk(v, text),
+                    _ => {}
+                }
+            }
+        }
+        let shapes: Vec<_> = out.shapes.iter().map(|c| c.shape.clone()).collect();
+        walk(&shapes, &mut text);
+        text
+    }
+
+    #[test]
+    fn look_picker_is_on_the_single_view_only() {
+        let single = shell_text(ViewMode::Single);
+        assert!(single.contains("LUT"), "단일 보기에 LUT 버튼이 있어야 한다");
+        assert!(single.contains("없음"), "룩을 끈 상태가 보여야 한다");
+        let grid = shell_text(ViewMode::Grid);
+        assert!(!grid.contains("LUT"), "그리드에는 룩 줄을 두지 않는다");
     }
 }
