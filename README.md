@@ -148,7 +148,7 @@ Rust 1.80 이상, C 링커(MSVC Build Tools / gcc / clang)가 필요하고 Linux
 
 ## 지원 포맷과 확인된 카메라
 
-RAW는 `.ARW` `.CR2` `.CR3` `.NEF` `.ORF` `.RW2` `.RAF` `.DNG` `.PEF` `.SRW` `.RAW`, 일반 이미지는 `.JPG` `.JPEG` `.PNG` `.WEBP` `.HEIC` `.HEIF` `.TIF` `.TIFF`를 읽습니다.
+RAW는 `.ARW` `.CR2` `.CR3` `.NEF` `.ORF` `.RW2` `.RAF` `.DNG` `.PEF` `.SRW` `.RAW` `.X3F`, 일반 이미지는 `.JPG` `.JPEG` `.PNG` `.WEBP` `.HEIC` `.HEIF` `.TIF` `.TIFF`를 읽습니다. `.X3F`는 임베디드 JPEG 프리뷰로 보며, Foveon 풀 현상은 하지 않습니다.
 
 **OS.** Windows 11과 macOS(Apple Silicon)로 정식 배포합니다. Linux는 코드상 지원하지만 사전 빌드본을 제공하지 않으니 소스에서 빌드하세요.
 

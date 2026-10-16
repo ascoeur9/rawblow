@@ -24,6 +24,7 @@ pub mod quality;
 pub mod scan;
 pub mod sidecar;
 pub mod transfer;
+pub mod x3f;
 
 pub use model::{
     ColorTag, Entry, Filter, Label, MatchMode, SortOrder, StarFilter, TagFilter, ViewMode,
