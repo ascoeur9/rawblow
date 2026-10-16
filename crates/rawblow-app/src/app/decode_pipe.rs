@@ -345,17 +345,15 @@ impl RawBlowApp {
                         uploads += 1;
                     }
                 } else {
-                    self.histo.insert(res.id, compute_histo(&img.rgba));
-                    let color = egui::ColorImage::from_rgba_unmultiplied(
-                        [img.width as usize, img.height as usize],
+                    // 히스토그램은 조정 전(#130). 텍스처만 조정을 입힌다. 썸네일 분기는 위쪽.
+                    self.upload_decoded_preview(
+                        ctx,
+                        res.id,
                         &img.rgba,
+                        img.width,
+                        img.height,
+                        res.full_raw,
                     );
-                    let handle = ctx.load_texture(
-                        format!("tex{}", res.id),
-                        color,
-                        egui::TextureOptions::LINEAR,
-                    );
-                    self.cache.insert(res.id, handle, res.full_raw);
                     uploads += 1;
                     if res.full_raw {
                         self.orig_fallback.remove(&res.id); // 원본을 받았으면 폴백 표시 해제
@@ -389,5 +387,145 @@ impl RawBlowApp {
         if !self.worker.rx.is_empty() {
             ctx.request_repaint();
         }
+    }
+
+    /// 프리뷰 RGBA를 보관하고, 지금 조정으로 만든 텍스처만 올린다(#130).
+    /// 히스토그램은 `rgba` 원본으로 계산한다. 워커에 다시 요청하지 않는다.
+    pub(super) fn upload_decoded_preview(
+        &mut self,
+        ctx: &egui::Context,
+        id: usize,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        full: bool,
+    ) {
+        self.histo.insert(id, compute_histo(rgba));
+        self.preview_src.insert(
+            id,
+            PreviewSrc {
+                rgba: rgba.to_vec(),
+                width: width as usize,
+                height: height as usize,
+                full,
+                graded: self.adjust_gen,
+            },
+        );
+        let pixels = rawblow_core::adjust::display_rgba(rgba, self.cfg.adjust, self.adjust_compare);
+        let color = egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &pixels);
+        let handle = ctx.load_texture(format!("tex{id}"), color, egui::TextureOptions::LINEAR);
+        self.cache.insert(id, handle, full);
+        self.prune_preview_src();
+    }
+
+    /// 조정 슬라이더가 바뀐 뒤. 값을 범위에 맞추고 설정에만 남긴 다음, 보관 중인 버퍼로 텍스처를 다시 만든다.
+    pub(super) fn note_adjust_changed(&mut self, ctx: &egui::Context) {
+        self.cfg.adjust = self.cfg.adjust.clamped();
+        self.persist_cfg();
+        self.adjust_gen = self.adjust_gen.wrapping_add(1);
+        self.regrade_budget(ctx, 4);
+    }
+
+    /// `\`를 누르는 동안 조정을 끈다. 떼면 다시 켠다. 디코드 큐는 건드리지 않는다.
+    pub(super) fn poll_adjust_compare(&mut self, ctx: &egui::Context) {
+        let held = !self.has_modal()
+            && !ctx.wants_keyboard_input()
+            && ctx.input(|i| i.key_down(egui::Key::Backslash));
+        if held != self.adjust_compare {
+            self.adjust_compare = held;
+            self.adjust_gen = self.adjust_gen.wrapping_add(1);
+            self.regrade_budget(ctx, 4);
+        } else if self.preview_src.values().any(|s| s.graded != self.adjust_gen) {
+            self.regrade_budget(ctx, 2);
+        }
+    }
+
+    fn regrade_budget(&mut self, ctx: &egui::Context, budget: usize) {
+        let cur = self.current_real();
+        let mut stale: Vec<usize> = self
+            .preview_src
+            .iter()
+            .filter(|(_, s)| s.graded != self.adjust_gen)
+            .map(|(id, _)| *id)
+            .collect();
+        stale.sort_by_key(|id| match cur {
+            Some(c) if *id == c => 0,
+            _ => 1,
+        });
+        for id in stale.into_iter().take(budget) {
+            self.reupload_preview(ctx, id);
+        }
+    }
+
+    fn reupload_preview(&mut self, ctx: &egui::Context, id: usize) {
+        let Some(src) = self.preview_src.get(&id) else { return };
+        if src.graded == self.adjust_gen {
+            return;
+        }
+        let pixels = rawblow_core::adjust::display_rgba(&src.rgba, self.cfg.adjust, self.adjust_compare);
+        let w = src.width;
+        let h = src.height;
+        let full = src.full;
+        let color = egui::ColorImage::from_rgba_unmultiplied([w, h], &pixels);
+        let handle = ctx.load_texture(format!("tex{id}"), color, egui::TextureOptions::LINEAR);
+        self.cache.insert(id, handle, full);
+        if let Some(s) = self.preview_src.get_mut(&id) {
+            s.graded = self.adjust_gen;
+        }
+        self.prune_preview_src();
+    }
+
+    fn prune_preview_src(&mut self) {
+        let live: std::collections::HashSet<usize> = self.cache.ids().into_iter().collect();
+        self.preview_src.retain(|id, _| live.contains(id));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx_run(mut f: impl FnMut(&mut RawBlowApp, &egui::Context)) {
+        RawBlowApp::settings_qa_begin();
+        let mut app = RawBlowApp::for_settings_qa();
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| f(&mut app, ctx));
+    }
+
+    #[test]
+    fn preview_histogram_uses_source_and_slider_does_not_queue_decode() {
+        let rgba = [128u8, 128, 128, 255];
+        ctx_run(|app, ctx| {
+            app.cfg.adjust.exposure = 1.0;
+            app.pending_preview.insert(7);
+            app.upload_decoded_preview(ctx, 3, &rgba, 1, 1, false);
+            assert_eq!(app.histo.get(&3).map(|h| h.bins[0][32]), Some(1), "히스토그램은 조정 전 128");
+            assert_eq!(app.histo.get(&3).map(|h| h.bins[0][63]), Some(0), "255로 올린 뒤의 통이 아니어야 한다");
+            assert!(app.pending_preview.contains(&7));
+            assert!(!app.pending_preview.contains(&3), "프리뷰 업로드가 디코드를 다시 걸면 안 된다");
+            assert_eq!(app.preview_src.get(&3).map(|s| s.rgba.as_slice()), Some(rgba.as_slice()));
+            let pending = app.pending_preview.clone();
+            let thumb_pending = app.pending_thumb.clone();
+            app.cfg.adjust.exposure = 0.0;
+            app.note_adjust_changed(ctx);
+            assert_eq!(app.pending_preview, pending);
+            assert_eq!(app.pending_thumb, thumb_pending);
+            assert_eq!(app.preview_src.get(&3).map(|s| s.rgba.as_slice()), Some(rgba.as_slice()));
+            assert!(app.cfg.adjust.is_neutral());
+            assert!(RawBlowApp::settings_qa_persist_count() > 0, "마지막 조정은 앱 설정에 남긴다");
+        });
+    }
+
+    #[test]
+    fn note_adjust_clamps_to_the_slider_range() {
+        ctx_run(|app, ctx| {
+            app.cfg.adjust.exposure = 9.0;
+            app.cfg.adjust.temperature = -4.0;
+            app.cfg.adjust.grain = -1.0;
+            app.note_adjust_changed(ctx);
+            assert_eq!(app.cfg.adjust.exposure, 2.0);
+            assert_eq!(app.cfg.adjust.temperature, -1.0);
+            assert_eq!(app.cfg.adjust.grain, 0.0);
+        });
     }
 }

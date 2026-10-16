@@ -3,6 +3,11 @@
 
 use super::*;
 
+fn adjust_slider(ui: &mut egui::Ui, label: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>) -> bool {
+    ui.add(egui::Slider::new(value, range).text(label).fixed_decimals(2))
+        .changed()
+}
+
 impl RawBlowApp {
     // ── Studio 셸: 툴바 + 좌측레일 + 필름스트립 + 상태바 + 중앙 ──
     /// 사진 표시 화면(매팅) 배경색(#36). 설정값이 있으면 그 색, 없으면 앱 기본(near-black void).
@@ -30,6 +35,9 @@ impl RawBlowApp {
 
     pub(super) fn ui_shell(&mut self, ctx: &egui::Context) {
         self.ui_toolbar(ctx);
+        if self.view == ViewMode::Single {
+            self.ui_adjust_bar(ctx);
+        }
         self.ui_status_bar(ctx);
         self.ui_left_rail(ctx);
         if self.view == ViewMode::Single {
@@ -146,6 +154,27 @@ impl RawBlowApp {
                     });
                 });
             });
+    }
+
+    /// 단일 보기·전체화면에서 폴더 공통 조정(#130). 그리드 썸네일 화면에는 두지 않는다.
+    pub(super) fn ui_adjust_bar(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
+        let mut changed = false;
+        egui::TopBottomPanel::top("adjust")
+            .exact_height(40.0)
+            .frame(egui::Frame::none().fill(theme::BG1).inner_margin(egui::Margin::symmetric(12.0, 6.0)))
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.spacing_mut().slider_width = 88.0;
+                    changed |= adjust_slider(ui, tr(lang, "노출"), &mut self.cfg.adjust.exposure, -2.0..=2.0);
+                    changed |= adjust_slider(ui, tr(lang, "색온도"), &mut self.cfg.adjust.temperature, -1.0..=1.0);
+                    changed |= adjust_slider(ui, tr(lang, "대비"), &mut self.cfg.adjust.contrast, -1.0..=1.0);
+                    changed |= adjust_slider(ui, tr(lang, "그레인"), &mut self.cfg.adjust.grain, 0.0..=1.0);
+                });
+            });
+        if changed {
+            self.note_adjust_changed(ctx);
+        }
     }
 
     pub(super) fn ui_left_rail(&mut self, ctx: &egui::Context) {
@@ -1407,6 +1436,7 @@ impl RawBlowApp {
     }
 
     pub(super) fn ui_fullscreen(&mut self, ctx: &egui::Context) {
+        self.ui_adjust_bar(ctx);
         let bg = self.photo_bg();
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(bg))
@@ -1483,5 +1513,52 @@ impl RawBlowApp {
                 self.toast = None;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shell_text(view: ViewMode) -> String {
+        RawBlowApp::settings_qa_begin();
+        let mut app = RawBlowApp::for_settings_qa();
+        app.view = view;
+        app.folder = Some(std::path::PathBuf::from("/tmp/rawblow-adjust-ui"));
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        crate::fonts::install(&ctx, Lang::Ko);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))),
+            ..Default::default()
+        };
+        let out = ctx.run(input, |ctx| app.ui_shell(ctx));
+        let mut text = String::new();
+        fn walk(shapes: &[egui::Shape], text: &mut String) {
+            for s in shapes {
+                match s {
+                    egui::Shape::Text(t) => {
+                        text.push_str(t.galley.text());
+                        text.push('\n');
+                    }
+                    egui::Shape::Vec(v) => walk(v, text),
+                    _ => {}
+                }
+            }
+        }
+        let shapes: Vec<_> = out.shapes.iter().map(|c| c.shape.clone()).collect();
+        walk(&shapes, &mut text);
+        text
+    }
+
+    #[test]
+    fn adjust_sliders_are_on_the_single_view_only() {
+        let single = shell_text(ViewMode::Single);
+        for label in ["노출", "색온도", "대비", "그레인"] {
+            assert!(single.contains(label), "단일 보기에 {label} 슬라이더가 있어야 한다");
+        }
+        let grid = shell_text(ViewMode::Grid);
+        assert!(!grid.contains("색온도"), "그리드에는 조정 줄을 두지 않는다");
+        assert!(!grid.contains("그레인"), "그리드에는 조정 줄을 두지 않는다");
     }
 }
