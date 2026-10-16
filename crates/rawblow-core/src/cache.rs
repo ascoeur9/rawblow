@@ -71,6 +71,45 @@ pub fn thumb_key(path: &Path, max_edge: u32) -> Option<String> {
     Some(format!("{h:016x}"))
 }
 
+/// sRGB(태그 0)는 기존 키를 그대로 둔다. 다른 출력은 접미사를 붙여 캐시가 섞이지 않게 한다.
+pub fn with_output_tag(key: String, tag: u64) -> String {
+    if tag == 0 {
+        key
+    } else {
+        format!("{key}-{tag:016x}")
+    }
+}
+
+fn histo_path(cache_dir: &Path, key: &str) -> PathBuf {
+    cache_dir.join(format!("{key}.histo"))
+}
+
+/// 변환 전 히스토그램(채널 3 × 64칸, little-endian u32). 없거나 길이가 다르면 None.
+fn read_histo(cache_dir: &Path, key: &str) -> Option<[[u32; 64]; 3]> {
+    let bytes = std::fs::read(histo_path(cache_dir, key)).ok()?;
+    if bytes.len() != 64 * 3 * 4 {
+        return None;
+    }
+    let mut bins = [[0u32; 64]; 3];
+    for ch in 0..3 {
+        for i in 0..64 {
+            let o = (ch * 64 + i) * 4;
+            bins[ch][i] = u32::from_le_bytes(bytes[o..o + 4].try_into().ok()?);
+        }
+    }
+    Some(bins)
+}
+
+fn write_histo(cache_dir: &Path, key: &str, bins: &[[u32; 64]; 3]) {
+    let mut bytes = Vec::with_capacity(64 * 3 * 4);
+    for ch in 0..3 {
+        for i in 0..64 {
+            bytes.extend_from_slice(&bins[ch][i].to_le_bytes());
+        }
+    }
+    let _ = std::fs::write(histo_path(cache_dir, key), bytes);
+}
+
 fn entry_path(cache_dir: &Path, key: &str) -> PathBuf {
     cache_dir.join(format!("{key}.jpg"))
 }
@@ -95,8 +134,9 @@ pub fn load(cache_dir: &Path, key: &str) -> Option<DecodedImage> {
         width,
         height,
         rgba: rgba.into_raw(),
-        color_managed: true, // 저장 시점에 이미 sRGB로 매니징됨
+        color_managed: true, // 저장 시점에 이미 표시 색으로 매니징됨
         full_raw: false,
+        source_histo: read_histo(cache_dir, key),
     })
 }
 
@@ -129,10 +169,17 @@ pub fn store(cache_dir: &Path, key: &str, img: &DecodedImage) {
     }
     let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp_path = cache_dir.join(format!(".tmp-{}-{}", std::process::id(), seq));
-    if std::fs::write(&tmp_path, &buf).is_ok()
-        && std::fs::rename(&tmp_path, entry_path(cache_dir, key)).is_err()
-    {
+    if std::fs::write(&tmp_path, &buf).is_err() {
+        return;
+    }
+    if std::fs::rename(&tmp_path, entry_path(cache_dir, key)).is_err() {
         let _ = std::fs::remove_file(&tmp_path); // rename 실패 시 임시파일 청소.
+        return;
+    }
+    if let Some(bins) = &img.source_histo {
+        write_histo(cache_dir, key, bins);
+    } else {
+        let _ = std::fs::remove_file(histo_path(cache_dir, key));
     }
 }
 
@@ -188,6 +235,12 @@ pub fn trim_ext(cache_dir: &Path, max_bytes: u64, ext: &str) {
             }
             if std::fs::remove_file(&p).is_ok() {
                 total = total.saturating_sub(sz);
+                if p.extension().and_then(|s| s.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("jpg"))
+                {
+                    let mut side = p.clone();
+                    side.set_extension("histo");
+                    let _ = std::fs::remove_file(side);
+                }
             }
         }
     }
@@ -243,5 +296,33 @@ mod tests {
             std::fs::write(&p, b"x").unwrap();
             assert_eq!(thumb_key(&p, 320).unwrap(), old_key(&p, 320), "{name}");
         }
+    }
+
+    #[test]
+    fn output_tag_zero_keeps_the_key() {
+        assert_eq!(with_output_tag("abcd".into(), 0), "abcd");
+        assert_eq!(with_output_tag("abcd".into(), 1), "abcd-0000000000000001");
+    }
+
+    #[test]
+    fn histo_sidecar_roundtrips_and_missing_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let cdir = dir.path();
+        let mut bins = [[0u32; 64]; 3];
+        bins[0][32] = 7;
+        let img = DecodedImage {
+            width: 2,
+            height: 2,
+            rgba: vec![255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255],
+            color_managed: true,
+            full_raw: false,
+            source_histo: Some(bins),
+        };
+        store(cdir, "k", &img);
+        let got = load(cdir, "k").unwrap();
+        assert_eq!(got.source_histo, Some(bins));
+        let bare = DecodedImage { source_histo: None, ..img };
+        store(cdir, "k", &bare);
+        assert_eq!(load(cdir, "k").unwrap().source_histo, None);
     }
 }

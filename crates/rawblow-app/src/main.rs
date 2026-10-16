@@ -9,6 +9,11 @@ mod logo;
 mod map;
 #[cfg(target_os = "macos")]
 mod macos_locale;
+#[cfg(target_os = "macos")]
+mod macos_color;
+#[cfg(target_os = "windows")]
+mod windows_color;
+mod display_color;
 mod theme;
 mod widgets;
 mod worker;

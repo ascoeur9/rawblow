@@ -31,6 +31,18 @@ winresource = "0.1"
 # 시스템 언어를 따르도록(이슈 #12) Objective-C 런타임을 통해 NSUserDefaults 조정.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
+# 광색역 표시(#122): NSView에서 CAMetalLayer를 찾는다.
+raw-window-handle = "0.6"
+
+# 광색역 표시(#122): 창이 있는 모니터의 ICC와 ACM/HDR 여부.
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
+windows-sys = { version = "0.52", features = [
+    "Win32_Devices_Display",
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dependencies]
 rawblow-core = { path = "../rawblow-core" }

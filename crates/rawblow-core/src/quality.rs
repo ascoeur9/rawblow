@@ -741,6 +741,7 @@ mod tests {
             rgba,
             color_managed: false,
             full_raw: false,
+            source_histo: None,
         }
     }
 
@@ -1020,6 +1021,7 @@ mod tests {
             rgba: Vec::new(),
             color_managed: false,
             full_raw: false,
+            source_histo: None,
         };
         let q = analyze(&img);
         assert_eq!(q.tilt.confidence, 0.0);

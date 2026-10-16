@@ -641,6 +641,11 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "단일↔그리드" => ("Single / Grid", "シングル / グリッド"),
         "원본(ORIG)" => ("Original (ORIG)", "原寸（ORIG）"),
         "히스토그램" => ("Histogram", "ヒストグラム"),
+        "광색역 표시" => ("Wide gamut", "広色域表示"),
+        "현재 출력: sRGB" => ("Output: sRGB", "現在の出力: sRGB"),
+        "현재 출력: Display P3" => ("Output: Display P3", "現在の出力: Display P3"),
+        "현재 출력: sRGB(폴백)" => ("Output: sRGB (fallback)", "現在の出力: sRGB（フォールバック）"),
+        "현재 출력: " => ("Output: ", "現在の出力: "),
         "촬영 위치 지도" => ("Location map", "撮影地マップ"),
         "AF 포인트" => ("AF points", "AFポイント"),
         "라벨 필터 순환" => ("Cycle label filter", "ラベルフィルタ切替"),
@@ -892,6 +897,13 @@ mod tests {
             "AI culling done · Good 3 · Culled 1"
         );
         assert_eq!(trf(Lang::Ja, "1 ~ {} 사이 번호", &["42"]), "1～42 の番号");
+    }
+
+    #[test]
+    fn wide_gamut_status_is_translated() {
+        assert_eq!(tr(Lang::En, "광색역 표시"), "Wide gamut");
+        assert_eq!(tr(Lang::Ja, "현재 출력: sRGB(폴백)"), "現在の出力: sRGB（フォールバック）");
+        assert_eq!(tr(Lang::En, "현재 출력: Display P3"), "Output: Display P3");
     }
 
     #[test]
