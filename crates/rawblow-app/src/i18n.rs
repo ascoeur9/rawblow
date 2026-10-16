@@ -454,6 +454,10 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         ),
         "초점(선명도)" => ("Focus (Sharpness)", "フォーカス（シャープネス）"),
         "노출" => ("Exposure", "露出"),
+        "색온도" => ("Temperature", "色温度"),
+        "대비" => ("Contrast", "コントラスト"),
+        "그레인" => ("Grain", "グレイン"),
+        "조정 끄기" => ("Adjustment off", "調整オフ"),
         "수평 기울기" => ("Horizon Tilt", "水平の傾き"),
         "미적(구도) AI" => ("Aesthetic (Composition) AI", "美的（構図）AI"),
         "흐림 임계" => ("Blur Threshold", "ブレしきい値"),
@@ -935,7 +939,7 @@ mod tests {
     #[test]
     fn help_overlay_strings_are_translated() {
         // #66 단축키 치트시트: 새 키들이 En/Ja에서 한국어로 폴백되지 않는지 스팟체크.
-        for ko in ["단축키", "이동", "채택", "히스토그램", "컬러 태그", "휠"] {
+        for ko in ["단축키", "이동", "채택", "히스토그램", "컬러 태그", "휠", "조정 끄기", "색온도", "대비", "그레인"] {
             assert_ne!(tr(Lang::En, ko), ko, "En 번역 누락: {ko}");
             assert_ne!(tr(Lang::Ja, ko), ko, "Ja 번역 누락: {ko}");
         }

@@ -354,6 +354,11 @@ impl TexCache {
         self.map.contains_key(&id)
     }
 
+    /// 지금 캐시에 남아 있는 항목. 프리뷰 원본 버퍼를 이 집합에 맞춘다(#130).
+    pub fn ids(&self) -> Vec<usize> {
+        self.map.keys().copied().collect()
+    }
+
     /// 현재 캐시된 텍스처 수(계측·벤치용). 릴리즈에선 벤치가 제외돼 미사용일 수 있다.
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
