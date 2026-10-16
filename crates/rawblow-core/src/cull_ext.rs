@@ -475,7 +475,7 @@ mod tests {
             px[2] = rgb[2];
             px[3] = 255;
         }
-        DecodedImage { width: w, height: h, rgba, color_managed: false, full_raw: false }
+        DecodedImage { width: w, height: h, rgba, color_managed: false, full_raw: false, source_histo: None }
     }
 
     fn gradient(w: u32, h: u32, seed: u32) -> DecodedImage {
@@ -490,7 +490,7 @@ mod tests {
                 rgba[p + 3] = 255;
             }
         }
-        DecodedImage { width: w, height: h, rgba, color_managed: false, full_raw: false }
+        DecodedImage { width: w, height: h, rgba, color_managed: false, full_raw: false, source_histo: None }
     }
 
     // ---- Tier1: 파서 ----

@@ -932,6 +932,7 @@ fn thumb_cache_roundtrip() {
         rgba: vec![255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255],
         color_managed: true,
         full_raw: false,
+        source_histo: None,
     };
     let key = "deadbeef";
     assert!(cache::load(&cdir, key).is_none(), "처음엔 미스");
@@ -956,6 +957,7 @@ fn thumb_cache_trim_enforces_limit() {
         rgba: vec![128u8; 8 * 8 * 4],
         color_managed: true,
         full_raw: false,
+        source_histo: None,
     };
     for i in 0..6 {
         cache::store(&cdir, &format!("key{i:02}"), &img);

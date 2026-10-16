@@ -303,20 +303,10 @@ pub(super) struct Histo {
 
 /// 디코딩된 RGBA에서 히스토그램을 계산(대용량은 서브샘플로 비용 제한).
 pub(super) fn compute_histo(rgba: &[u8]) -> Histo {
-    let mut bins = [[0u32; 64]; 3];
-    let px = rgba.len() / 4;
-    if px == 0 {
-        return Histo { bins, max: 1 };
-    }
-    let step = (px / 200_000).max(1);
-    let mut i = 0;
-    while i < px {
-        let o = i * 4;
-        bins[0][rgba[o] as usize >> 2] += 1;
-        bins[1][rgba[o + 1] as usize >> 2] += 1;
-        bins[2][rgba[o + 2] as usize >> 2] += 1;
-        i += step;
-    }
+    histo_from_bins(rawblow_core::color::source_histogram(rgba))
+}
+
+pub(super) fn histo_from_bins(bins: [[u32; 64]; 3]) -> Histo {
     let max = bins.iter().flatten().copied().max().unwrap_or(1).max(1);
     Histo { bins, max }
 }

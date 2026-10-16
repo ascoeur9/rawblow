@@ -185,7 +185,7 @@ If the app crashes, a `rawblow_crash.log` file is created on your desktop automa
 
 ## Known limitations
 
-- Color management goes from the embedded ICC profile to sRGB. The monitor's ICC profile is not consulted; sRGB is assumed.
+- The default converts an embedded ICC profile to sRGB. With wide-gamut display on, macOS uses Display P3, Windows uses the monitor ICC of that window, and Linux stays on sRGB.
 - There is no screen for rebinding shortcuts. The defaults are fixed.
 - Some formats such as HEIC rely on the platform decoder.
 - Original view displays within the GPU texture limit (roughly 8192 px on the long edge).

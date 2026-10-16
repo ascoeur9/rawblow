@@ -756,6 +756,17 @@ impl RawBlowApp {
                             self.show_af = self.cfg.show_af;
                             self.persist_cfg();
                         }
+                        settings_inner_rule(ui);
+                        let wide_status = self.wide_gamut_status();
+                        if settings_toggle_row(
+                            ui,
+                            SIcon::Hist,
+                            tr(lang, "광색역 표시"),
+                            &mut self.cfg.wide_gamut,
+                            &wide_status,
+                        ) {
+                            self.persist_cfg();
+                        }
                     });
 
                     // ── PHOTO BACKGROUND (#36): 사진 표시 화면 배경색 — 프리셋 + HEX/RGB ──
@@ -1709,6 +1720,20 @@ mod tests {
         assert!(!qa.app.show_settings, "Esc가 설정을 닫는다");
     }
 
+    #[test]
+    fn wide_gamut_toggle_saves_and_shows_fallback_on_linux_os_color() {
+        let mut qa = SettingsQa::new();
+        assert!(!qa.app.cfg.wide_gamut);
+        let off = qa.paint();
+        assert!(off.iter().any(|(t, _)| t == "현재 출력: sRGB"));
+        let before = RawBlowApp::settings_qa_persist_count();
+        qa.click_exact("광색역 표시");
+        assert!(qa.app.cfg.wide_gamut);
+        assert!(RawBlowApp::settings_qa_persist_count() > before);
+        let on = qa.paint();
+        assert!(on.iter().any(|(t, _)| t == "현재 출력: sRGB(폴백)"));
+    }
+
     /// 리스타일 이후에도 모든 옵션/액션 문자열이 설정 경로에 남아 있는지.
     #[test]
     fn settings_qa_source_still_has_every_named_control() {
@@ -1755,6 +1780,8 @@ mod tests {
             "check_updates",
             "show_map",
             "show_af",
+            "광색역 표시",
+            "wide_gamut",
             "settings_row_head",
             "preload",
             "grid_cols",

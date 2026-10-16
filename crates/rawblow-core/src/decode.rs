@@ -7,7 +7,7 @@
 //! - PNG/TIFF/WEBP 등은 `image` 크레이트로 디코딩 후 다운스케일.
 //! - RAW 풀 디코딩은 `fullraw` 피처(`imagepipe`)에서 1:1·D키 시점에만.
 //!
-//! 모든 경로는 `finish()`로 모여 EXIF Orientation 회전 → 다운스케일 → ICC→sRGB
+//! 모든 경로는 `finish()`로 모여 EXIF Orientation 회전 → 다운스케일 → 표시 색 변환
 //! 변환을 일관 적용한다.
 
 use crate::model::{ext_lower, kind_of, Kind};
@@ -74,6 +74,8 @@ pub struct DecodedImage {
     pub rgba: Vec<u8>,
     pub color_managed: bool,
     pub full_raw: bool,
+    /// 모니터 변환 전 버퍼의 히스토그램. 없으면 표시 픽셀로 계산한다.
+    pub source_histo: Option<[[u32; 64]; 3]>,
 }
 
 #[derive(Debug)]
@@ -110,8 +112,57 @@ pub struct DecodeOptions {
     pub max_edge: Option<u32>,
 }
 
-/// 경로를 종류에 따라 디코딩한다.
+/// 이 디코드가 쓸 표시 색. `finish`가 읽는다. 요청마다 가드가 되돌린다.
+struct DecodeColor {
+    output: crate::color::OutputColor,
+    color_space: Option<u16>,
+    interop: Option<String>,
+}
+
+thread_local! {
+    static DECODE_COLOR: std::cell::RefCell<DecodeColor> = std::cell::RefCell::new(DecodeColor {
+        output: crate::color::OutputColor::Srgb,
+        color_space: None,
+        interop: None,
+    });
+}
+
+struct DecodeColorGuard;
+
+impl Drop for DecodeColorGuard {
+    fn drop(&mut self) {
+        DECODE_COLOR.with(|c| {
+            let mut c = c.borrow_mut();
+            c.output = crate::color::OutputColor::Srgb;
+            c.color_space = None;
+            c.interop = None;
+        });
+    }
+}
+
+/// 경로를 종류에 따라 디코딩한다. 목적지는 sRGB.
 pub fn decode_file(path: &Path, opts: DecodeOptions) -> Result<DecodedImage, DecodeError> {
+    decode_file_to(path, opts, &crate::color::OutputColor::Srgb)
+}
+
+/// `decode_file`과 같고, 표시 목적지만 바꾼다. 프로파일이 같으면 변환 횟수는 디코드당 한 번이다.
+pub fn decode_file_to(
+    path: &Path,
+    opts: DecodeOptions,
+    output: &crate::color::OutputColor,
+) -> Result<DecodedImage, DecodeError> {
+    let (color_space, interop) = crate::meta::color_hint(path);
+    DECODE_COLOR.with(|c| {
+        let mut c = c.borrow_mut();
+        c.output = output.clone();
+        c.color_space = color_space;
+        c.interop = interop;
+    });
+    let _guard = DecodeColorGuard;
+    decode_file_inner(path, opts)
+}
+
+fn decode_file_inner(path: &Path, opts: DecodeOptions) -> Result<DecodedImage, DecodeError> {
     // HEIC는 heif-oxide가 irot를 이미 적용하므로 EXIF orientation 파싱(파일 한 번 더 읽기)을
     // 건너뛰고 바로 분기한다(#97).
     if crate::heif::is_heic_path(path) {
@@ -790,16 +841,24 @@ pub(crate) fn finish(
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
     let mut buf = rgba.into_raw();
-    let color_managed = match icc {
-        Some(profile) if !profile.is_empty() => crate::color::convert_to_srgb(&mut buf, &profile),
-        _ => full_raw,
-    };
+    let source_histo = Some(crate::color::source_histogram(&buf));
+    let (output, color_space, interop) = DECODE_COLOR.with(|c| {
+        let c = c.borrow();
+        (c.output.clone(), c.color_space, c.interop.clone())
+    });
+    let input = crate::color::choose_input(icc.as_deref(), color_space, interop.as_deref());
+    let converted = crate::color::convert_display(&mut buf, input, &output);
+    // 프로파일이 없으면(빈 슬라이스 포함) 예전과 같이 풀 RAW 현상만 매니징된 것으로 본다.
+    // 변환이 성공하면 프리뷰 JPEG도 매니징이다.
+    let had_profile = icc.as_ref().is_some_and(|p| !p.is_empty());
+    let color_managed = converted || (!had_profile && full_raw);
     DecodedImage {
         width,
         height,
         rgba: buf,
         color_managed,
         full_raw,
+        source_histo,
     }
 }
 

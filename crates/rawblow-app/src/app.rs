@@ -222,6 +222,14 @@ pub struct RawBlowApp {
     decode_fails: std::collections::HashMap<usize, u8>,
     histo: std::collections::HashMap<usize, Histo>,
     generation: u64,
+    /// 워커에 적용한 출력 캐시 태그. None이면 아직 한 프레임도 적용하지 않음(#122).
+    color_tag: Option<u64>,
+    /// 이 창에서 조사한 OS 색. 설정 행의 출력 문구가 읽는다.
+    os_color: rawblow_core::color::OsColor,
+    /// Windows 모니터 프로파일 파일 이름. 없으면 빈 문자열.
+    monitor_name: String,
+    /// 광색역이 켜진 채 sRGB로 떨어진 상태를 한 번만 로그한다.
+    color_fallback_logged: bool,
 
     sidecar_dirty: bool,
     // 지금 items를 만든 스캔이 재귀였는지. 설정(cfg.recursive)은 재스캔 없이 바뀔 수 있어
@@ -351,6 +359,21 @@ struct MapState {
     failed: bool,
 }
 
+fn initial_os_color() -> rawblow_core::color::OsColor {
+    #[cfg(target_os = "macos")]
+    {
+        rawblow_core::color::OsColor::MacOs { layer_ok: false }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        rawblow_core::color::OsColor::Windows { icc: None, acm_or_hdr: false }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        rawblow_core::color::OsColor::Linux
+    }
+}
+
 impl RawBlowApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::apply(&cc.egui_ctx);
@@ -427,6 +450,10 @@ impl RawBlowApp {
             decode_fails: std::collections::HashMap::new(),
             histo: std::collections::HashMap::new(),
             generation: 0,
+            color_tag: None,
+            os_color: initial_os_color(),
+            monitor_name: String::new(),
+            color_fallback_logged: false,
             sidecar_dirty: false,
             scan_recursive: false,
             last_save: Instant::now(),
@@ -498,6 +525,57 @@ impl RawBlowApp {
     }
 
     /// 설정 화면·정렬 변경이 쓰는 즉시 저장. 테스트에서는 사용자 config.json을 건드리지 않는다.
+    /// 설정과 OS 상태를 표시 색으로 접어 워커에 넣는다. 태그가 바뀌면 텍스처를 버리고 다시 디코드한다.
+    fn apply_display_color(&mut self, frame: &eframe::Frame) {
+        let (os, name) = crate::display_color::probe(frame, self.cfg.wide_gamut);
+        self.os_color = os;
+        self.monitor_name = name;
+        let out = rawblow_core::color::effective_output(self.cfg.wide_gamut, &self.os_color);
+        let fallback = self.cfg.wide_gamut && matches!(out, rawblow_core::color::OutputColor::Srgb);
+        if fallback && !self.color_fallback_logged {
+            log::info!("wide gamut display fell back to sRGB");
+            self.color_fallback_logged = true;
+        } else if !fallback {
+            self.color_fallback_logged = false;
+        }
+        let tag = out.cache_tag();
+        if self.color_tag == Some(tag) {
+            return;
+        }
+        let first = self.color_tag.is_none();
+        self.color_tag = Some(tag);
+        self.worker.set_output(out);
+        if first {
+            return;
+        }
+        self.cache.retire_all();
+        self.thumbs.retire_all();
+        self.generation = self.generation.wrapping_add(1);
+        self.worker.set_generation(self.generation);
+        self.pending_preview.clear();
+        self.pending_thumb.clear();
+        self.pending_thumb_prio.clear();
+        self.pending_prefetch.clear();
+        self.histo.clear();
+    }
+
+    /// 표시 섹션의 광색역 행에 붙는 현재 출력.
+    fn wide_gamut_status(&self) -> String {
+        if !self.cfg.wide_gamut {
+            return tr(self.lang, "현재 출력: sRGB").to_string();
+        }
+        let out = rawblow_core::color::effective_output(true, &self.os_color);
+        match out {
+            rawblow_core::color::OutputColor::DisplayP3 => {
+                tr(self.lang, "현재 출력: Display P3").to_string()
+            }
+            rawblow_core::color::OutputColor::Icc(_) if !self.monitor_name.is_empty() => {
+                format!("{}{}", tr(self.lang, "현재 출력: "), self.monitor_name)
+            }
+            _ => tr(self.lang, "현재 출력: sRGB(폴백)").to_string(),
+        }
+    }
+
     fn persist_cfg(&self) {
         #[cfg(test)]
         {
@@ -580,6 +658,10 @@ impl RawBlowApp {
             decode_fails: std::collections::HashMap::new(),
             histo: std::collections::HashMap::new(),
             generation: 0,
+            color_tag: None,
+            os_color: initial_os_color(),
+            monitor_name: String::new(),
+            color_fallback_logged: false,
             sidecar_dirty: false,
             scan_recursive: false,
             last_save: Instant::now(),
@@ -1567,11 +1649,12 @@ impl RawBlowApp {
 }
 
 impl eframe::App for RawBlowApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // 프레임 시간 측정.
         let now = Instant::now();
         self.frame_ms = now.duration_since(self.last_frame).as_secs_f32() * 1000.0;
         self.last_frame = now;
+        self.apply_display_color(frame);
 
         // [개발 전용] 벤치 모드: env RB_BENCH 설정 시 그리드를 자동 스크롤하며 썸네일 채움을 기록.
         // 디버그 빌드에만 포함(릴리즈 바이너리에는 들어가지 않음).
@@ -2238,6 +2321,8 @@ mod tests {
             height: None,
             orientation: 1,
             gps: Some(rawblow_core::meta::GpsCoord { lat, lon, alt: None }),
+            color_space: None,
+            interop_index: None,
         });
     }
 
