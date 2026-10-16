@@ -8,6 +8,7 @@ use eframe::egui;
 use egui::{Align, Align2, Color32, Layout, Pos2, Rect, Rounding, Sense, Stroke, Vec2};
 use rawblow_core::cache;
 use rawblow_core::config::{self, AiCullTarget, ClipIqaBackbone, Config, Lang, TransferDestMode, ViewCarry};
+use rawblow_core::shortcut::{Resolve, ShortcutAction};
 use rawblow_core::quality::Verdict;
 use rawblow_core::meta::{read_exif, ExifInfo};
 use rawblow_core::organize::{self, OrganizeKey, OrganizeRequest};
@@ -1822,109 +1823,48 @@ impl RawBlowApp {
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
-        let (keys, modifiers, scroll) = ctx.input(|i| {
-            (
-                i.keys_down.clone(),
-                i.modifiers,
-                i.raw_scroll_delta.y,
-            )
-        });
-        let _ = keys;
+        let (modifiers, scroll) = ctx.input(|i| (i.modifiers, i.raw_scroll_delta.y));
+        let lang = self.lang;
 
         ctx.input(|i| {
             use egui::Key;
             for ev in &i.events {
-                if let egui::Event::Key { key, pressed: true, modifiers, .. } = ev {
-                    let cmd = modifiers.command;
-                    match key {
-                        // 그리드: ←/→ = ±1, ↑/↓ = ±한 행(cols). 단일뷰: 모두 ±1.
-                        Key::ArrowRight => self.nav(1),
-                        Key::ArrowLeft => self.nav(-1),
-                        Key::ArrowDown => {
-                            let d = self.row_step();
-                            self.nav(d);
-                        }
-                        Key::ArrowUp => {
-                            let d = self.row_step();
-                            self.nav(-d);
-                        }
-                        Key::Q => self.set_label(Label::Pick),
-                        Key::W => self.set_label(Label::Hold),
-                        Key::E if cmd => self.open_transfer(), // Ctrl/⌘E 전송
-                        Key::E => self.set_label(Label::Reject),
-                        Key::R => self.set_label(Label::Unrated),
-                        // 컬러 태그(#27): Shift+1~5 = 5색(Red/Yellow/Green/Blue/Purple), Shift+0 = 해제.
-                        // 별점(1~5)·라벨(QWER)과 독립. shift 아래 별점 arm보다 먼저 와야 가로채진다.
-                        Key::Num1 if modifiers.shift && !cmd => self.set_tag(ColorTag::Orange),
-                        Key::Num2 if modifiers.shift && !cmd => self.set_tag(ColorTag::Pink),
-                        Key::Num3 if modifiers.shift && !cmd => self.set_tag(ColorTag::Teal),
-                        Key::Num4 if modifiers.shift && !cmd => self.set_tag(ColorTag::Blue),
-                        Key::Num5 if modifiers.shift && !cmd => self.set_tag(ColorTag::Purple),
-                        Key::Num0 if modifiers.shift && !cmd => self.set_tag(ColorTag::None),
-                        // 별점(#23): 1~5로 지정, `(백틱)으로 해제. 라벨(QWER)과 독립·중복 사용 가능.
-                        // !cmd 가드: ⌘/Ctrl+숫자(타 앱 탭 전환 습관 등)가 실수로 별점을 매기지 않게.
-                        Key::Num1 if !cmd => self.set_stars(1, true),
-                        Key::Num2 if !cmd => self.set_stars(2, true),
-                        Key::Num3 if !cmd => self.set_stars(3, true),
-                        Key::Num4 if !cmd => self.set_stars(4, true),
-                        Key::Num5 if !cmd => self.set_stars(5, true),
-                        Key::Backtick if !cmd => self.set_stars(0, true),
-                        Key::T => {
-                            self.view = match self.view {
-                                ViewMode::Single => ViewMode::Grid,
-                                ViewMode::Grid => ViewMode::Single,
+                let egui::Event::Key { key, pressed: true, modifiers, .. } = ev else {
+                    continue;
+                };
+                match key {
+                    // 화살표·Esc는 재지정하지 않는다(#123).
+                    // 그리드: ←/→ = ±1, ↑/↓ = ±한 행(cols). 단일뷰: 모두 ±1.
+                    Key::ArrowRight => self.nav(1),
+                    Key::ArrowLeft => self.nav(-1),
+                    Key::ArrowDown => self.nav(self.row_step()),
+                    Key::ArrowUp => self.nav(-self.row_step()),
+                    Key::Escape => self.fullscreen = false,
+                    // Enter·?·F1은 루프 아래에서 소비한다. 여기선 저장된 맵으로 넘기지 않는다.
+                    _ if shortcut_key_locked(*key, *modifiers) => {}
+                    _ => {
+                        let chord = chord_from_key(*key, *modifiers);
+                        match self.cfg.shortcuts.resolve(&chord) {
+                            Resolve::One(action) => self.apply_shortcut(action),
+                            Resolve::Conflict(actions) => {
+                                let text = actions
+                                    .iter()
+                                    .map(|a| shortcut_action_label(&self.cfg, lang, *a))
+                                    .collect::<Vec<_>>()
+                                    .join(" · ");
+                                self.toast_info(text);
+                            }
+                            Resolve::None => {
+                                // B(그리드 일괄)·Ctrl/⌘O(폴더)는 그 키를 저장된 맵이 쓰지 않을 때만.
+                                if *key == Key::B && self.view == ViewMode::Grid {
+                                    self.bulk_open = true;
+                                    self.bulk_searched = false;
+                                    self.bulk_hits.clear();
+                                } else if *key == Key::O && modifiers.command {
+                                    self.pick_folder();
+                                }
                             }
                         }
-                        Key::I => self.show_exif = !self.show_exif,
-                        Key::H => self.show_hist = !self.show_hist,
-                        // GPS 미니 지도(#38) / AF 포인트(#37): 토글 즉시 저장(요구: 설정 유지).
-                        Key::M => {
-                            self.show_map = !self.show_map;
-                            self.cfg.show_map = self.show_map;
-                            let _ = config::save(&self.cfg);
-                        }
-                        Key::A => {
-                            self.show_af = !self.show_af;
-                            self.cfg.show_af = self.show_af;
-                            let _ = config::save(&self.cfg);
-                        }
-                        // 컬링 되돌리기(#78): Ctrl/⌘Z = 취소, Ctrl/⌘⇧Z·Ctrl/⌘Y = 재실행.
-                        // cmd 가드가 있어 아래 plain Z(확대 토글)와 겹치지 않는다(위가 먼저 매칭).
-                        Key::Z if cmd && modifiers.shift => self.redo(),
-                        Key::Z if cmd => self.undo(),
-                        Key::Y if cmd => self.redo(),
-                        Key::Space | Key::Z => {
-                            // 창맞춤 ↔ 1:1 토글. 1:1은 **실측**(원본 1픽셀 = 화면 1픽셀)이다(#48).
-                            if self.fit {
-                                self.request_one_to_one();
-                                self.pan = Vec2::ZERO;
-                                // #49: AF 포인트 표시 중이면 측거점 기준으로 확대(photo_view가 pan 보정).
-                                self.af_zoom_pending = self.show_af;
-                            } else {
-                                self.fit = true;
-                                self.pan = Vec2::ZERO;
-                                self.af_zoom_pending = false;
-                            }
-                        }
-                        Key::D => self.full_raw = !self.full_raw, // ORIG(원본 보기) 토글
-                        Key::F => {
-                            let next = self.filter.next();
-                            self.apply_label_filter(next);
-                        }
-                        Key::G => self.jump_open = true,
-                        Key::B if self.view == ViewMode::Grid => {
-                            self.bulk_open = true;
-                            self.bulk_searched = false;
-                            self.bulk_hits.clear();
-                        }
-                        Key::F11 => self.fullscreen = !self.fullscreen,
-                        Key::Escape => self.fullscreen = false,
-                        Key::O if cmd => self.pick_folder(),
-                        // 전송 Enter(#63)와 단축키 치트시트 열기(#66, F1·?·⇧/)는 이 이벤트 루프에서
-                        // 처리하지 않고 아래에서 consume_key로 "소비"한다 — 소비하지 않으면 같은
-                        // 프레임에 새로 열린 다이얼로그/오버레이가 그 키를 다시 읽어 열림과 동시에
-                        // 시작/닫힘이 일어난다. (자세한 이유는 루프 종료 뒤 주석 참조.)
-                        _ => {}
                     }
                 }
             }
@@ -1958,6 +1898,70 @@ impl RawBlowApp {
             } else if scroll > 1.0 {
                 self.advance(-1);
             }
+        }
+    }
+
+    /// 저장된 단축키 하나(#123). 키 판정은 `ShortcutMap`이 끝낸 뒤라 여기서는 동작만 실행한다.
+    fn apply_shortcut(&mut self, action: ShortcutAction) {
+        match action {
+            ShortcutAction::Pick => self.set_label(Label::Pick),
+            ShortcutAction::Hold => self.set_label(Label::Hold),
+            ShortcutAction::Reject => self.set_label(Label::Reject),
+            ShortcutAction::Clear => self.set_label(Label::Unrated),
+            ShortcutAction::Star1 => self.set_stars(1, true),
+            ShortcutAction::Star2 => self.set_stars(2, true),
+            ShortcutAction::Star3 => self.set_stars(3, true),
+            ShortcutAction::Star4 => self.set_stars(4, true),
+            ShortcutAction::Star5 => self.set_stars(5, true),
+            ShortcutAction::StarClear => self.set_stars(0, true),
+            ShortcutAction::Tag1 => self.set_tag(ColorTag::Orange),
+            ShortcutAction::Tag2 => self.set_tag(ColorTag::Pink),
+            ShortcutAction::Tag3 => self.set_tag(ColorTag::Teal),
+            ShortcutAction::Tag4 => self.set_tag(ColorTag::Blue),
+            ShortcutAction::Tag5 => self.set_tag(ColorTag::Purple),
+            ShortcutAction::TagClear => self.set_tag(ColorTag::None),
+            ShortcutAction::ToggleView => {
+                self.view = match self.view {
+                    ViewMode::Single => ViewMode::Grid,
+                    ViewMode::Grid => ViewMode::Single,
+                }
+            }
+            ShortcutAction::Fit => {
+                // 창맞춤 ↔ 1:1 토글. 1:1은 실측(원본 1픽셀 = 화면 1픽셀)이다(#48).
+                if self.fit {
+                    self.request_one_to_one();
+                    self.pan = Vec2::ZERO;
+                    // #49: AF 포인트 표시 중이면 측거점 기준으로 확대(photo_view가 pan 보정).
+                    self.af_zoom_pending = self.show_af;
+                } else {
+                    self.fit = true;
+                    self.pan = Vec2::ZERO;
+                    self.af_zoom_pending = false;
+                }
+            }
+            ShortcutAction::FullRaw => self.full_raw = !self.full_raw,
+            ShortcutAction::Exif => self.show_exif = !self.show_exif,
+            ShortcutAction::Histogram => self.show_hist = !self.show_hist,
+            ShortcutAction::Filter => {
+                let next = self.filter.next();
+                self.apply_label_filter(next);
+            }
+            ShortcutAction::Transfer => self.open_transfer(),
+            ShortcutAction::Jump => self.jump_open = true,
+            ShortcutAction::Fullscreen => self.fullscreen = !self.fullscreen,
+            // GPS 미니 지도(#38) / AF 포인트(#37): 토글 즉시 저장.
+            ShortcutAction::Map => {
+                self.show_map = !self.show_map;
+                self.cfg.show_map = self.show_map;
+                let _ = config::save(&self.cfg);
+            }
+            ShortcutAction::Af => {
+                self.show_af = !self.show_af;
+                self.cfg.show_af = self.show_af;
+                let _ = config::save(&self.cfg);
+            }
+            ShortcutAction::Undo => self.undo(),
+            ShortcutAction::Redo => self.redo(),
         }
     }
 
