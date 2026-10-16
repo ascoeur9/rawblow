@@ -14,6 +14,7 @@ pub mod cull_ext;
 pub mod decode;
 pub mod face_detect;
 pub mod fsio;
+pub mod guides;
 pub mod heif;
 pub mod heif_index;
 pub mod meta;

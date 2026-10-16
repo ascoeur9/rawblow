@@ -745,7 +745,20 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
             "Shows where the photo was taken on a mini map. Press M to turn it on or off.",
             "撮影位置をミニマップに表示します。Mキーでオン・オフします。",
         ),
-        "AF 포인트를 표시합니다. A 키로 켜고 끕니다." => ("Shows AF points. Press A to turn them on or off.", "AFポイントを表示します。Aキーでオン・オフします。"),
+        "AF 포인트를 표시합니다. A 키로 켜고 끕니다." => ("Shows AF points. Press A to turn them on or off.", "AFポイントを表示します。Aキーでオン・オフ합니다。"),
+        // #90 구도 보조선. 툴바·설정·치트시트 라벨.
+        "구도" => ("Guides", "ガイド"),
+        "구도선" => ("Guides", "ガイド"),
+        "삼분할" => ("Thirds", "三分割"),
+        "중앙 십자" => ("Center cross", "中央十字"),
+        "정방형" => ("Square", "正方形"),
+        "사용자 지정" => ("Custom", "カスタム"),
+        "세로 선" => ("Vertical lines", "縦線"),
+        "가로 선" => ("Horizontal lines", "横線"),
+        "선 추가" => ("Add line", "線を追加"),
+        "선 빼기" => ("Remove line", "線を消す"),
+        "굵기" => ("Weight", "太さ"),
+        "불투명도" => ("Opacity", "不透明度"),
         "사진 보기 화면의 배경색을 정합니다." => ("Sets the background color behind the photo.", "写真表示画面の背景色を設定します。"),
         "셀렉하면 다음 사진으로 넘어갑니다." => ("Moves to the next photo after you label one.", "セレクトすると次の写真に進みます。"),
         "셀렉 단축키입니다." => ("Culling shortcuts.", "セレクトのショートカットです。"),
@@ -930,6 +943,14 @@ mod tests {
             trf(Lang::En, "원본 삭제 실패 {} — 원본 파일이 남아 있습니다", &["2"]),
             "Failed to delete 2 originals — the source files remain"
         );
+    }
+
+    #[test]
+    fn guide_overlay_strings_are_translated() {
+        for ko in ["구도", "구도선", "삼분할", "중앙 십자", "정방형", "사용자 지정", "세로 선", "가로 선", "선 추가", "선 빼기", "굵기", "불투명도"] {
+            assert_ne!(tr(Lang::En, ko), ko, "En 번역 누락: {ko}");
+            assert_ne!(tr(Lang::Ja, ko), ko, "Ja 번역 누락: {ko}");
+        }
     }
 
     #[test]
