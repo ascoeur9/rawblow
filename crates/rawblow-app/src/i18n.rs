@@ -323,10 +323,14 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
             "\"Keep current view\" loads ORIG even at fit-to-window — slower moves and more memory. A newly opened folder starts in preview either way.",
             "「現在の表示を維持」はウィンドウ合わせでもORIGを読み込み続けます — 送りが遅くなりメモリも増えます。新しいフォルダはどちらの方式でもプレビューで始まります。",
         ),
-        "단축키 재바인딩 UI는 v1.1 예정 — 현재 기본값 QWER 고정 표시" => (
-            "Shortcut rebinding UI is planned for v1.1 — currently fixed to default QWER",
-            "ショートカット再割り当てUIはv1.1予定 — 現在はデフォルトのQWER固定",
-        ),
+        "별점 1" => ("Star 1", "星1"),
+        "별점 2" => ("Star 2", "星2"),
+        "별점 3" => ("Star 3", "星3"),
+        "별점 4" => ("Star 4", "星4"),
+        "별점 5" => ("Star 5", "星5"),
+        "바꾸기" => ("Change", "変更"),
+        "단축키 초기화" => ("Reset Shortcuts", "ショートカット初期化"),
+        "이 키는 바꿀 수 없습니다" => ("This key can't be changed.", "このキーは変更できません。"),
         "별점 1~5 지정 · ` (백틱)으로 해제 — 라벨(QWER)과 독립으로 동시에 매겨집니다" => (
             "Set rating 1–5 · clear with ` (backtick) — applied independently alongside labels (QWER)",
             "評価1～5を指定 · ` (バッククォート)で解除 — ラベル(QWER)とは独立して同時に付けられます",
@@ -935,7 +939,7 @@ mod tests {
     #[test]
     fn help_overlay_strings_are_translated() {
         // #66 단축키 치트시트: 새 키들이 En/Ja에서 한국어로 폴백되지 않는지 스팟체크.
-        for ko in ["단축키", "이동", "채택", "히스토그램", "컬러 태그", "휠"] {
+        for ko in ["단축키", "이동", "채택", "히스토그램", "컬러 태그", "휠", "바꾸기", "별점 1", "단축키 초기화", "이 키는 바꿀 수 없습니다"] {
             assert_ne!(tr(Lang::En, ko), ko, "En 번역 누락: {ko}");
             assert_ne!(tr(Lang::Ja, ko), ko, "Ja 번역 누락: {ko}");
         }

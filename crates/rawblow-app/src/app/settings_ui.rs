@@ -575,6 +575,8 @@ fn settings_tag_name_row(
 impl RawBlowApp {
     pub(super) fn ui_settings(&mut self, ctx: &egui::Context) {
         let lang = self.lang;
+        // 재지정 대기 중이면 위젯보다 먼저 키를 가져간다. Esc는 대기를 취소하고 설정은 닫지 않는다.
+        self.poll_shortcut_rebind(ctx, lang);
         // 돌아가기(버튼·Esc 공통)와 기본값 복원은 플래그로 모아 패널을 그린 뒤 한 곳에서 실행한다 —
         // 버튼과 Esc가 서로 다른 동작으로 어긋나지 않게(#69).
         let mut go_back = false;
@@ -876,25 +878,7 @@ impl RawBlowApp {
                         }
                     });
 
-                    // 단축키: 지금은 표시만(변경 기능 예정 자리).
-                    settings_section_panel(ui, tr(lang, "단축키"), |ui| {
-                        settings_section_note(ui, tr(lang, "셀렉 단축키입니다."));
-                        let km = &self.cfg.keymap;
-                        let keys = [
-                            (Label::Pick, &km.pick),
-                            (Label::Hold, &km.hold),
-                            (Label::Reject, &km.reject),
-                            (Label::Unrated, &km.clear),
-                        ];
-                        for (i, (lbl, key)) in keys.into_iter().enumerate() {
-                            if i > 0 {
-                                settings_inner_rule(ui);
-                            }
-                            settings_field_row(ui, SIcon::Key, lbl.name(lang), None, |ui| {
-                                kbd(ui, key);
-                            });
-                        }
-                    });
+                    self.ui_shortcut_section(ui, lang);
 
                     settings_section_panel(ui, tr(lang, "전송"), |ui| {
                         // 전송 dest 기본값(#113).
@@ -1198,6 +1182,139 @@ impl RawBlowApp {
         self.show_hist = self.cfg.show_histogram;
     }
 
+    fn poll_shortcut_rebind(&mut self, ctx: &egui::Context, lang: Lang) {
+        let id = egui::Id::new("shortcut_rebind");
+        let Some(action) = ctx.data(|d| d.get_temp::<ShortcutAction>(id)) else {
+            return;
+        };
+        let Some((key, modifiers)) = take_shortcut_key(ctx) else {
+            return;
+        };
+        if key == egui::Key::Escape && !modifiers.command && !modifiers.shift && !modifiers.alt {
+            ctx.data_mut(|d| d.remove::<ShortcutAction>(id));
+            return;
+        }
+        if shortcut_key_locked(key, modifiers) {
+            self.toast_info(tr(lang, "이 키는 바꿀 수 없습니다").to_string());
+            return;
+        }
+        self.cfg.shortcuts.bind(action, chord_from_key(key, modifiers));
+        self.persist_cfg();
+        ctx.data_mut(|d| d.remove::<ShortcutAction>(id));
+    }
+
+    fn ui_shortcut_section(&mut self, ui: &mut egui::Ui, lang: Lang) {
+        let rebind_id = egui::Id::new("shortcut_rebind");
+        let pending = ui.ctx().data(|d| d.get_temp::<ShortcutAction>(rebind_id));
+        let mut preset: Option<&'static str> = None;
+        let mut do_reset = false;
+        let mut arm: Option<ShortcutAction> = None;
+        let mut cancel = false;
+        settings_section_panel(ui, tr(lang, "단축키"), |ui| {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if settings_action_btn_sized(
+                    ui,
+                    "QWER",
+                    theme::INK,
+                    SETTINGS_ACTION_FILL,
+                    SETTINGS_ACTION_STROKE,
+                    Vec2::new(72.0, SETTINGS_BTN_H),
+                )
+                .clicked()
+                {
+                    preset = Some("qwer");
+                }
+                if settings_action_btn_sized(
+                    ui,
+                    "JKL",
+                    theme::INK,
+                    SETTINGS_ACTION_FILL,
+                    SETTINGS_ACTION_STROKE,
+                    Vec2::new(72.0, SETTINGS_BTN_H),
+                )
+                .clicked()
+                {
+                    preset = Some("jkl");
+                }
+                if settings_action_btn(ui, tr(lang, "단축키 초기화")).clicked() {
+                    do_reset = true;
+                }
+            });
+            ui.add_space(8.0);
+            for (i, action) in ShortcutAction::ALL.iter().copied().enumerate() {
+                if i > 0 {
+                    settings_inner_rule(ui);
+                }
+                let label = shortcut_action_label(&self.cfg, lang, action);
+                let captions: Vec<String> = self.cfg.shortcuts.chords(action).iter().map(chord_caption).collect();
+                let waiting = pending == Some(action);
+                settings_field_row(ui, SIcon::Key, &label, None, |ui| {
+                    let btn = if waiting { tr(lang, "취소") } else { tr(lang, "바꾸기") };
+                    if settings_action_btn_sized(
+                        ui,
+                        btn,
+                        theme::INK,
+                        SETTINGS_ACTION_FILL,
+                        SETTINGS_ACTION_STROKE,
+                        Vec2::new(88.0, SETTINGS_BTN_H),
+                    )
+                    .clicked()
+                    {
+                        if waiting {
+                            cancel = true;
+                        } else {
+                            arm = Some(action);
+                        }
+                    }
+                    ui.add_space(8.0);
+                    if waiting {
+                        kbd(ui, "…");
+                    } else {
+                        for cap in captions.iter().rev() {
+                            kbd(ui, cap);
+                            ui.add_space(3.0);
+                        }
+                    }
+                });
+            }
+            let conflicts = self.cfg.shortcuts.conflicts();
+            if !conflicts.is_empty() {
+                ui.add_space(8.0);
+                for (chord, actions) in &conflicts {
+                    let names = actions
+                        .iter()
+                        .map(|a| shortcut_action_label(&self.cfg, lang, *a))
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    ui.horizontal(|ui| {
+                        ui.set_min_height(SETTINGS_ROW_H);
+                        kbd(ui, &chord_caption(chord));
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new(names).font(prop(14.0)).color(theme::WARN));
+                    });
+                }
+            }
+        });
+        if cancel {
+            ui.ctx().data_mut(|d| d.remove::<ShortcutAction>(rebind_id));
+        }
+        if let Some(action) = arm {
+            ui.ctx().data_mut(|d| d.insert_temp(rebind_id, action));
+            ui.ctx().memory_mut(|m| m.stop_text_input());
+        }
+        if let Some(name) = preset {
+            self.cfg.shortcuts.preset(name);
+            self.persist_cfg();
+            ui.ctx().data_mut(|d| d.remove::<ShortcutAction>(rebind_id));
+        }
+        if do_reset {
+            self.cfg.shortcuts.reset();
+            self.persist_cfg();
+            ui.ctx().data_mut(|d| d.remove::<ShortcutAction>(rebind_id));
+        }
+    }
+
     /// 설정 화면 닫기(#69): '돌아가기' 버튼과 Esc가 공유하는 단일 동작 — 저장 + 변경된 상한으로
     /// 캐시 정리 후 닫는다. 한 곳에 모아 버튼과 Esc 동작이 어긋나지 않게 한다.
     fn settings_back(&mut self) {
@@ -1473,7 +1590,8 @@ mod tests {
         }
 
         fn screen() -> egui::Rect {
-            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 4200.0))
+            // 단축키 행(#123)이 길다. 캐시·초기화·정보까지 한 화면에 들어오게 뷰포트를 잡는다.
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 7200.0))
         }
 
         fn raw(&self, events: Vec<egui::Event>) -> egui::RawInput {
@@ -1530,10 +1648,14 @@ mod tests {
         }
 
         fn press_esc(&mut self) {
+            self.press_key(egui::Key::Escape);
+        }
+
+        fn press_key(&mut self, key: egui::Key) {
             self.time += 1.0 / 60.0;
             let _ = self.ctx.run(
                 self.raw(vec![egui::Event::Key {
-                    key: egui::Key::Escape,
+                    key,
                     physical_key: None,
                     pressed: true,
                     repeat: false,
@@ -1692,6 +1814,48 @@ mod tests {
         assert_eq!(qa.app.cfg.recent_folders, vec!["/qa/a".to_string(), "/qa/b".to_string()]);
         assert!(!qa.app.cfg.transfer_defaults.scope_all);
         assert_eq!(qa.app.cfg.organize_defaults.action, Action::Copy);
+    }
+
+    #[test]
+    fn settings_qa_shortcut_buttons_write_the_stored_map() {
+        use rawblow_core::shortcut::{Chord, Resolve, ShortcutAction};
+        let mut qa = SettingsQa::new();
+        qa.click_exact("JKL");
+        assert_eq!(
+            qa.app.cfg.shortcuts.resolve(&Chord::plain("J")),
+            Resolve::One(ShortcutAction::Pick)
+        );
+        assert_eq!(qa.app.cfg.shortcuts.resolve(&Chord::plain("Q")), Resolve::None);
+
+        qa.click_exact("QWER");
+        assert_eq!(
+            qa.app.cfg.shortcuts.resolve(&Chord::plain("Q")),
+            Resolve::One(ShortcutAction::Pick)
+        );
+
+        qa.click_exact("단축키 초기화");
+        assert_eq!(
+            qa.app.cfg.shortcuts.resolve(&Chord::plain("Q")),
+            Resolve::One(ShortcutAction::Pick)
+        );
+
+        // 첫 「바꾸기」는 채택 행이다.
+        qa.click_exact("바꾸기");
+        qa.press_key(egui::Key::U);
+        assert_eq!(
+            qa.app.cfg.shortcuts.resolve(&Chord::plain("U")),
+            Resolve::One(ShortcutAction::Pick)
+        );
+        assert_eq!(qa.app.cfg.shortcuts.resolve(&Chord::plain("Q")), Resolve::None);
+
+        qa.click_exact("바꾸기");
+        qa.press_key(egui::Key::Escape);
+        assert_eq!(
+            qa.app.cfg.shortcuts.resolve(&Chord::plain("U")),
+            Resolve::One(ShortcutAction::Pick),
+            "고정 키(Esc)는 저장되지 않는다"
+        );
+        assert!(qa.app.show_settings, "재지정 중 Esc는 설정을 닫지 않는다");
     }
 
     #[test]
@@ -1877,7 +2041,7 @@ mod tests {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
-                egui::vec2(1100.0, 4200.0),
+                egui::vec2(1100.0, 7200.0),
             )),
             max_texture_side: Some(4096),
             ..Default::default()
