@@ -148,7 +148,7 @@ Rust 1.80 以降と C リンカ（MSVC Build Tools / gcc / clang）が必要で�
 
 ## 対応フォーマットと確認済みカメラ
 
-RAW は `.ARW` `.CR2` `.CR3` `.NEF` `.ORF` `.RW2` `.RAF` `.DNG` `.PEF` `.SRW` `.RAW`、通常の画像は `.JPG` `.JPEG` `.PNG` `.WEBP` `.HEIC` `.HEIF` `.TIF` `.TIFF` を読み込みます。
+RAW は `.ARW` `.CR2` `.CR3` `.NEF` `.ORF` `.RW2` `.RAF` `.DNG` `.PEF` `.SRW` `.RAW` `.X3F`、通常の画像は `.JPG` `.JPEG` `.PNG` `.WEBP` `.HEIC` `.HEIF` `.TIF` `.TIFF` を読み込みます。`.X3F` は埋め込み JPEG プレビューで表示し、Foveon のフル現像はしません。
 
 **OS。** Windows 11 と macOS（Apple Silicon）向けに正式配布しています。Linux はコード上サポートしていますが、ビルド済みバイナリは提供していないのでソースからビルドしてください。
 
