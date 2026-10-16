@@ -692,6 +692,12 @@ pub struct Config {
     /// 폴더별 마지막으로 보던 사진(#86). 최근 사용 순(맨 앞이 가장 최근), 최대 64개.
     #[serde(default)]
     pub folder_resume: Vec<FolderResume>,
+    /// 구도 보조선(#90). 기본 끔. 사진별 `session.json`이 아니라 앱 설정.
+    #[serde(default)]
+    pub guides: crate::guides::GuidePreset,
+    /// 마지막 사용자 지정 하나(#90). 이름 붙인 프리셋은 저장하지 않는다.
+    #[serde(default)]
+    pub guide_custom: crate::guides::GuideCustom,
 }
 
 impl Default for Config {
@@ -722,6 +728,8 @@ impl Default for Config {
             transfer_dest_mode: TransferDestMode::default(),
             transfer_dest_folder: String::new(),
             folder_resume: Vec::new(),        // 폴더별 재개 위치(#86). 처음엔 비어 있음.
+            guides: crate::guides::GuidePreset::Off,
+            guide_custom: crate::guides::GuideCustom::default(),
         }
     }
 }

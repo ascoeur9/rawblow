@@ -8,6 +8,7 @@ use eframe::egui;
 use egui::{Align, Align2, Color32, Layout, Pos2, Rect, Rounding, Sense, Stroke, Vec2};
 use rawblow_core::cache;
 use rawblow_core::config::{self, AiCullTarget, ClipIqaBackbone, Config, Lang, TransferDestMode, ViewCarry};
+use rawblow_core::guides::GuidePreset;
 use rawblow_core::quality::Verdict;
 use rawblow_core::meta::{read_exif, ExifInfo};
 use rawblow_core::organize::{self, OrganizeKey, OrganizeRequest};
@@ -1821,6 +1822,11 @@ impl RawBlowApp {
         }
     }
 
+    fn cycle_guides(&mut self) {
+        self.cfg.guides = self.cfg.guides.cycle();
+        self.persist_cfg();
+    }
+
     fn handle_keys(&mut self, ctx: &egui::Context) {
         let (keys, modifiers, scroll) = ctx.input(|i| {
             (
@@ -1877,6 +1883,8 @@ impl RawBlowApp {
                         }
                         Key::I => self.show_exif = !self.show_exif,
                         Key::H => self.show_hist = !self.show_hist,
+                        // 구도 보조선(#90). 단일 보기에서만 그려지고, 선택은 앱 설정에 남는다.
+                        Key::CloseBracket if !cmd && !modifiers.shift => self.cycle_guides(),
                         // GPS 미니 지도(#38) / AF 포인트(#37): 토글 즉시 저장(요구: 설정 유지).
                         Key::M => {
                             self.show_map = !self.show_map;
@@ -2099,6 +2107,26 @@ fn visible_subset(selected: &std::collections::HashSet<usize>, filtered: &[usize
 #[cfg(test)]
 mod tests {
     use super::index_after_rate;
+    use rawblow_core::guides::GuidePreset;
+
+    #[test]
+    fn cycle_guides_saves_the_next_preset() {
+        super::RawBlowApp::settings_qa_begin();
+        let mut app = super::RawBlowApp::for_settings_qa();
+        assert_eq!(app.cfg.guides, GuidePreset::Off);
+        let before = super::RawBlowApp::settings_qa_persist_count();
+        app.cycle_guides();
+        assert_eq!(app.cfg.guides, GuidePreset::Thirds);
+        app.cycle_guides();
+        assert_eq!(app.cfg.guides, GuidePreset::CenterCross);
+        app.cycle_guides();
+        assert_eq!(app.cfg.guides, GuidePreset::Square);
+        app.cycle_guides();
+        assert_eq!(app.cfg.guides, GuidePreset::Custom);
+        app.cycle_guides();
+        assert_eq!(app.cfg.guides, GuidePreset::Off);
+        assert!(super::RawBlowApp::settings_qa_persist_count() > before);
+    }
 
     #[test]
     fn index_after_filter_keeps_current_photo_or_goes_to_start() {

@@ -369,6 +369,52 @@ fn settings_toggle_row(
     }
 }
 
+/// 구도선 한 축(#90). 개수는 최대 8, 위치는 표시된 사진의 0~1.
+fn guide_axis_editor(
+    ui: &mut egui::Ui,
+    label: &str,
+    add: &str,
+    remove: &str,
+    lines: &mut Vec<f32>,
+) -> bool {
+    let mut changed = false;
+    if lines.len() > rawblow_core::guides::GUIDE_LINE_CAP {
+        lines.truncate(rawblow_core::guides::GUIDE_LINE_CAP);
+        changed = true;
+    }
+    settings_field_row(ui, SIcon::Grid, label, None, |ui| {
+        if lines.len() < rawblow_core::guides::GUIDE_LINE_CAP && ui.small_button(add).clicked() {
+            lines.push(0.5);
+            changed = true;
+        }
+        if !lines.is_empty() && ui.small_button(remove).clicked() {
+            lines.pop();
+            changed = true;
+        }
+    });
+    if !lines.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            for t in lines.iter_mut() {
+                if settings_drag(
+                    ui,
+                    72.0,
+                    egui::DragValue::new(t)
+                        .speed(0.01_f32)
+                        .range(0.0_f32..=1.0_f32)
+                        .fixed_decimals(2),
+                )
+                .changed()
+                {
+                    changed = true;
+                }
+            }
+        });
+        ui.add_space(4.0);
+    }
+    changed
+}
+
 /// 값 입력 행(숫자·키 표시·버튼 등). 컨트롤은 오른쪽 끝.
 fn settings_field_row(
     ui: &mut egui::Ui,
@@ -756,6 +802,70 @@ impl RawBlowApp {
                             self.show_af = self.cfg.show_af;
                             self.persist_cfg();
                         }
+                        settings_inner_rule(ui);
+                        if guide_axis_editor(
+                            ui,
+                            tr(lang, "세로 선"),
+                            tr(lang, "선 추가"),
+                            tr(lang, "선 빼기"),
+                            &mut self.cfg.guide_custom.vertical,
+                        ) {
+                            self.persist_cfg();
+                        }
+                        if guide_axis_editor(
+                            ui,
+                            tr(lang, "가로 선"),
+                            tr(lang, "선 추가"),
+                            tr(lang, "선 빼기"),
+                            &mut self.cfg.guide_custom.horizontal,
+                        ) {
+                            self.persist_cfg();
+                        }
+                        settings_field_row(ui, SIcon::Grid, tr(lang, "색"), None, |ui| {
+                            if ui.color_edit_button_srgb(&mut self.cfg.guide_custom.rgb).changed() {
+                                self.persist_cfg();
+                            }
+                        });
+                        settings_inner_rule(ui);
+                        settings_field_row(ui, SIcon::Grid, tr(lang, "굵기"), None, |ui| {
+                            let resp = settings_drag(
+                                ui,
+                                72.0,
+                                egui::DragValue::new(&mut self.cfg.guide_custom.weight)
+                                    .speed(0.1_f32)
+                                    .range(1.0_f32..=4.0_f32)
+                                    .fixed_decimals(1),
+                            );
+                            if resp.changed() {
+                                let (weight, opacity) = rawblow_core::guides::clamp_guide_style(
+                                    self.cfg.guide_custom.weight,
+                                    self.cfg.guide_custom.opacity,
+                                );
+                                self.cfg.guide_custom.weight = weight;
+                                self.cfg.guide_custom.opacity = opacity;
+                                self.persist_cfg();
+                            }
+                        });
+                        settings_inner_rule(ui);
+                        settings_field_row(ui, SIcon::Grid, tr(lang, "불투명도"), None, |ui| {
+                            let resp = settings_drag(
+                                ui,
+                                72.0,
+                                egui::DragValue::new(&mut self.cfg.guide_custom.opacity)
+                                    .speed(0.05_f32)
+                                    .range(0.2_f32..=1.0_f32)
+                                    .fixed_decimals(2),
+                            );
+                            if resp.changed() {
+                                let (weight, opacity) = rawblow_core::guides::clamp_guide_style(
+                                    self.cfg.guide_custom.weight,
+                                    self.cfg.guide_custom.opacity,
+                                );
+                                self.cfg.guide_custom.weight = weight;
+                                self.cfg.guide_custom.opacity = opacity;
+                                self.persist_cfg();
+                            }
+                        });
                     });
 
                     // ── PHOTO BACKGROUND (#36): 사진 표시 화면 배경색 — 프리셋 + HEX/RGB ──
@@ -1755,6 +1865,13 @@ mod tests {
             "check_updates",
             "show_map",
             "show_af",
+            "guide_custom",
+            "세로 선",
+            "가로 선",
+            "선 추가",
+            "선 빼기",
+            "굵기",
+            "불투명도",
             "settings_row_head",
             "preload",
             "grid_cols",

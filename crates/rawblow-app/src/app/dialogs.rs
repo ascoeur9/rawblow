@@ -408,6 +408,7 @@ impl RawBlowApp {
                                 row(ui, &["H"], tr(lang, "히스토그램"));
                                 row(ui, &["M"], tr(lang, "촬영 위치 지도"));
                                 row(ui, &["A"], tr(lang, "AF 포인트"));
+                                row(ui, &["]"], tr(lang, "구도선"));
                                 row(ui, &["F"], tr(lang, "라벨 필터 순환"));
                                 row(ui, &["F11"], tr(lang, "전체화면"));
 

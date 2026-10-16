@@ -111,6 +111,14 @@ impl RawBlowApp {
                     if toggle_btn(ui, "Hist (H)", self.show_hist).clicked() {
                         self.show_hist = !self.show_hist;
                     }
+                    // 구도 보조선(#90)은 단일 보기 툴바에서만 순환한다. 그리드 썸네일에는 그리지 않는다.
+                    if self.view == ViewMode::Single {
+                        let on = self.cfg.guides != GuidePreset::Off;
+                        let name = tr(lang, self.cfg.guides.label_ko());
+                        if toggle_btn(ui, &format!("{name} (])"), on).clicked() {
+                            self.cycle_guides();
+                        }
+                    }
                     // (필터 변경은 좌측 레일에서 전담 — 상단 Filter 버튼 제거, #toolbar feedback)
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1042,6 +1050,8 @@ impl RawBlowApp {
         let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
         let target = Rect::from_center_size(area.center() + self.pan, scaled);
         ui.painter().with_clip_rect(area).image(tex, target, uv, Color32::WHITE);
+        // 구도선은 사진 바로 위, AF·HUD·지도보다 아래(#90).
+        self.paint_guides(ui, area, target);
 
         // AF 포인트 오버레이(#37): 측거점 사각형을 사진 위에 그린다. 좌표는 센서(미회전)
         // 기준 0..1 정규화이므로 EXIF orientation으로 표시 좌표계로 돌린다. 데이터 없는
@@ -1086,6 +1096,40 @@ impl RawBlowApp {
                 egui::CursorIcon::Grab
             };
             ui.ctx().set_cursor_icon(cur);
+        }
+    }
+
+    /// 표시된 사진 사각형에 구도선을 그린다. `target`은 회전·확대·이동이 반영된 영역.
+    fn paint_guides(&self, ui: &egui::Ui, area: Rect, target: Rect) {
+        if target.width() < 1.0 || target.height() < 1.0 {
+            return;
+        }
+        let g = &self.cfg.guide_custom;
+        let lines = rawblow_core::guides::guide_lines(
+            self.cfg.guides,
+            target.width(),
+            target.height(),
+            &g.vertical,
+            &g.horizontal,
+        );
+        if lines.is_empty() {
+            return;
+        }
+        let (weight, opacity) = rawblow_core::guides::clamp_guide_style(g.weight, g.opacity);
+        let alpha = (opacity * 255.0).round().clamp(0.0, 255.0) as u8;
+        let color = Color32::from_rgba_unmultiplied(g.rgb[0], g.rgb[1], g.rgb[2], alpha);
+        let stroke = Stroke::new(weight, color);
+        let p = ui.painter().with_clip_rect(area);
+        for t in &lines.vertical {
+            let x = target.min.x + t * target.width();
+            p.line_segment([Pos2::new(x, target.min.y), Pos2::new(x, target.max.y)], stroke);
+        }
+        for t in &lines.horizontal {
+            let y = target.min.y + t * target.height();
+            p.line_segment(
+                [Pos2::new(target.min.x, y), Pos2::new(target.max.x, y)],
+                stroke,
+            );
         }
     }
 
