@@ -120,11 +120,13 @@ struct DecodeColor {
 }
 
 thread_local! {
-    static DECODE_COLOR: std::cell::RefCell<DecodeColor> = std::cell::RefCell::new(DecodeColor {
-        output: crate::color::OutputColor::Srgb,
-        color_space: None,
-        interop: None,
-    });
+    static DECODE_COLOR: std::cell::RefCell<DecodeColor> = const {
+        std::cell::RefCell::new(DecodeColor {
+            output: crate::color::OutputColor::Srgb,
+            color_space: None,
+            interop: None,
+        })
+    };
 }
 
 struct DecodeColorGuard;

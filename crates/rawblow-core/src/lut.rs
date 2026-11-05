@@ -8,20 +8,11 @@ use serde::{Deserialize, Serialize};
 
 /// 마지막 룩. 빈 `name`은 룩 없음. `"file"`이면 `cube_path`의 `.cube`.
 /// 사진별 값은 두지 않는다.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(default)]
 pub struct LookPref {
     pub name: String,
     pub cube_path: String,
-}
-
-impl Default for LookPref {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            cube_path: String::new(),
-        }
-    }
 }
 
 pub const BUILTINS: [&str; 6] = ["Warm", "Tungsten", "Chrome", "Pan", "Vivid", "Snap"];

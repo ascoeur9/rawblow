@@ -5,12 +5,12 @@ use rawblow_core::color::OsColor;
 pub fn probe(frame: &eframe::Frame, wide: bool) -> (OsColor, String) {
     #[cfg(target_os = "macos")]
     {
-        return crate::macos_color::probe(frame, wide);
+        crate::macos_color::probe(frame, wide)
     }
     #[cfg(target_os = "windows")]
     {
         let _ = wide;
-        return crate::windows_color::probe(frame);
+        crate::windows_color::probe(frame)
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {

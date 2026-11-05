@@ -121,7 +121,7 @@ fn convert_display_inner(
     output: &OutputColor,
     fallback_output: bool,
 ) -> bool {
-    if rgba.len() < 4 || rgba.len() % 4 != 0 {
+    if rgba.len() < 4 || !rgba.len().is_multiple_of(4) {
         return false;
     }
     if matches!(input, InputColor::Srgb) && matches!(output, OutputColor::Srgb) {

@@ -91,10 +91,10 @@ fn read_histo(cache_dir: &Path, key: &str) -> Option<[[u32; 64]; 3]> {
         return None;
     }
     let mut bins = [[0u32; 64]; 3];
-    for ch in 0..3 {
-        for i in 0..64 {
+    for (ch, row) in bins.iter_mut().enumerate() {
+        for (i, bin) in row.iter_mut().enumerate() {
             let o = (ch * 64 + i) * 4;
-            bins[ch][i] = u32::from_le_bytes(bytes[o..o + 4].try_into().ok()?);
+            *bin = u32::from_le_bytes(bytes[o..o + 4].try_into().ok()?);
         }
     }
     Some(bins)
@@ -102,10 +102,8 @@ fn read_histo(cache_dir: &Path, key: &str) -> Option<[[u32; 64]; 3]> {
 
 fn write_histo(cache_dir: &Path, key: &str, bins: &[[u32; 64]; 3]) {
     let mut bytes = Vec::with_capacity(64 * 3 * 4);
-    for ch in 0..3 {
-        for i in 0..64 {
-            bytes.extend_from_slice(&bins[ch][i].to_le_bytes());
-        }
+    for bin in bins.iter().flatten() {
+        bytes.extend_from_slice(&bin.to_le_bytes());
     }
     let _ = std::fs::write(histo_path(cache_dir, key), bytes);
 }
