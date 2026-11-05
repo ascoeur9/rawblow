@@ -154,3 +154,28 @@ fn square_lines(w: f32, h: f32) -> GuideLines {
         }
     }
 }
+
+/// 선을 하나 더할 자리(#90). 0과 1을 끝으로 보고 기존 선 사이의 가장 넓은 틈 가운데를 돌려준다.
+/// 넓이가 같으면 낮은 쪽 틈을 고른다. 기존 값은 정렬해 계산만 하고 바꾸지 않는다.
+pub fn next_guide_position(existing: &[f32]) -> f32 {
+    let mut pts: Vec<f32> = existing
+        .iter()
+        .copied()
+        .filter(|t| t.is_finite())
+        .map(|t| t.clamp(0.0, 1.0))
+        .collect();
+    pts.sort_by(|a, b| a.total_cmp(b));
+    let mut best_lo = 0.0_f32;
+    let mut best_gap = -1.0_f32;
+    let mut lo = 0.0_f32;
+    for hi in pts.into_iter().chain(std::iter::once(1.0)) {
+        let gap = hi - lo;
+        // 1/3·2/3처럼 같은 틈이 부동소수 오차로 어긋나도 앞쪽을 고르게 여유를 둔다.
+        if gap > best_gap + 1.0e-4 {
+            best_gap = gap;
+            best_lo = lo;
+        }
+        lo = hi;
+    }
+    best_lo + best_gap / 2.0
+}

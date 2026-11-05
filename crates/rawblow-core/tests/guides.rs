@@ -108,3 +108,42 @@ fn missing_guide_fields_stay_off() {
     assert_eq!(cfg.guide_custom.rgb, [255, 255, 255]);
     assert_eq!(clamp_guide_style(cfg.guide_custom.weight, cfg.guide_custom.opacity), (1.0, 0.8));
 }
+
+#[test]
+fn next_position_splits_largest_gap() {
+    use rawblow_core::guides::next_guide_position;
+    let close = |a: f32, b: f32| assert!((a - b).abs() < 1.0e-5, "{a} != {b}");
+    // 빈 축은 가운데.
+    close(next_guide_position(&[]), 0.5);
+    // 삼분할 사이 틈(0.34)이 가장 넓다.
+    close(next_guide_position(&[0.33, 0.67]), 0.5);
+    // 0~0.33과 0.67~1이 같으면 낮은 쪽.
+    close(next_guide_position(&[0.33, 0.5, 0.67]), 0.165);
+    close(next_guide_position(&[1.0 / 3.0, 2.0 / 3.0, 0.5]), 1.0 / 6.0);
+    // 끝 쪽 틈.
+    close(next_guide_position(&[0.1, 0.2]), 0.6);
+    close(next_guide_position(&[0.9]), 0.45);
+}
+
+#[test]
+fn next_position_ignores_order_and_bad_values() {
+    use rawblow_core::guides::next_guide_position;
+    let close = |a: f32, b: f32| assert!((a - b).abs() < 1.0e-5, "{a} != {b}");
+    // 입력 순서와 무관하다.
+    close(next_guide_position(&[0.67, 0.5, 0.33]), 0.165);
+    // NaN은 빼고 범위 밖은 0~1로 자른다.
+    close(next_guide_position(&[f32::NAN, 2.0]), 0.5);
+    // 같은 자리가 겹쳐도 넓은 틈을 찾는다.
+    close(next_guide_position(&[0.5, 0.5]), 0.25);
+}
+
+#[test]
+fn repeated_adds_do_not_stack() {
+    use rawblow_core::guides::{next_guide_position, GUIDE_LINE_CAP};
+    let mut lines = vec![1.0 / 3.0, 2.0 / 3.0];
+    while lines.len() < GUIDE_LINE_CAP {
+        let t = next_guide_position(&lines);
+        assert!(lines.iter().all(|v| (v - t).abs() > 0.05), "{t} stacks on {lines:?}");
+        lines.push(t);
+    }
+}

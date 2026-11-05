@@ -386,7 +386,7 @@ fn guide_axis_editor(
         // 두 버튼은 늘 같은 자리에 둔다. 끝에 닿으면 숨기지 않고 흐리게 막는다.
         let can_add = lines.len() < rawblow_core::guides::GUIDE_LINE_CAP;
         if ui.add_enabled(can_add, egui::Button::new(add).small()).clicked() {
-            lines.push(0.5);
+            lines.push(rawblow_core::guides::next_guide_position(lines));
             changed = true;
         }
         if ui.add_enabled(!lines.is_empty(), egui::Button::new(remove).small()).clicked() {
