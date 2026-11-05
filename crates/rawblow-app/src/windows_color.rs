@@ -14,11 +14,11 @@ use windows_sys::Win32::Devices::Display::{
 };
 use windows_sys::Win32::Foundation::{ERROR_SUCCESS, POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateDCW, DeleteDC, GetICMProfileW, GetMonitorInfoW, MONITORINFOEXW,
+    CreateDCW, DeleteDC, GetMonitorInfoW, MonitorFromPoint, MONITORINFOEXW,
+    MONITOR_DEFAULTTONEAREST,
 };
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetWindowRect, MonitorFromPoint, MONITOR_DEFAULTTONEAREST,
-};
+use windows_sys::Win32::UI::ColorSystem::GetICMProfileW;
+use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
 pub fn probe(frame: &eframe::Frame) -> (OsColor, String) {
     let Some(hwnd) = window_hwnd(frame) else {
@@ -55,7 +55,7 @@ fn monitor_device(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<[u16; 32
             y: rect.top + (rect.bottom - rect.top) / 2,
         };
         let mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
-        if mon.is_null() {
+        if mon == 0 {
             return None;
         }
         let mut info: MONITORINFOEXW = std::mem::zeroed();
@@ -101,7 +101,7 @@ fn monitor_is_acm_or_hdr(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
             src.header.size = std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32;
             src.header.adapterId = path.sourceInfo.adapterId;
             src.header.id = path.sourceInfo.id;
-            if DisplayConfigGetDeviceInfo(&mut src.header) != ERROR_SUCCESS {
+            if DisplayConfigGetDeviceInfo(&mut src.header) != ERROR_SUCCESS as i32 {
                 continue;
             }
             if !wide_eq(&src.viewGdiDeviceName, &device) {
@@ -112,7 +112,7 @@ fn monitor_is_acm_or_hdr(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
             adv.header.size = std::mem::size_of::<DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO>() as u32;
             adv.header.adapterId = path.targetInfo.adapterId;
             adv.header.id = path.targetInfo.id;
-            if DisplayConfigGetDeviceInfo(&mut adv.header) != ERROR_SUCCESS {
+            if DisplayConfigGetDeviceInfo(&mut adv.header) != ERROR_SUCCESS as i32 {
                 return false;
             }
             // bit 0 supported, bit 1 enabled.
@@ -131,12 +131,12 @@ fn monitor_icc(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<(Vec<u8>, S
     let device = monitor_device(hwnd)?;
     unsafe {
         let dc = CreateDCW(std::ptr::null(), device.as_ptr(), std::ptr::null(), std::ptr::null());
-        if dc.is_null() {
+        if dc == 0 {
             return None;
         }
         let mut chars = 0u32;
         let _ = GetICMProfileW(dc, &mut chars, std::ptr::null_mut());
-        if chars < 2 || chars > 4096 {
+        if !(2..=4096).contains(&chars) {
             let _ = DeleteDC(dc);
             return None;
         }
@@ -147,7 +147,8 @@ fn monitor_icc(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<(Vec<u8>, S
             return None;
         }
         let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-        let path = Path::new(&OsString::from_wide(&buf[..end]));
+        let wide = OsString::from_wide(&buf[..end]);
+        let path = Path::new(&wide);
         let bytes = std::fs::read(path).ok()?;
         if bytes.is_empty() {
             return None;
