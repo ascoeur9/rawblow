@@ -699,6 +699,12 @@ pub struct Config {
     /// 마지막 표시 룩(#125). 누락되면 룩 없음. 사진별 값은 `session.json`에 두지 않는다.
     #[serde(default)]
     pub look: crate::lut::LookPref,
+    /// 구도 보조선(#90). 기본 끔. 사진별 `session.json`이 아니라 앱 설정.
+    #[serde(default)]
+    pub guides: crate::guides::GuidePreset,
+    /// 마지막 사용자 지정 하나(#90). 이름 붙인 프리셋은 저장하지 않는다.
+    #[serde(default)]
+    pub guide_custom: crate::guides::GuideCustom,
 }
 
 impl Default for Config {
@@ -731,6 +737,8 @@ impl Default for Config {
             folder_resume: Vec::new(),        // 폴더별 재개 위치(#86). 처음엔 비어 있음.
             wide_gamut: false,                // 광색역 표시(#122). 기본 꺼짐.
             look: crate::lut::LookPref::default(), // 표시 룩(#125). 기본은 적용 안 함.
+            guides: crate::guides::GuidePreset::Off,
+            guide_custom: crate::guides::GuideCustom::default(),
         }
     }
 }
