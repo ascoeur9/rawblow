@@ -4,7 +4,9 @@
 
 ## 지원 포맷
 
-RAW: `.ARW` `.CR2` `.CR3` `.NEF` `.ORF` `.RW2` `.RAF` `.DNG` `.PEF` `.SRW` `.RAW`
+RAW: `.ARW` `.CR2` `.CR3` `.NEF` `.ORF` `.RW2` `.RAF` `.DNG` `.PEF` `.SRW` `.RAW` `.X3F`
+
+`.X3F`(Sigma)는 파일 안 JPEG 프리뷰로 봅니다. Foveon 센서 데이터를 풀로 현상하지는 않습니다.
 
 일반 이미지: `.JPG` `.JPEG` `.PNG` `.WEBP` `.HEIC` `.HEIF` `.TIF` `.TIFF`
 

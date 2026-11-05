@@ -148,7 +148,7 @@ For a clean release build for distribution (standalone, with build paths and use
 
 ## Supported formats and verified cameras
 
-RawBlow reads `.ARW` `.CR2` `.CR3` `.NEF` `.ORF` `.RW2` `.RAF` `.DNG` `.PEF` `.SRW` `.RAW` for RAW, and `.JPG` `.JPEG` `.PNG` `.WEBP` `.HEIC` `.HEIF` `.TIF` `.TIFF` for regular images.
+RawBlow reads `.ARW` `.CR2` `.CR3` `.NEF` `.ORF` `.RW2` `.RAF` `.DNG` `.PEF` `.SRW` `.RAW` `.X3F` for RAW, and `.JPG` `.JPEG` `.PNG` `.WEBP` `.HEIC` `.HEIF` `.TIF` `.TIFF` for regular images. `.X3F` is shown from its embedded JPEG preview; full Foveon develop is not done.
 
 **OS.** Officially released for Windows 11 and macOS (Apple Silicon). Linux is supported in code but ships no prebuilt binary, so build from source.
 

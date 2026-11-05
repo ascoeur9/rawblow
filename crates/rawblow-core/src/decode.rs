@@ -161,6 +161,9 @@ pub fn decode_file(path: &Path, opts: DecodeOptions) -> Result<DecodedImage, Dec
             }
         }
         Some(Kind::Raw) => {
+            if crate::x3f::is_x3f_path(path) {
+                return crate::x3f::decode_x3f(path, opts.max_edge);
+            }
             if opts.full_raw {
                 // ORIG(원본 보기): 먼저 IFD가 가리키는 **풀해상도 임베디드 JPEG**를 그 구간만
                 // 읽어 디코딩한다(예: RW2 0x0127의 8144px). 전체파일(수십 MB) 읽기와 rawloader
