@@ -583,13 +583,16 @@ impl RawBlowApp {
         self.look_src.clear();
     }
 
-    /// 표시 섹션의 광색역 행에 붙는 현재 출력.
+    /// 표시 섹션의 광색역 행에 붙는 현재 출력. 모니터 이름을 알면 `현재 출력: <모니터> · <프로파일>`.
     fn wide_gamut_status(&self) -> String {
         if !self.cfg.wide_gamut {
             return tr(self.lang, "현재 출력: sRGB").to_string();
         }
         let out = rawblow_core::color::effective_output(true, &self.os_color);
         match out {
+            rawblow_core::color::OutputColor::DisplayP3 if !self.monitor_name.is_empty() => {
+                format!("{}{} · Display P3", tr(self.lang, "현재 출력: "), self.monitor_name)
+            }
             rawblow_core::color::OutputColor::DisplayP3 => {
                 tr(self.lang, "현재 출력: Display P3").to_string()
             }
@@ -2222,6 +2225,26 @@ fn visible_subset(selected: &std::collections::HashSet<usize>, filtered: &[usize
 mod tests {
     use super::index_after_rate;
     use rawblow_core::guides::GuidePreset;
+
+    #[test]
+    fn wide_gamut_status_shows_monitor_and_profile() {
+        use rawblow_core::color::OsColor;
+        super::RawBlowApp::settings_qa_begin();
+        let mut app = super::RawBlowApp::for_settings_qa();
+        app.cfg.wide_gamut = true;
+        app.os_color = OsColor::Windows { icc: Some(vec![1, 2, 3]), acm_or_hdr: false };
+        app.monitor_name = "DELL U2723QE · U2723QE".into();
+        assert_eq!(app.wide_gamut_status(), "현재 출력: DELL U2723QE · U2723QE");
+        app.os_color = OsColor::MacOs { layer_ok: true };
+        app.monitor_name = "Studio Display".into();
+        assert_eq!(app.wide_gamut_status(), "현재 출력: Studio Display · Display P3");
+        app.monitor_name.clear();
+        assert_eq!(app.wide_gamut_status(), "현재 출력: Display P3");
+        app.os_color = OsColor::Windows { icc: None, acm_or_hdr: true };
+        assert_eq!(app.wide_gamut_status(), "현재 출력: sRGB(폴백)");
+        app.cfg.wide_gamut = false;
+        assert_eq!(app.wide_gamut_status(), "현재 출력: sRGB");
+    }
 
     #[test]
     fn cycle_guides_saves_the_next_preset() {

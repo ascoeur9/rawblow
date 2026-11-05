@@ -1,5 +1,6 @@
 //! Windows 광색역(#122). 창 중심이 있는 모니터의 ICC를 읽고, ACM/HDR이면 sRGB로 둔다.
 //! 스왑체인은 그대로 8비트 sRGB다. 조회가 실패하면 ICC 없이 넘어가 sRGB로 폴백한다.
+//! 표시 이름은 `모니터 이름 · ICC 파일 이름`이고, 모니터 이름을 못 얻으면 ICC 파일 이름만 쓴다.
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use rawblow_core::color::OsColor;
@@ -9,8 +10,9 @@ use std::path::Path;
 use windows_sys::Win32::Devices::Display::{
     DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QueryDisplayConfig,
     DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO, DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
-    DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO, DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO,
-    DISPLAYCONFIG_SOURCE_DEVICE_NAME, QDC_ONLY_ACTIVE_PATHS,
+    DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME, DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO,
+    DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SOURCE_DEVICE_NAME,
+    DISPLAYCONFIG_TARGET_DEVICE_NAME, QDC_ONLY_ACTIVE_PATHS,
 };
 use windows_sys::Win32::Foundation::{ERROR_SUCCESS, POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
@@ -24,14 +26,18 @@ pub fn probe(frame: &eframe::Frame) -> (OsColor, String) {
     let Some(hwnd) = window_hwnd(frame) else {
         return (OsColor::Windows { icc: None, acm_or_hdr: false }, String::new());
     };
-    if monitor_is_acm_or_hdr(hwnd) {
+    let path = monitor_path(hwnd);
+    if path.as_ref().is_some_and(path_is_acm_or_hdr) {
         return (OsColor::Windows { icc: None, acm_or_hdr: true }, String::new());
     }
     match monitor_icc(hwnd) {
-        Some((bytes, name)) => (
-            OsColor::Windows { icc: Some(bytes), acm_or_hdr: false },
-            name,
-        ),
+        Some((bytes, profile)) => {
+            let friendly = path.as_ref().map(path_friendly_name).unwrap_or_default();
+            (
+                OsColor::Windows { icc: Some(bytes), acm_or_hdr: false },
+                output_label(&friendly, &profile),
+            )
+        }
         None => (OsColor::Windows { icc: None, acm_or_hdr: false }, String::new()),
     }
 }
@@ -67,20 +73,27 @@ fn monitor_device(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<[u16; 32
     }
 }
 
-/// ACM/HDR(`advancedColorEnabled`)이면 true. 조회 실패는 false(ICC를 시도한다).
-fn monitor_is_acm_or_hdr(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
-    let Some(device) = monitor_device(hwnd) else {
-        return false;
-    };
+/// `모니터 이름 · ICC 파일 이름`. 한쪽이 비면 남은 쪽만.
+fn output_label(friendly: &str, profile: &str) -> String {
+    match (friendly.trim(), profile.trim()) {
+        ("", p) => p.to_string(),
+        (f, "") => f.to_string(),
+        (f, p) => format!("{f} · {p}"),
+    }
+}
+
+/// 창의 모니터(GDI 이름)에 물린 활성 디스플레이 경로. 조회 실패는 None.
+fn monitor_path(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<DISPLAYCONFIG_PATH_INFO> {
+    let device = monitor_device(hwnd)?;
     unsafe {
         let mut n_path = 0u32;
         let mut n_mode = 0u32;
         if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut n_path, &mut n_mode) != ERROR_SUCCESS
         {
-            return false;
+            return None;
         }
         if n_path == 0 || n_path > 64 {
-            return false;
+            return None;
         }
         let mut paths = vec![std::mem::zeroed::<DISPLAYCONFIG_PATH_INFO>(); n_path as usize];
         let mut modes = vec![std::mem::zeroed::<DISPLAYCONFIG_MODE_INFO>(); n_mode as usize];
@@ -93,7 +106,7 @@ fn monitor_is_acm_or_hdr(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
             std::ptr::null_mut(),
         ) != ERROR_SUCCESS
         {
-            return false;
+            return None;
         }
         for path in paths.iter().take(n_path as usize) {
             let mut src: DISPLAYCONFIG_SOURCE_DEVICE_NAME = std::mem::zeroed();
@@ -104,22 +117,45 @@ fn monitor_is_acm_or_hdr(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
             if DisplayConfigGetDeviceInfo(&mut src.header) != ERROR_SUCCESS as i32 {
                 continue;
             }
-            if !wide_eq(&src.viewGdiDeviceName, &device) {
-                continue;
+            if wide_eq(&src.viewGdiDeviceName, &device) {
+                return Some(*path);
             }
-            let mut adv: DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO = std::mem::zeroed();
-            adv.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO;
-            adv.header.size = std::mem::size_of::<DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO>() as u32;
-            adv.header.adapterId = path.targetInfo.adapterId;
-            adv.header.id = path.targetInfo.id;
-            if DisplayConfigGetDeviceInfo(&mut adv.header) != ERROR_SUCCESS as i32 {
-                return false;
-            }
-            // bit 0 supported, bit 1 enabled.
-            return adv.Anonymous.value & 2 != 0;
         }
     }
-    false
+    None
+}
+
+/// ACM/HDR(`advancedColorEnabled`)이면 true. 조회 실패는 false(ICC를 시도한다).
+fn path_is_acm_or_hdr(path: &DISPLAYCONFIG_PATH_INFO) -> bool {
+    unsafe {
+        let mut adv: DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO = std::mem::zeroed();
+        adv.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO;
+        adv.header.size = std::mem::size_of::<DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO>() as u32;
+        adv.header.adapterId = path.targetInfo.adapterId;
+        adv.header.id = path.targetInfo.id;
+        if DisplayConfigGetDeviceInfo(&mut adv.header) != ERROR_SUCCESS as i32 {
+            return false;
+        }
+        // bit 0 supported, bit 1 enabled.
+        adv.Anonymous.value & 2 != 0
+    }
+}
+
+/// 모니터 이름(EDID, 예: "DELL U2723QE"). 조회 실패나 빈 이름은 빈 문자열.
+fn path_friendly_name(path: &DISPLAYCONFIG_PATH_INFO) -> String {
+    unsafe {
+        let mut tgt: DISPLAYCONFIG_TARGET_DEVICE_NAME = std::mem::zeroed();
+        tgt.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+        tgt.header.size = std::mem::size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32;
+        tgt.header.adapterId = path.targetInfo.adapterId;
+        tgt.header.id = path.targetInfo.id;
+        if DisplayConfigGetDeviceInfo(&mut tgt.header) != ERROR_SUCCESS as i32 {
+            return String::new();
+        }
+        let name = &tgt.monitorFriendlyDeviceName;
+        let end = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+        String::from_utf16_lossy(&name[..end])
+    }
 }
 
 fn wide_eq(a: &[u16], b: &[u16]) -> bool {
@@ -158,5 +194,18 @@ fn monitor_icc(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<(Vec<u8>, S
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         Some((bytes, name))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::output_label;
+
+    #[test]
+    fn output_label_joins_monitor_and_profile() {
+        assert_eq!(output_label("DELL U2723QE", "U2723QE"), "DELL U2723QE · U2723QE");
+        assert_eq!(output_label("", "sRGB Color Space Profile"), "sRGB Color Space Profile");
+        assert_eq!(output_label("  ", "U2723QE"), "U2723QE");
+        assert_eq!(output_label("DELL U2723QE", ""), "DELL U2723QE");
     }
 }
