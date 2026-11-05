@@ -1,8 +1,11 @@
 //! Windows 광색역(#122). 창 중심이 있는 모니터의 ICC를 읽고, ACM/HDR이면 sRGB로 둔다.
 //! 스왑체인은 그대로 8비트 sRGB다. 조회가 실패하면 ICC 없이 넘어가 sRGB로 폴백한다.
-//! 표시 이름은 `모니터 이름 · ICC 파일 이름`이고, 모니터 이름을 못 얻으면 ICC 파일 이름만 쓴다.
+//! 표시 이름은 `모니터 이름 · ICC 파일 이름`이다. EDID에 이름이 없는 노트북 내장 패널은
+//! 「내장 디스플레이」로 부르고, 그 밖에 이름을 못 얻으면 ICC 파일 이름만 쓴다.
 
+use crate::i18n::tr;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use rawblow_core::config::Lang;
 use rawblow_core::color::OsColor;
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
@@ -12,7 +15,9 @@ use windows_sys::Win32::Devices::Display::{
     DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO, DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
     DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME, DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO,
     DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SOURCE_DEVICE_NAME,
-    DISPLAYCONFIG_TARGET_DEVICE_NAME, QDC_ONLY_ACTIVE_PATHS,
+    DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EMBEDDED, DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL,
+    DISPLAYCONFIG_OUTPUT_TECHNOLOGY_LVDS, DISPLAYCONFIG_OUTPUT_TECHNOLOGY_UDI_EMBEDDED,
+    DISPLAYCONFIG_TARGET_DEVICE_NAME, DISPLAYCONFIG_VIDEO_OUTPUT_TECHNOLOGY, QDC_ONLY_ACTIVE_PATHS,
 };
 use windows_sys::Win32::Foundation::{ERROR_SUCCESS, POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
@@ -22,7 +27,7 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::UI::ColorSystem::GetICMProfileW;
 use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
-pub fn probe(frame: &eframe::Frame) -> (OsColor, String) {
+pub fn probe(frame: &eframe::Frame, lang: Lang) -> (OsColor, String) {
     let Some(hwnd) = window_hwnd(frame) else {
         return (OsColor::Windows { icc: None, acm_or_hdr: false }, String::new());
     };
@@ -32,10 +37,11 @@ pub fn probe(frame: &eframe::Frame) -> (OsColor, String) {
     }
     match monitor_icc(hwnd) {
         Some((bytes, profile)) => {
-            let friendly = path.as_ref().map(path_friendly_name).unwrap_or_default();
+            let (friendly, internal) = path.as_ref().map(path_target_name).unwrap_or_default();
+            let monitor = monitor_name(&friendly, internal, tr(lang, "내장 디스플레이"));
             (
                 OsColor::Windows { icc: Some(bytes), acm_or_hdr: false },
-                output_label(&friendly, &profile),
+                output_label(&monitor, &profile),
             )
         }
         None => (OsColor::Windows { icc: None, acm_or_hdr: false }, String::new()),
@@ -71,6 +77,25 @@ fn monitor_device(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<[u16; 32
         }
         Some(info.szDevice)
     }
+}
+
+/// EDID 이름. 비었는데 내장 연결이면 `builtin`(「내장 디스플레이」), 아니면 빈 문자열.
+fn monitor_name(friendly: &str, internal: bool, builtin: &str) -> String {
+    match friendly.trim() {
+        "" if internal => builtin.to_string(),
+        f => f.to_string(),
+    }
+}
+
+/// 노트북 내장 패널 연결(eDP·LVDS·내장 UDI·OS가 내장으로 표시한 경로).
+fn is_internal_output(tech: DISPLAYCONFIG_VIDEO_OUTPUT_TECHNOLOGY) -> bool {
+    matches!(
+        tech,
+        DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL
+            | DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EMBEDDED
+            | DISPLAYCONFIG_OUTPUT_TECHNOLOGY_UDI_EMBEDDED
+            | DISPLAYCONFIG_OUTPUT_TECHNOLOGY_LVDS
+    )
 }
 
 /// `모니터 이름 · ICC 파일 이름`. 한쪽이 비면 남은 쪽만.
@@ -141,8 +166,8 @@ fn path_is_acm_or_hdr(path: &DISPLAYCONFIG_PATH_INFO) -> bool {
     }
 }
 
-/// 모니터 이름(EDID, 예: "DELL U2723QE"). 조회 실패나 빈 이름은 빈 문자열.
-fn path_friendly_name(path: &DISPLAYCONFIG_PATH_INFO) -> String {
+/// 모니터 이름(EDID, 예: "DELL U2723QE")과 내장 연결 여부. 조회 실패는 `("", false)`.
+fn path_target_name(path: &DISPLAYCONFIG_PATH_INFO) -> (String, bool) {
     unsafe {
         let mut tgt: DISPLAYCONFIG_TARGET_DEVICE_NAME = std::mem::zeroed();
         tgt.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
@@ -150,11 +175,11 @@ fn path_friendly_name(path: &DISPLAYCONFIG_PATH_INFO) -> String {
         tgt.header.adapterId = path.targetInfo.adapterId;
         tgt.header.id = path.targetInfo.id;
         if DisplayConfigGetDeviceInfo(&mut tgt.header) != ERROR_SUCCESS as i32 {
-            return String::new();
+            return (String::new(), false);
         }
         let name = &tgt.monitorFriendlyDeviceName;
         let end = name.iter().position(|&c| c == 0).unwrap_or(name.len());
-        String::from_utf16_lossy(&name[..end])
+        (String::from_utf16_lossy(&name[..end]), is_internal_output(tgt.outputTechnology))
     }
 }
 
@@ -199,7 +224,13 @@ fn monitor_icc(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<(Vec<u8>, S
 
 #[cfg(test)]
 mod tests {
-    use super::output_label;
+    use super::{is_internal_output, monitor_name, output_label};
+    use windows_sys::Win32::Devices::Display::{
+        DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EMBEDDED,
+        DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EXTERNAL, DISPLAYCONFIG_OUTPUT_TECHNOLOGY_HDMI,
+        DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL, DISPLAYCONFIG_OUTPUT_TECHNOLOGY_LVDS,
+        DISPLAYCONFIG_OUTPUT_TECHNOLOGY_UDI_EMBEDDED,
+    };
 
     #[test]
     fn output_label_joins_monitor_and_profile() {
@@ -207,5 +238,30 @@ mod tests {
         assert_eq!(output_label("", "sRGB Color Space Profile"), "sRGB Color Space Profile");
         assert_eq!(output_label("  ", "U2723QE"), "U2723QE");
         assert_eq!(output_label("DELL U2723QE", ""), "DELL U2723QE");
+    }
+
+    #[test]
+    fn nameless_internal_panel_is_builtin_display() {
+        for t in [
+            DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL,
+            DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EMBEDDED,
+            DISPLAYCONFIG_OUTPUT_TECHNOLOGY_UDI_EMBEDDED,
+            DISPLAYCONFIG_OUTPUT_TECHNOLOGY_LVDS,
+        ] {
+            assert!(is_internal_output(t));
+        }
+        assert!(!is_internal_output(DISPLAYCONFIG_OUTPUT_TECHNOLOGY_HDMI));
+        assert!(!is_internal_output(DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EXTERNAL));
+
+        let builtin = "내장 디스플레이";
+        let label = |f: &str, internal: bool| {
+            output_label(&monitor_name(f, internal, builtin), "250cc_25-06-14")
+        };
+        assert_eq!(label("", true), "내장 디스플레이 · 250cc_25-06-14");
+        assert_eq!(label("  ", true), "내장 디스플레이 · 250cc_25-06-14");
+        // EDID 이름이 있으면 내장이어도 그 이름을 쓴다.
+        assert_eq!(label("LEN P27", true), "LEN P27 · 250cc_25-06-14");
+        // 외장인데 이름이 없으면 ICC 이름만.
+        assert_eq!(label("", false), "250cc_25-06-14");
     }
 }

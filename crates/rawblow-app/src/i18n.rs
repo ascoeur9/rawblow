@@ -649,6 +649,7 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "현재 출력: Display P3" => ("Output: Display P3", "現在の出力: Display P3"),
         "현재 출력: sRGB(폴백)" => ("Output: sRGB (fallback)", "現在の出力: sRGB（フォールバック）"),
         "현재 출력: " => ("Output: ", "現在の出力: "),
+        "내장 디스플레이" => ("Built-in display", "内蔵ディスプレイ"),
         "촬영 위치 지도" => ("Location map", "撮影地マップ"),
         "AF 포인트" => ("AF points", "AFポイント"),
         "라벨 필터 순환" => ("Cycle label filter", "ラベルフィルタ切替"),
@@ -920,6 +921,8 @@ mod tests {
         assert_eq!(tr(Lang::En, "광색역 표시"), "Wide gamut");
         assert_eq!(tr(Lang::Ja, "현재 출력: sRGB(폴백)"), "現在の出力: sRGB（フォールバック）");
         assert_eq!(tr(Lang::En, "현재 출력: Display P3"), "Output: Display P3");
+        assert_eq!(tr(Lang::En, "내장 디스플레이"), "Built-in display");
+        assert_eq!(tr(Lang::Ja, "내장 디스플레이"), "内蔵ディスプレイ");
     }
 
     #[test]

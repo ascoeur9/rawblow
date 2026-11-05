@@ -550,7 +550,7 @@ impl RawBlowApp {
     /// 설정 화면·정렬 변경이 쓰는 즉시 저장. 테스트에서는 사용자 config.json을 건드리지 않는다.
     /// 설정과 OS 상태를 표시 색으로 접어 워커에 넣는다. 태그가 바뀌면 텍스처를 버리고 다시 디코드한다.
     fn apply_display_color(&mut self, frame: &eframe::Frame) {
-        let (os, name) = crate::display_color::probe(frame, self.cfg.wide_gamut);
+        let (os, name) = crate::display_color::probe(frame, self.cfg.wide_gamut, self.lang);
         self.os_color = os;
         self.monitor_name = name;
         let out = rawblow_core::color::effective_output(self.cfg.wide_gamut, &self.os_color);
