@@ -696,6 +696,9 @@ pub struct Config {
     /// Linux와 실패는 sRGB. 필드 기본값 false가 원하는 기본이라 `#[serde(default)]`를 단다.
     #[serde(default)]
     pub wide_gamut: bool,
+    /// 마지막 표시 룩(#125). 누락되면 룩 없음. 사진별 값은 `session.json`에 두지 않는다.
+    #[serde(default)]
+    pub look: crate::lut::LookPref,
 }
 
 impl Default for Config {
@@ -727,6 +730,7 @@ impl Default for Config {
             transfer_dest_folder: String::new(),
             folder_resume: Vec::new(),        // 폴더별 재개 위치(#86). 처음엔 비어 있음.
             wide_gamut: false,                // 광색역 표시(#122). 기본 꺼짐.
+            look: crate::lut::LookPref::default(), // 표시 룩(#125). 기본은 적용 안 함.
         }
     }
 }
