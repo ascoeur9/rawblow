@@ -383,11 +383,13 @@ fn guide_axis_editor(
         changed = true;
     }
     settings_field_row(ui, SIcon::Grid, label, None, |ui| {
-        if lines.len() < rawblow_core::guides::GUIDE_LINE_CAP && ui.small_button(add).clicked() {
+        // 두 버튼은 늘 같은 자리에 둔다. 끝에 닿으면 숨기지 않고 흐리게 막는다.
+        let can_add = lines.len() < rawblow_core::guides::GUIDE_LINE_CAP;
+        if ui.add_enabled(can_add, egui::Button::new(add).small()).clicked() {
             lines.push(0.5);
             changed = true;
         }
-        if !lines.is_empty() && ui.small_button(remove).clicked() {
+        if ui.add_enabled(!lines.is_empty(), egui::Button::new(remove).small()).clicked() {
             lines.pop();
             changed = true;
         }
