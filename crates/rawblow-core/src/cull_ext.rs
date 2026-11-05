@@ -8,7 +8,8 @@
 //! 모두 모델 불필요(순수 CV/메타). CLIP 임베딩 기반 의미적 클러스터링·프롬프트 축은 `cull_clip`(별도).
 
 use crate::decode::DecodedImage;
-use crate::quality::score_desc;
+use crate::quality::{finite_score, score_desc};
+use std::cmp::Ordering;
 use std::collections::HashSet;
 
 // ───────────────────────── Tier1: EXIF 수치 파싱 ─────────────────────────
@@ -340,14 +341,31 @@ pub fn cluster_near_dups(hashes: &[u64], max_hamming: u32) -> Vec<Vec<usize>> {
 
 // ───────────────────────── 그룹 컬링 통합(메타 제외 → 연사 → 중복) ─────────────────────────
 
-/// 한 컷의 컬링 입력. `good`=CV/미적 1차 판정, `rank`=그룹 내 베스트 선택 점수(미적>선명도).
+/// 한 컷의 컬링 입력. `good`=CV/미적 1차 판정.
+/// `aesthetic` 또는 `sharp`가 있으면 그룹 베스트는 [`group_best_cmp`]로 정한다
+/// (유한한 미적 > 선명도만, 미적 동점은 선명도, 없거나 유한하지 않으면 선명도만).
+/// 둘 다 없으면 예전처럼 `rank` 하나만 비교한다.
 #[derive(Debug, Clone)]
 pub struct CullItem {
     pub good: bool,
     pub rank: f32,
+    pub aesthetic: Option<f32>,
+    pub sharp: Option<f32>,
     pub dhash: Option<u64>,
     pub shot_time: Option<i64>,
     pub meta: PhotoMeta,
+}
+
+/// 연사·유사 그룹의 베스트 비교. `Less`면 앞쪽 인자가 더 좋은 컷이다.
+/// 유한한 미적이 선명도만인 컷보다 앞이고, 미적이 같으면 선명도가 높은 쪽이 앞이다.
+/// 미적이 없거나 유한하지 않으면 선명도만 비교한다. 선명도의 비유한 값은 최하위.
+pub fn group_best_cmp(aes_a: Option<f32>, sharp_a: f32, aes_b: Option<f32>, sharp_b: f32) -> Ordering {
+    match (finite_score(aes_a), finite_score(aes_b)) {
+        (Some(a), Some(b)) => score_desc(a, b).then(score_desc(sharp_a, sharp_b)),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => score_desc(sharp_a, sharp_b),
+    }
 }
 
 /// 그룹 컬링 파라미터(UI config에서 변환).
@@ -363,10 +381,24 @@ pub struct GroupCullParams {
     pub dedup_keep: usize,
 }
 
-/// rank 내림차순(동점은 인덱스 오름차순, NaN은 맨 뒤)으로 정렬한 그룹. 앞의 keep개가 살아남는다.
-fn sorted_by_rank(orig: &[usize], ranks: &[f32]) -> Vec<usize> {
+/// 그룹 안 정렬. `aesthetic` 또는 `sharp`가 있으면 그 키로, 없으면 `rank` 하나로.
+/// 동점은 인덱스 오름차순. `rank`의 NaN은 맨 뒤.
+fn sorted_for_group(orig: &[usize], items: &[CullItem]) -> Vec<usize> {
     let mut v = orig.to_vec();
-    v.sort_by(|&a, &b| score_desc(ranks[a], ranks[b]).then(a.cmp(&b)));
+    let split = v.iter().any(|&i| items[i].aesthetic.is_some() || items[i].sharp.is_some());
+    if split {
+        v.sort_by(|&a, &b| {
+            group_best_cmp(
+                items[a].aesthetic,
+                items[a].sharp.unwrap_or(0.0),
+                items[b].aesthetic,
+                items[b].sharp.unwrap_or(0.0),
+            )
+            .then(a.cmp(&b))
+        });
+    } else {
+        v.sort_by(|&a, &b| score_desc(items[a].rank, items[b].rank).then(a.cmp(&b)));
+    }
     v
 }
 
@@ -397,7 +429,8 @@ pub struct GroupOutcome {
 }
 
 /// 메타 필터로 대상을 좁히고(불통과=제외, 손대지 않음), 연사·시각중복 그룹마다 좋음인 컷 중
-/// rank 상위 keep만 Good 유지(나머지는 Bad로 강등, 이미 Bad는 그대로). 연사 묶기는 입력 순서의
+/// 상위 keep만 Good 유지(나머지는 Bad로 강등, 이미 Bad는 그대로). 순위는 `aesthetic`/`sharp`가
+/// 있으면 [`group_best_cmp`], 없으면 `rank`. 연사 묶기는 입력 순서의
 /// 인접 컷 기준이므로 `items`는 촬영 순서여야 한다. 반환: 각 인덱스별 `None`=제외, `Some(true/false)`=Good/Bad.
 pub fn apply_group_culling(items: &[CullItem], p: &GroupCullParams) -> Vec<Option<bool>> {
     explain_group_culling(items, p)
@@ -419,7 +452,6 @@ pub fn explain_group_culling(items: &[CullItem], p: &GroupCullParams) -> Vec<Gro
         }
     }
     let included: Vec<usize> = (0..n).filter(|&i| out[i].included).collect();
-    let ranks: Vec<f32> = items.iter().map(|it| it.rank).collect();
 
     // 연사: included를 원래(촬영) 순서대로 시각 간격 그룹핑. 유지 슬롯은 그룹 안에서 **아직 좋음인**
     // 컷끼리만 다툰다 — 이미 탈락한 컷이 슬롯을 차지해 좋은 컷까지 전부 탈락하는 것을 막는다.
@@ -428,7 +460,7 @@ pub fn explain_group_culling(items: &[CullItem], p: &GroupCullParams) -> Vec<Gro
         let times: Vec<Option<i64>> = included.iter().map(|&i| items[i].shot_time).collect();
         for g in group_bursts(&times, p.burst_gap_secs) {
             let orig: Vec<usize> = g.iter().map(|&k| included[k]).filter(|&i| out[i].good).collect();
-            let sorted = sorted_by_rank(&orig, &ranks);
+            let sorted = sorted_for_group(&orig, items);
             for (pos, &oi) in sorted.iter().enumerate() {
                 let r = GroupRank { rank: pos + 1, size: sorted.len(), keep };
                 if r.demoted() {
@@ -447,7 +479,7 @@ pub fn explain_group_culling(items: &[CullItem], p: &GroupCullParams) -> Vec<Gro
         let vhash: Vec<u64> = valid.iter().map(|&i| items[i].dhash.unwrap()).collect();
         for c in cluster_near_dups(&vhash, p.dedup_hamming) {
             let orig: Vec<usize> = c.iter().map(|&k| valid[k]).filter(|&i| out[i].good).collect();
-            let sorted = sorted_by_rank(&orig, &ranks);
+            let sorted = sorted_for_group(&orig, items);
             for (pos, &oi) in sorted.iter().enumerate() {
                 let r = GroupRank { rank: pos + 1, size: sorted.len(), keep };
                 if r.demoted() {
@@ -663,10 +695,10 @@ mod tests {
     #[test]
     fn group_culling_meta_then_burst() {
         let items = vec![
-            CullItem { good: true, rank: 0.3, dhash: None, shot_time: Some(100), meta: meta_iso_time(Some(400), Some(100)) },
-            CullItem { good: true, rank: 0.9, dhash: None, shot_time: Some(101), meta: meta_iso_time(Some(400), Some(101)) },
-            CullItem { good: true, rank: 0.5, dhash: None, shot_time: Some(200), meta: meta_iso_time(Some(400), Some(200)) },
-            CullItem { good: true, rank: 0.99, dhash: None, shot_time: Some(201), meta: meta_iso_time(Some(25600), Some(201)) },
+            CullItem { good: true, rank: 0.3, aesthetic: None, sharp: None, dhash: None, shot_time: Some(100), meta: meta_iso_time(Some(400), Some(100)) },
+            CullItem { good: true, rank: 0.9, aesthetic: None, sharp: None, dhash: None, shot_time: Some(101), meta: meta_iso_time(Some(400), Some(101)) },
+            CullItem { good: true, rank: 0.5, aesthetic: None, sharp: None, dhash: None, shot_time: Some(200), meta: meta_iso_time(Some(400), Some(200)) },
+            CullItem { good: true, rank: 0.99, aesthetic: None, sharp: None, dhash: None, shot_time: Some(201), meta: meta_iso_time(Some(25600), Some(201)) },
         ];
         let p = GroupCullParams {
             use_meta: true,
@@ -687,9 +719,9 @@ mod tests {
         let h2 = dhash(&gradient(120, 90, 0));
         let hd = dhash(&solid(120, 90, [200, 30, 30]));
         let items = vec![
-            CullItem { good: true, rank: 0.4, dhash: Some(h), shot_time: None, meta: PhotoMeta::default() },
-            CullItem { good: true, rank: 0.8, dhash: Some(h2), shot_time: None, meta: PhotoMeta::default() },
-            CullItem { good: true, rank: 0.6, dhash: Some(hd), shot_time: None, meta: PhotoMeta::default() },
+            CullItem { good: true, rank: 0.4, aesthetic: None, sharp: None, dhash: Some(h), shot_time: None, meta: PhotoMeta::default() },
+            CullItem { good: true, rank: 0.8, aesthetic: None, sharp: None, dhash: Some(h2), shot_time: None, meta: PhotoMeta::default() },
+            CullItem { good: true, rank: 0.6, aesthetic: None, sharp: None, dhash: Some(hd), shot_time: None, meta: PhotoMeta::default() },
         ];
         let p = GroupCullParams {
             use_meta: false, meta_filter: MetaFilter::default(),
@@ -707,9 +739,9 @@ mod tests {
         // 연사 3장: 0은 rank 최고지만 이미 탈락(CV). 유지 슬롯은 좋음인 1·2끼리 다툰다.
         let t = |s| meta_iso_time(None, Some(s));
         let items = vec![
-            CullItem { good: false, rank: 0.95, dhash: None, shot_time: Some(100), meta: t(100) },
-            CullItem { good: true, rank: 0.6, dhash: None, shot_time: Some(101), meta: t(101) },
-            CullItem { good: true, rank: 0.4, dhash: None, shot_time: Some(102), meta: t(102) },
+            CullItem { good: false, rank: 0.95, aesthetic: None, sharp: None, dhash: None, shot_time: Some(100), meta: t(100) },
+            CullItem { good: true, rank: 0.6, aesthetic: None, sharp: None, dhash: None, shot_time: Some(101), meta: t(101) },
+            CullItem { good: true, rank: 0.4, aesthetic: None, sharp: None, dhash: None, shot_time: Some(102), meta: t(102) },
         ];
         let p = GroupCullParams {
             use_meta: false, meta_filter: MetaFilter::default(),
@@ -737,9 +769,9 @@ mod tests {
         // 유사 3장(같은 해시). 0·1은 연사 → 1이 연사에서 강등. 중복 정리(2장 유지)는 남은 0·2에게.
         let h = dhash(&gradient(120, 90, 0));
         let items = vec![
-            CullItem { good: true, rank: 0.9, dhash: Some(h), shot_time: Some(100), meta: PhotoMeta::default() },
-            CullItem { good: true, rank: 0.8, dhash: Some(h), shot_time: Some(101), meta: PhotoMeta::default() },
-            CullItem { good: true, rank: 0.7, dhash: Some(h), shot_time: Some(900), meta: PhotoMeta::default() },
+            CullItem { good: true, rank: 0.9, aesthetic: None, sharp: None, dhash: Some(h), shot_time: Some(100), meta: PhotoMeta::default() },
+            CullItem { good: true, rank: 0.8, aesthetic: None, sharp: None, dhash: Some(h), shot_time: Some(101), meta: PhotoMeta::default() },
+            CullItem { good: true, rank: 0.7, aesthetic: None, sharp: None, dhash: Some(h), shot_time: Some(900), meta: PhotoMeta::default() },
         ];
         let p = GroupCullParams {
             use_meta: false, meta_filter: MetaFilter::default(),
@@ -777,7 +809,7 @@ mod tests {
         let items: Vec<CullItem> = scores
             .iter()
             .enumerate()
-            .map(|(i, &r)| CullItem { good: true, rank: r, dhash: Some(h), shot_time: Some(100 + i as i64), meta: PhotoMeta::default() })
+            .map(|(i, &r)| CullItem { good: true, rank: r, aesthetic: None, sharp: None, dhash: Some(h), shot_time: Some(100 + i as i64), meta: PhotoMeta::default() })
             .collect();
         let mut finite: Vec<usize> = (0..30).filter(|i| i % 3 != 0).collect();
         finite.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
