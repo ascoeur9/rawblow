@@ -580,6 +580,7 @@ impl RawBlowApp {
         self.pending_thumb_prio.clear();
         self.pending_prefetch.clear();
         self.histo.clear();
+        self.look_src.clear();
     }
 
     /// 표시 섹션의 광색역 행에 붙는 현재 출력.
