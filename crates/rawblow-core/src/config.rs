@@ -692,6 +692,10 @@ pub struct Config {
     /// 폴더별 마지막으로 보던 사진(#86). 최근 사용 순(맨 앞이 가장 최근), 최대 64개.
     #[serde(default)]
     pub folder_resume: Vec<FolderResume>,
+    /// 광색역 표시(#122). 기본 꺼짐. 켜면 macOS는 Display P3, Windows는 그 창의 모니터 ICC.
+    /// Linux와 실패는 sRGB. 필드 기본값 false가 원하는 기본이라 `#[serde(default)]`를 단다.
+    #[serde(default)]
+    pub wide_gamut: bool,
 }
 
 impl Default for Config {
@@ -722,6 +726,7 @@ impl Default for Config {
             transfer_dest_mode: TransferDestMode::default(),
             transfer_dest_folder: String::new(),
             folder_resume: Vec::new(),        // 폴더별 재개 위치(#86). 처음엔 비어 있음.
+            wide_gamut: false,                // 광색역 표시(#122). 기본 꺼짐.
         }
     }
 }
@@ -893,6 +898,15 @@ fn save_to(path: &Path, config: &Config) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_wide_gamut_stays_off() {
+        let cfg: Config = serde_json::from_str("{}").unwrap();
+        assert!(!cfg.wide_gamut);
+        let saved = serde_json::to_string(&Config { wide_gamut: true, ..Config::default() }).unwrap();
+        let back: Config = serde_json::from_str(&saved).unwrap();
+        assert!(back.wide_gamut);
+    }
 
     #[test]
     fn model_spec_gpu_uses_rn50_fp32() {

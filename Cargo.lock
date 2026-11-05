@@ -3049,12 +3049,14 @@ dependencies = [
  "image 0.25.10",
  "log",
  "objc",
+ "raw-window-handle",
  "rawblow-core",
  "rfd",
  "serde",
  "serde_json",
  "sha2",
  "ureq 2.12.1",
+ "windows-sys 0.52.0",
  "winresource",
 ]
 

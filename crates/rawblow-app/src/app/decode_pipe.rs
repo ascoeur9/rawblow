@@ -345,7 +345,11 @@ impl RawBlowApp {
                         uploads += 1;
                     }
                 } else {
-                    self.histo.insert(res.id, compute_histo(&img.rgba));
+                    let histo = match img.source_histo {
+                        Some(bins) => histo_from_bins(bins),
+                        None => compute_histo(&img.rgba),
+                    };
+                    self.histo.insert(res.id, histo);
                     let color = egui::ColorImage::from_rgba_unmultiplied(
                         [img.width as usize, img.height as usize],
                         &img.rgba,
