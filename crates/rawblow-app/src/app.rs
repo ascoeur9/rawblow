@@ -393,6 +393,18 @@ fn initial_os_color() -> rawblow_core::color::OsColor {
     }
 }
 
+/// 출력 종류의 짧은 이름. 단일 보기 배지 꼬리와 「현재 출력」(모니터 이름을 모를 때)에 같이 쓴다.
+/// sRGB·Display P3는 고유명사라 번역하지 않는다.
+pub(super) fn output_short(lang: Lang, kind: rawblow_core::color::OutputKind) -> &'static str {
+    use rawblow_core::color::OutputKind;
+    match kind {
+        OutputKind::Srgb => "sRGB",
+        OutputKind::SrgbFallback => tr(lang, "sRGB(폴백)"),
+        OutputKind::DisplayP3 => "Display P3",
+        OutputKind::MonitorIcc => tr(lang, "모니터 ICC"),
+    }
+}
+
 impl RawBlowApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::apply(&cc.egui_ctx);
@@ -583,23 +595,22 @@ impl RawBlowApp {
         self.look_src.clear();
     }
 
-    /// 표시 섹션의 광색역 행에 붙는 현재 출력. 모니터 이름을 알면 `현재 출력: <모니터> · <프로파일>`.
+    /// 단일 보기 배지와 설정 「현재 출력」이 함께 쓰는 판정. 이번 프레임 apply_display_color가 채운 값을 읽는다.
+    fn output_kind(&self) -> rawblow_core::color::OutputKind {
+        rawblow_core::color::output_kind(self.cfg.wide_gamut, &self.os_color)
+    }
+
+    /// 표시 섹션의 광색역 행에 붙는 현재 출력. 모니터 이름을 알면 `현재 출력: <모니터> · Display P3`
+    /// 또는 `현재 출력: <모니터> · <프로파일>`, 모르면 배지와 같은 짧은 이름이다.
     fn wide_gamut_status(&self) -> String {
-        if !self.cfg.wide_gamut {
-            return tr(self.lang, "현재 출력: sRGB").to_string();
-        }
-        let out = rawblow_core::color::effective_output(true, &self.os_color);
-        match out {
-            rawblow_core::color::OutputColor::DisplayP3 if !self.monitor_name.is_empty() => {
-                format!("{}{} · Display P3", tr(self.lang, "현재 출력: "), self.monitor_name)
-            }
-            rawblow_core::color::OutputColor::DisplayP3 => {
-                tr(self.lang, "현재 출력: Display P3").to_string()
-            }
-            rawblow_core::color::OutputColor::Icc(_) if !self.monitor_name.is_empty() => {
-                format!("{}{}", tr(self.lang, "현재 출력: "), self.monitor_name)
-            }
-            _ => tr(self.lang, "현재 출력: sRGB(폴백)").to_string(),
+        use rawblow_core::color::OutputKind;
+        let kind = self.output_kind();
+        let prefix = tr(self.lang, "현재 출력: ");
+        let name = &self.monitor_name;
+        match kind {
+            OutputKind::DisplayP3 if !name.is_empty() => format!("{prefix}{name} · Display P3"),
+            OutputKind::MonitorIcc if !name.is_empty() => format!("{prefix}{name}"),
+            _ => format!("{prefix}{}", output_short(self.lang, kind)),
         }
     }
 
@@ -2242,8 +2253,34 @@ mod tests {
         assert_eq!(app.wide_gamut_status(), "현재 출력: Display P3");
         app.os_color = OsColor::Windows { icc: None, acm_or_hdr: true };
         assert_eq!(app.wide_gamut_status(), "현재 출력: sRGB(폴백)");
+        // ICC는 적용됐는데 이름을 못 얻은 경우. 예전에는 「sRGB(폴백)」으로 잘못 나왔다.
+        app.os_color = OsColor::Windows { icc: Some(vec![1, 2, 3]), acm_or_hdr: false };
+        app.monitor_name.clear();
+        assert_eq!(app.wide_gamut_status(), "현재 출력: 모니터 ICC");
         app.cfg.wide_gamut = false;
         assert_eq!(app.wide_gamut_status(), "현재 출력: sRGB");
+        // 앱 언어를 따른다(맥 내장 화면 이름은 macos_color가 tr(lang, "내장 디스플레이")로 넘긴다).
+        use rawblow_core::config::Lang;
+        app.cfg.wide_gamut = true;
+        app.os_color = OsColor::MacOs { layer_ok: true };
+        for (lang, want) in [
+            (Lang::Ko, "현재 출력: 내장 디스플레이 · Display P3"),
+            (Lang::En, "Output: Built-in display · Display P3"),
+            (Lang::Ja, "現在の出力: 内蔵ディスプレイ · Display P3"),
+        ] {
+            app.lang = lang;
+            app.monitor_name = crate::i18n::tr(lang, "내장 디스플레이").into();
+            assert_eq!(app.wide_gamut_status(), want);
+        }
+        for (lang, want) in [
+            (Lang::Ko, "현재 출력: sRGB(폴백)"),
+            (Lang::En, "Output: sRGB (fallback)"),
+            (Lang::Ja, "現在の出力: sRGB（フォールバック）"),
+        ] {
+            app.lang = lang;
+            app.os_color = OsColor::MacOs { layer_ok: false };
+            assert_eq!(app.wide_gamut_status(), want, "예전 문구와 바이트까지 같다");
+        }
     }
 
     #[test]

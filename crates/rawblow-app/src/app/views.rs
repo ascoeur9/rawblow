@@ -768,17 +768,14 @@ impl RawBlowApp {
         };
         self.photo_view(ui, rect, real);
         if !self.has_modal() {
-            let thumb_only = self.thumb_only(real);
-            let suffix = if thumb_only {
-                tr(self.lang, "썸네일 · 본 이미지 열기 실패")
-            } else if !self.full_raw {
-                "FIT · sRGB"
-            } else if self.orig_fallback.contains(&real) {
-                tr(self.lang, "PREVIEW · 원본 없음")
-            } else {
-                "ORIG · sRGB"
-            };
-            self.paint_hud(ui, rect, real, suffix);
+            let suffix = single_hud_suffix(
+                self.lang,
+                self.thumb_only(real),
+                self.full_raw,
+                self.orig_fallback.contains(&real),
+                self.output_kind(),
+            );
+            self.paint_hud(ui, rect, real, &suffix);
             self.paint_thumb_only_banner(ui, rect, real);
             self.ui_map_overlay(ui, rect, real);
         }
@@ -1581,9 +1578,88 @@ impl RawBlowApp {
     }
 }
 
+/// 단일 보기 카운터 아래 꼬리. 경고가 색 표기보다 먼저다(분기 순서는 예전과 같다).
+/// 색 표기는 이 창의 실제 출력이라 설정 「현재 출력」과 같은 말을 쓴다.
+fn single_hud_suffix(
+    lang: Lang,
+    thumb_only: bool,
+    full_raw: bool,
+    orig_fallback: bool,
+    out: rawblow_core::color::OutputKind,
+) -> std::borrow::Cow<'static, str> {
+    use std::borrow::Cow;
+    if thumb_only {
+        return Cow::Borrowed(tr(lang, "썸네일 · 본 이미지 열기 실패"));
+    }
+    if full_raw && orig_fallback {
+        return Cow::Borrowed(tr(lang, "PREVIEW · 원본 없음"));
+    }
+    let mode = if full_raw { "ORIG" } else { "FIT" };
+    Cow::Owned(format!("{mode} · {}", output_short(lang, out)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rawblow_core::color::OutputKind;
+
+    #[test]
+    fn single_hud_suffix_names_the_output() {
+        let s = |lang, full_raw, kind| single_hud_suffix(lang, false, full_raw, false, kind).into_owned();
+        // 끔은 예전 그대로.
+        assert_eq!(s(Lang::Ko, false, OutputKind::Srgb), "FIT · sRGB");
+        assert_eq!(s(Lang::Ko, true, OutputKind::Srgb), "ORIG · sRGB");
+        for lang in [Lang::Ko, Lang::En, Lang::Ja] {
+            assert_eq!(s(lang, false, OutputKind::DisplayP3), "FIT · Display P3");
+        }
+        assert_eq!(s(Lang::Ko, true, OutputKind::MonitorIcc), "ORIG · 모니터 ICC");
+        assert_eq!(s(Lang::En, true, OutputKind::MonitorIcc), "ORIG · Monitor ICC");
+        assert_eq!(s(Lang::Ja, true, OutputKind::MonitorIcc), "ORIG · モニター ICC");
+        assert_eq!(s(Lang::Ko, false, OutputKind::SrgbFallback), "FIT · sRGB(폴백)");
+        assert_eq!(s(Lang::En, false, OutputKind::SrgbFallback), "FIT · sRGB (fallback)");
+        assert_eq!(s(Lang::Ja, false, OutputKind::SrgbFallback), "FIT · sRGB（フォールバック）");
+    }
+
+    #[test]
+    fn single_hud_suffix_warnings_win_over_color() {
+        for kind in [OutputKind::Srgb, OutputKind::SrgbFallback, OutputKind::DisplayP3, OutputKind::MonitorIcc] {
+            assert_eq!(
+                single_hud_suffix(Lang::Ko, true, true, true, kind),
+                tr(Lang::Ko, "썸네일 · 본 이미지 열기 실패")
+            );
+            assert_eq!(single_hud_suffix(Lang::En, false, true, true, kind), tr(Lang::En, "PREVIEW · 원본 없음"));
+        }
+        // 프리뷰로 보고 있으면 원본 폴백 기록이 있어도 FIT 표기다.
+        assert_eq!(single_hud_suffix(Lang::Ko, false, false, true, OutputKind::DisplayP3), "FIT · Display P3");
+    }
+
+    /// 실제 앱 상태(설정 + OS 조사 결과)에서 배지와 설정 「현재 출력」이 같은 출력 이름을 쓴다
+    /// (모니터 이름을 모를 때). 윈도우 probe는 끈 상태에서도 ICC를 주므로 그 경우를 꼭 넣는다.
+    #[test]
+    fn badge_and_settings_row_name_the_output_from_app_state() {
+        use rawblow_core::color::OsColor;
+        RawBlowApp::settings_qa_begin();
+        let mut app = RawBlowApp::for_settings_qa();
+        let icc = || OsColor::Windows { icc: Some(vec![1, 2, 3]), acm_or_hdr: false };
+        let cases = [
+            (false, icc(), "sRGB"),
+            (false, OsColor::MacOs { layer_ok: true }, "sRGB"),
+            (true, OsColor::Linux, "sRGB(폴백)"),
+            (true, OsColor::MacOs { layer_ok: false }, "sRGB(폴백)"),
+            (true, OsColor::MacOs { layer_ok: true }, "Display P3"),
+            (true, OsColor::Windows { icc: None, acm_or_hdr: false }, "sRGB(폴백)"),
+            (true, OsColor::Windows { icc: Some(vec![1, 2, 3]), acm_or_hdr: true }, "sRGB(폴백)"),
+            (true, icc(), "모니터 ICC"),
+        ];
+        for (wide, os, tail) in cases {
+            app.cfg.wide_gamut = wide;
+            app.os_color = os.clone();
+            app.monitor_name.clear();
+            let badge = single_hud_suffix(Lang::Ko, false, false, false, app.output_kind());
+            assert_eq!(badge, format!("FIT · {tail}"), "{wide} {os:?}");
+            assert_eq!(app.wide_gamut_status(), format!("현재 출력: {tail}"), "{wide} {os:?}");
+        }
+    }
 
     fn shell_text(view: ViewMode) -> String {
         RawBlowApp::settings_qa_begin();

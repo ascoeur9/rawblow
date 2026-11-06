@@ -645,10 +645,9 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "원본(ORIG)" => ("Original (ORIG)", "原寸（ORIG）"),
         "히스토그램" => ("Histogram", "ヒストグラム"),
         "광색역 표시" => ("Wide gamut", "広色域表示"),
-        "현재 출력: sRGB" => ("Output: sRGB", "現在の出力: sRGB"),
-        "현재 출력: Display P3" => ("Output: Display P3", "現在の出力: Display P3"),
-        "현재 출력: sRGB(폴백)" => ("Output: sRGB (fallback)", "現在の出力: sRGB（フォールバック）"),
         "현재 출력: " => ("Output: ", "現在の出力: "),
+        "모니터 ICC" => ("Monitor ICC", "モニター ICC"),
+        "sRGB(폴백)" => ("sRGB (fallback)", "sRGB（フォールバック）"),
         "내장 디스플레이" => ("Built-in display", "内蔵ディスプレイ"),
         "촬영 위치 지도" => ("Location map", "撮影地マップ"),
         "AF 포인트" => ("AF points", "AFポイント"),
@@ -919,10 +918,15 @@ mod tests {
     #[test]
     fn wide_gamut_status_is_translated() {
         assert_eq!(tr(Lang::En, "광색역 표시"), "Wide gamut");
-        assert_eq!(tr(Lang::Ja, "현재 출력: sRGB(폴백)"), "現在の出力: sRGB（フォールバック）");
-        assert_eq!(tr(Lang::En, "현재 출력: Display P3"), "Output: Display P3");
+        // 「현재 출력」은 접두 + 짧은 이름(app::output_short)으로 만든다. 완성 문구는 app.rs 테스트가 고정한다.
+        assert_eq!(tr(Lang::En, "현재 출력: "), "Output: ");
+        assert_eq!(tr(Lang::Ja, "현재 출력: "), "現在の出力: ");
         assert_eq!(tr(Lang::En, "내장 디스플레이"), "Built-in display");
         assert_eq!(tr(Lang::Ja, "내장 디스플레이"), "内蔵ディスプレイ");
+        assert_eq!(tr(Lang::En, "모니터 ICC"), "Monitor ICC");
+        assert_eq!(tr(Lang::Ja, "모니터 ICC"), "モニター ICC");
+        assert_eq!(tr(Lang::En, "sRGB(폴백)"), "sRGB (fallback)");
+        assert_eq!(tr(Lang::Ja, "sRGB(폴백)"), "sRGB（フォールバック）");
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! 광색역 표시(#122). 입력 선택, 출력 폴백, ICC→sRGB와 Display P3의 픽셀 차이.
 
 use rawblow_core::color::{
-    choose_input, convert_display, convert_to_srgb, effective_output, source_histogram, InputColor,
-    OsColor, OutputColor,
+    choose_input, convert_display, convert_to_srgb, effective_output, output_kind, source_histogram,
+    InputColor, OsColor, OutputColor, OutputKind,
 };
 
 fn put_u32(buf: &mut [u8], at: usize, v: u32) {
@@ -106,6 +106,39 @@ fn output_falls_back_to_srgb() {
     );
     assert_eq!(OutputColor::Srgb.cache_tag(), 0);
     assert_ne!(OutputColor::DisplayP3.cache_tag(), 0);
+}
+
+/// 배지·설정 문구용 판정(output_kind)이 실제 픽셀 목적지(effective_output)와 늘 같은 말을 한다.
+#[test]
+fn output_kind_agrees_with_effective_output() {
+    let oses = [
+        OsColor::Linux,
+        OsColor::MacOs { layer_ok: false },
+        OsColor::MacOs { layer_ok: true },
+        OsColor::Windows { icc: None, acm_or_hdr: false },
+        OsColor::Windows { icc: None, acm_or_hdr: true },
+        OsColor::Windows { icc: Some(Vec::new()), acm_or_hdr: false },
+        OsColor::Windows { icc: Some(b"icc".to_vec()), acm_or_hdr: false },
+        OsColor::Windows { icc: Some(b"icc".to_vec()), acm_or_hdr: true },
+    ];
+    for wide in [false, true] {
+        for os in &oses {
+            let kind = output_kind(wide, os);
+            let out = effective_output(wide, os);
+            let ok = match kind {
+                OutputKind::Srgb => !wide && out == OutputColor::Srgb,
+                OutputKind::SrgbFallback => wide && out == OutputColor::Srgb,
+                OutputKind::DisplayP3 => out == OutputColor::DisplayP3,
+                OutputKind::MonitorIcc => matches!(out, OutputColor::Icc(_)),
+            };
+            assert!(ok, "wide={wide} os={os:?} kind={kind:?} out={out:?}");
+        }
+    }
+    // 윈도우 probe는 wide와 상관없이 ICC를 준다. 끈 상태는 모니터 ICC가 아니라 sRGB다.
+    let icc = OsColor::Windows { icc: Some(b"icc".to_vec()), acm_or_hdr: false };
+    assert_eq!(output_kind(false, &icc), OutputKind::Srgb);
+    assert_eq!(output_kind(true, &icc), OutputKind::MonitorIcc);
+    assert_eq!(output_kind(true, &OsColor::Linux), OutputKind::SrgbFallback);
 }
 
 #[test]

@@ -29,6 +29,33 @@ pub enum OsColor {
     Windows { icc: Option<Vec<u8>>, acm_or_hdr: bool },
 }
 
+/// 화면에 알릴 출력 종류. 판정은 `effective_output`과 같지만 ICC 바이트를 복제하지 않는다.
+/// `Srgb`와 `SrgbFallback`은 픽셀이 같아도(캐시 태그 0) 사용자에게 알릴 내용이 다르다.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputKind {
+    /// 광색역 끔.
+    Srgb,
+    /// 켰지만 이 창에서 못 씀(맥 레이어 실패, 윈도우 ACM/HDR·프로파일 없음, 리눅스).
+    SrgbFallback,
+    DisplayP3,
+    MonitorIcc,
+}
+
+/// 단일 보기 배지와 설정 「현재 출력」이 함께 쓰는 판정. 윈도우 probe는 `wide`와 상관없이
+/// ICC를 돌려주므로 `os`만 보면 안 되고 `wide_gamut`을 먼저 본다.
+pub fn output_kind(wide_gamut: bool, os: &OsColor) -> OutputKind {
+    if !wide_gamut {
+        return OutputKind::Srgb;
+    }
+    match os {
+        OsColor::MacOs { layer_ok: true } => OutputKind::DisplayP3,
+        OsColor::Windows { icc: Some(bytes), acm_or_hdr: false } if !bytes.is_empty() => {
+            OutputKind::MonitorIcc
+        }
+        _ => OutputKind::SrgbFallback,
+    }
+}
+
 /// 임베디드 ICC, 없으면 R03(Adobe RGB), 그 외 sRGB.
 pub fn choose_input<'a>(
     icc: Option<&'a [u8]>,
