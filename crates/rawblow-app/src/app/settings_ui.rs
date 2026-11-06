@@ -265,9 +265,10 @@ fn draw_sicon(p: &egui::Painter, rect: Rect, kind: SIcon) {
                 Rounding::same(1.5),
                 st,
             );
-            p.line_segment([Pos2::new(r.left() + 5.5, mid.y), Pos2::new(r.left() + 5.5, mid.y + 2.0)], Stroke::new(1.2, c));
-            p.line_segment([Pos2::new(mid.x, mid.y), Pos2::new(mid.x, mid.y + 2.0)], Stroke::new(1.2, c));
-            p.line_segment([Pos2::new(r.right() - 5.5, mid.y), Pos2::new(r.right() - 5.5, mid.y + 2.0)], Stroke::new(1.2, c));
+            let key = Stroke::new(1.2_f32, c);
+            p.line_segment([Pos2::new(r.left() + 5.5, mid.y), Pos2::new(r.left() + 5.5, mid.y + 2.0)], key);
+            p.line_segment([Pos2::new(mid.x, mid.y), Pos2::new(mid.x, mid.y + 2.0)], key);
+            p.line_segment([Pos2::new(r.right() - 5.5, mid.y), Pos2::new(r.right() - 5.5, mid.y + 2.0)], key);
         }
     }
 }

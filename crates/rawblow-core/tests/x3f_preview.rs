@@ -9,10 +9,7 @@ use rawblow_core::scan::scan_folder;
 use rawblow_core::{x3f, SortOrder};
 
 fn tiny_jpeg(rgb: [u8; 3], w: u32, h: u32) -> Vec<u8> {
-    let mut px = vec![0u8; (w * h * 3) as usize];
-    for chunk in px.chunks_exact_mut(3) {
-        chunk.copy_from_slice(&rgb);
-    }
+    let px = rgb.repeat((w * h) as usize);
     let mut buf = Cursor::new(Vec::new());
     let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 90);
     enc.encode(&px, w, h, image::ExtendedColorType::Rgb8).expect("jpeg");
