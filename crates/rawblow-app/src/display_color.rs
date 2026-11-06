@@ -3,12 +3,11 @@
 use rawblow_core::color::OsColor;
 use rawblow_core::config::Lang;
 
-/// `lang`은 Windows에서 이름 없는 내장 화면을 부를 때만 쓴다.
+/// `lang`은 내장 화면을 앱 언어의 「내장 디스플레이」로 부를 때 쓴다(macOS·Windows).
 pub fn probe(frame: &eframe::Frame, wide: bool, lang: Lang) -> (OsColor, String) {
     #[cfg(target_os = "macos")]
     {
-        let _ = lang;
-        crate::macos_color::probe(frame, wide)
+        crate::macos_color::probe(frame, wide, lang)
     }
     #[cfg(target_os = "windows")]
     {
