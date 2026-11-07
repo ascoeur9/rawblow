@@ -50,6 +50,10 @@ pub fn trf(lang: Lang, ko: &'static str, args: &[&str]) -> String {
 fn fmt_lookup(ko: &str) -> Option<(&'static str, &'static str)> {
     Some(match ko {
         "{} 항목 로드" => ("Loaded {} items", "{} 項目を読み込み"),
+        // 설정 「LUT 폴더」 설명(#125 후속).
+        ".cube {}개" => (".cube files: {}", ".cube {}個"),
+        // 상한(500)을 넘어 잘렸을 때: 전체, 보이는 개수 순.
+        ".cube {}개 중 앞 {}개" => (".cube files: {} (showing the first {})", ".cube {}個中、先頭の{}個"),
         // #91 AI 컬링 판정 근거
         "초점 미달 ({} < {})" => ("Focus below threshold ({} < {})", "ピント不足 ({} < {})"),
         "초점 {} (기준 {})" => ("Focus {} (threshold {})", "ピント {} (基準 {})"),
@@ -457,6 +461,33 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "없음" => ("None", "なし"),
         "룩 끄기" => ("Look off", "ルックオフ"),
         "LUT를 읽지 못했습니다" => ("Couldn't read the LUT", "LUTを読めませんでした"),
+        // 툴바 LUT 버튼·메뉴와 설정 「LUT 폴더」(#125 후속). 「LUT」「OFF」는 번역하지 않는다.
+        "룩(LUT) 고르기 · 히스토그램은 룩 적용 전" => (
+            "Pick a look (LUT) · histogram is before the look",
+            "ルック（LUT）を選ぶ · ヒストグラムはルック適用前",
+        ),
+        "누르고 있는 동안 룩 끄기" => ("Hold to turn the look off", "押している間ルックをオフ"),
+        "LUT 폴더 설정…" => ("LUT folder settings…", "LUTフォルダの設定…"),
+        "설정에서 LUT 폴더를 지정하면 .cube 파일이 여기 나옵니다" => (
+            "Set a LUT folder in Settings to list its .cube files here",
+            "設定でLUTフォルダを指定すると.cubeファイルがここに出ます",
+        ),
+        "LUT 폴더에 .cube 파일이 없습니다" => ("No .cube files in the LUT folder", "LUTフォルダに.cubeファイルがありません"),
+        "LUT 폴더를 찾을 수 없습니다" => ("LUT folder not found", "LUTフォルダが見つかりません"),
+        "LUT 폴더를 읽을 수 없습니다(접근 권한)" => (
+            "Can't read the LUT folder (access permission)",
+            "LUTフォルダを読めません（アクセス権）",
+        ),
+        "LUT 폴더" => ("LUT folder", "LUTフォルダ"),
+        "폴더를 고르면 안의 .cube 파일이 툴바 LUT 목록에 나옵니다" => (
+            "Pick a folder to list its .cube files in the toolbar LUT menu",
+            "フォルダを選ぶと中の.cubeファイルがツールバーのLUT一覧に出ます",
+        ),
+        ".cube 파일이 없습니다" => ("No .cube files", ".cubeファイルがありません"),
+        "폴더를 찾을 수 없습니다" => ("Folder not found", "フォルダが見つかりません"),
+        "폴더를 읽을 수 없습니다(접근 권한)" => ("Can't read the folder (access permission)", "フォルダを読めません（アクセス権）"),
+        "보기 방식 · 화면 출력 색" => ("View mode · display output color", "表示方式 · 画面の出力色"),
+        "룩 고르기: 툴바 LUT · 폴더는 설정" => ("Pick a look: toolbar LUT · folder in Settings", "ルック選択: ツールバーのLUT · フォルダは設定"),
         "수평 기울기" => ("Horizon Tilt", "水平の傾き"),
         "미적(구도) AI" => ("Aesthetic (Composition) AI", "美的（構図）AI"),
         "흐림 임계" => ("Blur Threshold", "ブレしきい値"),
@@ -978,10 +1009,39 @@ mod tests {
     #[test]
     fn help_overlay_strings_are_translated() {
         // #66 단축키 치트시트: 새 키들이 En/Ja에서 한국어로 폴백되지 않는지 스팟체크.
-        for ko in ["단축키", "이동", "채택", "히스토그램", "컬러 태그", "휠", "없음", "룩 끄기", "LUT를 읽지 못했습니다"] {
+        for ko in [
+            "단축키",
+            "이동",
+            "채택",
+            "히스토그램",
+            "컬러 태그",
+            "휠",
+            "없음",
+            "룩 끄기",
+            "LUT를 읽지 못했습니다",
+            // 툴바 LUT 버튼·메뉴·상태 바·설정 「LUT 폴더」(#125 후속).
+            "룩(LUT) 고르기 · 히스토그램은 룩 적용 전",
+            "누르고 있는 동안 룩 끄기",
+            "LUT 폴더 설정…",
+            "설정에서 LUT 폴더를 지정하면 .cube 파일이 여기 나옵니다",
+            "LUT 폴더에 .cube 파일이 없습니다",
+            "LUT 폴더를 찾을 수 없습니다",
+            "LUT 폴더를 읽을 수 없습니다(접근 권한)",
+            "LUT 폴더",
+            "폴더를 고르면 안의 .cube 파일이 툴바 LUT 목록에 나옵니다",
+            ".cube 파일이 없습니다",
+            "폴더를 찾을 수 없습니다",
+            "폴더를 읽을 수 없습니다(접근 권한)",
+            "보기 방식 · 화면 출력 색",
+            "룩 고르기: 툴바 LUT · 폴더는 설정",
+        ] {
             assert_ne!(tr(Lang::En, ko), ko, "En 번역 누락: {ko}");
             assert_ne!(tr(Lang::Ja, ko), ko, "Ja 번역 누락: {ko}");
         }
+        assert_eq!(trf(Lang::En, ".cube {}개", &["3"]), ".cube files: 3");
+        assert_eq!(trf(Lang::Ja, ".cube {}개", &["3"]), ".cube 3個");
+        assert_eq!(trf(Lang::En, ".cube {}개 중 앞 {}개", &["812", "500"]), ".cube files: 812 (showing the first 500)");
+        assert_eq!(trf(Lang::Ja, ".cube {}개 중 앞 {}개", &["812", "500"]), ".cube 812個中、先頭の500個");
         assert_eq!(tr(Lang::En, "단축키"), "Keyboard Shortcuts");
         assert_eq!(tr(Lang::Ja, "단축키"), "ショートカット");
         // 섹션 헤더 "파일"은 기존 키 재사용(중복 추가 없이 폴백 아님).

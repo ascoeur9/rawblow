@@ -1,7 +1,7 @@
 //! 표시 LUT(#125). 앱이 텍스처를 만들 때 부르는 `display_rgba`와 `parse_cube`를 검사한다.
 
 use rawblow_core::config::Config;
-use rawblow_core::lut::{builtin, display_rgba, parse_cube, CubeError, BUILTINS};
+use rawblow_core::lut::{builtin, display_rgba, parse_cube, scan_cube_dir, CubeDir, CubeError, BUILTINS, CUBE_DIR_CAP};
 use rawblow_core::model::{ColorTag, Label};
 use rawblow_core::sidecar::ItemRec;
 
@@ -120,4 +120,91 @@ fn missing_config_field_is_off_and_session_has_no_look() {
     assert!(v.get("name").is_none());
     assert!(v.get("cube_path").is_none());
     assert!(v.get("look").is_none());
+}
+
+fn temp_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("rb_cube_dir_{tag}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn cube_dir_lists_top_level_cube_files_by_lowercase_name() {
+    let dir = temp_dir("list");
+    for name in ["b2.CUBE", "a.cube", "B.Cube", "c.txt", ".hidden.cube", "._a.cube", "cube"] {
+        std::fs::write(dir.join(name), "x").unwrap();
+    }
+    // 하위 폴더 안의 .cube와 이름이 .cube인 폴더는 넣지 않는다.
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("sub").join("d.cube"), "x").unwrap();
+    std::fs::create_dir_all(dir.join("folder.cube")).unwrap();
+    let (files, status) = scan_cube_dir(Some(&dir));
+    let names: Vec<String> = files
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["a.cube", "B.Cube", "b2.CUBE"]);
+    assert_eq!(status, CubeDir::Found { shown: 3, total: 3 });
+    assert!(files.iter().all(|p| p.parent() == Some(dir.as_path())), "절대 경로(폴더 + 이름)");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cube_dir_states_unset_missing_empty_and_cap() {
+    assert_eq!(scan_cube_dir(None), (Vec::new(), CubeDir::Unset));
+    let gone = std::env::temp_dir().join(format!("rb_cube_dir_gone_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&gone);
+    assert_eq!(scan_cube_dir(Some(&gone)), (Vec::new(), CubeDir::Missing));
+    // 폴더 자리에 파일이 있어도 읽을 수 없는 폴더다.
+    let dir = temp_dir("states");
+    let file = dir.join("not_a_dir.cube");
+    std::fs::write(&file, "x").unwrap();
+    assert_eq!(scan_cube_dir(Some(&file)).1, CubeDir::Missing);
+    std::fs::remove_file(&file).unwrap();
+    std::fs::write(dir.join("readme.txt"), "x").unwrap();
+    assert_eq!(scan_cube_dir(Some(&dir)), (Vec::new(), CubeDir::Empty));
+    for i in 0..(CUBE_DIR_CAP + 3) {
+        std::fs::write(dir.join(format!("l{i:04}.cube")), "x").unwrap();
+    }
+    let (files, status) = scan_cube_dir(Some(&dir));
+    assert_eq!(files.len(), CUBE_DIR_CAP);
+    assert_eq!(status, CubeDir::Found { shown: CUBE_DIR_CAP, total: CUBE_DIR_CAP + 3 }, "잘려도 전체 개수를 안다");
+    assert_eq!(files[0].file_name().unwrap(), "l0000.cube", "이름순 앞에서 자른다");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 맥에서 이름을 바꾼 NFD 한글 파일과 NFC 파일이 섞여도 화면(NFC)에서 보이는 순서대로 놓는다.
+#[test]
+fn cube_dir_sorts_nfd_and_nfc_hangul_names_together() {
+    let dir = temp_dir("nfd_sort");
+    // 나(NFD: ㄴ + ㅏ)만 자모로 쓴다.
+    for name in ["가.cube", "\u{1102}\u{1161}.cube", "다.cube", "Z.cube"] {
+        std::fs::write(dir.join(name), "x").unwrap();
+    }
+    let (files, _) = scan_cube_dir(Some(&dir));
+    let shown: Vec<String> = files
+        .iter()
+        .map(|p| rawblow_core::text::nfc_hangul(&p.file_stem().unwrap().to_string_lossy()))
+        .collect();
+    assert_eq!(shown, ["Z", "가", "나", "다"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 폴더는 있는데 읽을 수 없으면(권한) 「없음」이 아니라 「읽을 수 없음」.
+#[cfg(unix)]
+#[test]
+fn cube_dir_without_permission_is_unreadable_not_missing() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_dir("noperm");
+    std::fs::write(dir.join("a.cube"), "x").unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // root는 권한과 상관없이 읽으므로 그때는 이 경우를 만들 수 없다.
+    let blocked = std::fs::read_dir(&dir).is_err();
+    let got = scan_cube_dir(Some(&dir));
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    if blocked {
+        assert_eq!(got, (Vec::new(), CubeDir::Unreadable));
+    }
 }

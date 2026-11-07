@@ -17,6 +17,66 @@ pub struct LookPref {
 
 pub const BUILTINS: [&str; 6] = ["Warm", "Tungsten", "Chrome", "Pan", "Vivid", "Snap"];
 
+/// LUT 폴더에서 읽는 `.cube` 상한. 넘으면 이름순 앞에서 자른다.
+pub const CUBE_DIR_CAP: usize = 500;
+
+/// LUT 폴더 상태. `Unset`은 호출부가 폴더를 지정하지 않았을 때다.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CubeDir {
+    Unset,
+    /// 없다(없는 경로·폴더가 아닌 경로).
+    Missing,
+    /// 폴더는 있는데 읽을 수 없다(권한, 맥 개인정보 보호 거부 등).
+    Unreadable,
+    /// 폴더는 있는데 `.cube`가 없다.
+    Empty,
+    /// 목록에 올린 개수(`shown`, 상한 적용 뒤)와 폴더 안 `.cube` 전체 개수(`total`).
+    Found { shown: usize, total: usize },
+}
+
+/// LUT 폴더의 `.cube` 목록. 하위 폴더는 내려가지 않고, 확장자는 대소문자를 가리지 않는다.
+/// 일반 파일만(링크는 따라가서 파일이면 넣는다), 점으로 시작하는 숨김 파일은 뺀다.
+/// 파일 이름을 NFC로 묶은 뒤 소문자 순으로 정렬하고 [`CUBE_DIR_CAP`]개에서 자른다
+/// (맥에서 이름을 바꾼 NFD 한글 파일이 NFC 파일들 앞으로 몰리지 않게).
+/// 읽기 실패는 빈 목록 + `Missing`(경로가 없음) 또는 `Unreadable`(폴더는 있음).
+pub fn scan_cube_dir(dir: Option<&std::path::Path>) -> (Vec<std::path::PathBuf>, CubeDir) {
+    let Some(dir) = dir else {
+        return (Vec::new(), CubeDir::Unset);
+    };
+    let rd = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) => {
+            // 폴더가 분명히 있는데 못 읽으면 「찾을 수 없음」이라고 하지 않는다(원인을 오해하게 된다).
+            let status = if e.kind() != std::io::ErrorKind::NotFound && dir.is_dir() {
+                CubeDir::Unreadable
+            } else {
+                CubeDir::Missing
+            };
+            return (Vec::new(), status);
+        }
+    };
+    let mut files: Vec<(String, std::path::PathBuf)> = rd
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                return None;
+            }
+            let path = e.path();
+            let is_cube = path
+                .extension()
+                .is_some_and(|x| x.to_string_lossy().eq_ignore_ascii_case("cube"));
+            (is_cube && path.is_file()).then(|| (crate::text::nfc_hangul(&name).to_lowercase(), path))
+        })
+        .collect();
+    files.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let total = files.len();
+    files.truncate(CUBE_DIR_CAP);
+    let files: Vec<std::path::PathBuf> = files.into_iter().map(|(_, p)| p).collect();
+    let status = if files.is_empty() { CubeDir::Empty } else { CubeDir::Found { shown: files.len(), total } };
+    (files, status)
+}
+
 #[derive(Clone, Debug)]
 pub struct Lut3d {
     size: u32,

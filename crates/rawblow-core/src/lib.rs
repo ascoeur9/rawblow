@@ -25,6 +25,7 @@ pub mod organize;
 pub mod quality;
 pub mod scan;
 pub mod sidecar;
+pub mod text;
 pub mod transfer;
 pub mod x3f;
 

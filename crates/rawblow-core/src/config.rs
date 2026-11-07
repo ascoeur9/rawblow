@@ -699,6 +699,9 @@ pub struct Config {
     /// 마지막 표시 룩(#125). 누락되면 룩 없음. 사진별 값은 `session.json`에 두지 않는다.
     #[serde(default)]
     pub look: crate::lut::LookPref,
+    /// LUT 폴더(#125 후속). 안의 `.cube`가 툴바 LUT 목록에 나온다. 비어 있으면 미지정.
+    /// 옛 설정에는 없으므로 컨테이너 `#[serde(default)]`로 빈 문자열이 된다.
+    pub lut_dir: String,
     /// 구도 보조선(#90). 기본 끔. 사진별 `session.json`이 아니라 앱 설정.
     #[serde(default)]
     pub guides: crate::guides::GuidePreset,
@@ -737,6 +740,7 @@ impl Default for Config {
             folder_resume: Vec::new(),        // 폴더별 재개 위치(#86). 처음엔 비어 있음.
             wide_gamut: false,                // 광색역 표시(#122). 기본 꺼짐.
             look: crate::lut::LookPref::default(), // 표시 룩(#125). 기본은 적용 안 함.
+            lut_dir: String::new(),           // LUT 폴더. 기본은 미지정.
             guides: crate::guides::GuidePreset::Off,
             guide_custom: crate::guides::GuideCustom::default(),
         }
@@ -910,6 +914,17 @@ fn save_to(path: &Path, config: &Config) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_config_has_no_lut_dir() {
+        // 옛 설정 파일에는 lut_dir가 없다 → 빈 문자열(미지정).
+        let cfg: Config = serde_json::from_str(r#"{"wide_gamut":true,"look":{"name":"Warm"}}"#).unwrap();
+        assert_eq!(cfg.lut_dir, "");
+        assert_eq!(cfg.look.name, "Warm");
+        let saved = serde_json::to_string(&Config { lut_dir: "/Users/me/LUTs".into(), ..Config::default() }).unwrap();
+        let back: Config = serde_json::from_str(&saved).unwrap();
+        assert_eq!(back.lut_dir, "/Users/me/LUTs");
+    }
 
     #[test]
     fn missing_wide_gamut_stays_off() {

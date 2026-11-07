@@ -231,6 +231,22 @@ pub struct RawBlowApp {
     look_compare: bool,
     /// `(이름\n경로, 파싱된 LUT)`. 키가 같으면 파일을 다시 읽지 않는다.
     look_cache: Option<(String, Option<rawblow_core::lut::Lut3d>)>,
+    /// 설정 「LUT 폴더」의 `.cube` 목록. 시작·폴더 변경·LUT 메뉴를 열 때 다시 읽는다.
+    lut_files: Vec<PathBuf>,
+    /// 위 목록을 읽은 결과(미지정·없음·비어 있음·N개). 메뉴 캡션과 설정 설명이 쓴다.
+    lut_dir_status: rawblow_core::lut::CubeDir,
+    /// 이번 프레임에 누를 수 있는 툴바 LUT 버튼을 그렸는지. 아니면 열린 룩 메뉴를 닫는다(ui_screen).
+    look_button_drawn: bool,
+    /// LUT 폴더를 다시 읽을 때마다 올린다(툴바 단계 계산의 LUT 라벨 캐시 키).
+    lut_gen: u64,
+    /// 툴바 단계 계산에 쓰는 가장 넓은 LUT 버튼 글자. 폴더 파일이 많아도 프레임마다 다시 재지 않게
+    /// (언어, lut_gen, 룩 경로)가 바뀔 때만 다시 고르고, 룩 메뉴가 열려 있는 동안은 그대로 둔다.
+    look_worst: Option<views::LookWorst>,
+    /// 이번 세션에 룩 경로로 본 가장 넓은 파일 라벨. 폴더 밖 파일 룩에서 빌트인으로 바꿔도
+    /// 툴바 단계가 바뀌지 않게 줄이지 않는다.
+    look_label_floor: Option<String>,
+    /// 룩 메뉴의 「LUT 폴더 설정…」으로 설정을 열었으면 「LUT 폴더」 행까지 한 번 스크롤한다.
+    settings_focus_lut: bool,
     generation: u64,
     /// 워커에 적용한 출력 캐시 태그. None이면 아직 한 프레임도 적용하지 않음(#122).
     color_tag: Option<u64>,
@@ -484,6 +500,13 @@ impl RawBlowApp {
             look_gen: 0,
             look_compare: false,
             look_cache: None,
+            lut_files: Vec::new(),
+            lut_dir_status: rawblow_core::lut::CubeDir::Unset,
+            look_button_drawn: false,
+            lut_gen: 0,
+            look_worst: None,
+            look_label_floor: None,
+            settings_focus_lut: false,
             generation: 0,
             color_tag: None,
             os_color: initial_os_color(),
@@ -544,6 +567,8 @@ impl RawBlowApp {
             cfg,
         };
 
+        // 툴바 LUT 목록(설정 「LUT 폴더」).
+        app.reload_lut_files();
         // 마지막 폴더 자동 복원.
         if let Some(last) = app.cfg.last_folder.clone() {
             let p = PathBuf::from(last);
@@ -699,6 +724,13 @@ impl RawBlowApp {
             look_gen: 0,
             look_compare: false,
             look_cache: None,
+            lut_files: Vec::new(),
+            lut_dir_status: rawblow_core::lut::CubeDir::Unset,
+            look_button_drawn: false,
+            lut_gen: 0,
+            look_worst: None,
+            look_label_floor: None,
+            settings_focus_lut: false,
             generation: 0,
             color_tag: None,
             os_color: initial_os_color(),
@@ -1778,18 +1810,7 @@ impl eframe::App for RawBlowApp {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
 
-        // 화면 분기.
-        if self.folder.is_none() {
-            self.ui_open(ctx);
-        } else if self.licenses.is_some() {
-            self.ui_licenses(ctx);
-        } else if self.show_settings {
-            self.ui_settings(ctx);
-        } else if self.fullscreen {
-            self.ui_fullscreen(ctx);
-        } else {
-            self.ui_shell(ctx);
-        }
+        self.ui_screen(ctx);
 
         // 모달. 진행 중 작업(전송/정리)이 있으면 그 프로그레스바가 최우선 — 다른 모달을 가린다.
         #[cfg(feature = "model-download")]
@@ -1883,6 +1904,69 @@ impl eframe::App for RawBlowApp {
 }
 
 impl RawBlowApp {
+    /// 화면 분기. 누를 수 있는 툴바 LUT 버튼을 그리지 않은 프레임에는 열린 룩 메뉴를 닫는다.
+    /// egui 0.29의 팝업은 그리지 않아도 memory에 열린 채 남아, T로 그리드에 갔다가(또는 F11·설정·
+    /// 모달 뒤에) 단일 보기로 돌아오면 메뉴가 다시 뜬다.
+    fn ui_screen(&mut self, ctx: &egui::Context) {
+        self.look_button_drawn = false;
+        if self.folder.is_none() {
+            self.ui_open(ctx);
+        } else if self.licenses.is_some() {
+            self.ui_licenses(ctx);
+        } else if self.show_settings {
+            self.ui_settings(ctx);
+        } else if self.fullscreen {
+            self.ui_fullscreen(ctx);
+        } else {
+            self.ui_shell(ctx);
+        }
+        let id = egui::Id::new(views::LOOK_MENU_ID);
+        if !self.look_button_drawn && ctx.memory(|m| m.is_popup_open(id)) {
+            ctx.memory_mut(|m| m.close_popup());
+        }
+    }
+
+    /// 설정 「LUT 폴더」를 바꾼다. 같은 값이면 아무것도 하지 않는다.
+    /// 지금 룩이 그 폴더의 파일이어도 룩은 그대로 둔다(경로가 절대 경로라 계속 동작).
+    pub(super) fn set_lut_dir(&mut self, dir: String) {
+        if self.cfg.lut_dir == dir {
+            return;
+        }
+        self.cfg.lut_dir = dir;
+        self.persist_cfg();
+        self.reload_lut_files();
+    }
+
+    /// 설정 「LUT 폴더」 입력칸에서 글자를 칠 때: 값과 저장만 한다. 폴더는 입력을 마칠 때
+    /// (포커스를 잃을 때·설정을 닫을 때) 읽는다 — 입력 도중 경로마다 디스크를 읽지 않게.
+    pub(super) fn type_lut_dir(&mut self, dir: String) {
+        if self.cfg.lut_dir != dir {
+            self.cfg.lut_dir = dir;
+            self.persist_cfg();
+        }
+    }
+
+    /// LUT 폴더를 다시 읽는다. 화면에는 NFC로 적어 두므로 디스크의 실제 이름으로 되돌려 읽는다.
+    pub(super) fn reload_lut_files(&mut self) {
+        let dir = self.cfg.lut_dir.trim();
+        let real = (!dir.is_empty()).then(|| real_dest_path(dir));
+        let (files, status) = rawblow_core::lut::scan_cube_dir(real.as_deref());
+        if files != self.lut_files {
+            self.lut_gen = self.lut_gen.wrapping_add(1);
+        }
+        self.lut_files = files;
+        self.lut_dir_status = status;
+    }
+
+    /// 설정 화면을 연다(⚙ 버튼·LUT 메뉴 「LUT 폴더 설정…」 공통).
+    pub(super) fn open_settings(&mut self) {
+        self.show_settings = true;
+        self.cache_size = None; // 설정 열 때 캐시 용량 새로 계산.
+        self.bg_hex = hex_str(self.photo_bg_rgb()); // 배경 HEX 입력 버퍼 동기화(#36).
+        self.settings_reset_armed = false; // '기본값 복원' 확인 arm 해제(#69).
+        self.reload_lut_files(); // 「LUT 폴더」 설명(.cube N개)이 지금 폴더 내용을 따르게.
+    }
+
     fn has_modal(&self) -> bool {
         // show_settings 포함: 설정 화면이 떠 있을 때 1~5/QWER/백틱 등 단축키가 뒤의 '현재 항목'을
         // 몰래 바꾸거나 설정의 DragValue 입력과 충돌하지 않게 키 처리를 막는다.
@@ -1956,6 +2040,10 @@ impl RawBlowApp {
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
+        // 룩 메뉴가 열려 있으면 Esc는 메뉴만 닫고(팝업이 직접 받는다) 휠로 사진을 넘기지 않는다.
+        // input 클로저 안에서 memory를 읽지 않으려고 먼저 읽는다. any_popup_open은 쓰지 않는다 —
+        // 다른 팝업(콤보 등)까지 Esc·휠을 막을 이유는 없다.
+        let look_menu_open = ctx.memory(|m| m.is_popup_open(egui::Id::new(views::LOOK_MENU_ID)));
         let (keys, modifiers, scroll) = ctx.input(|i| {
             (
                 i.keys_down.clone(),
@@ -2054,7 +2142,7 @@ impl RawBlowApp {
                             self.bulk_hits.clear();
                         }
                         Key::F11 => self.fullscreen = !self.fullscreen,
-                        Key::Escape => self.fullscreen = false,
+                        Key::Escape if !look_menu_open => self.fullscreen = false,
                         Key::O if cmd => self.pick_folder(),
                         // 전송 Enter(#63)와 단축키 치트시트 열기(#66, F1·?·⇧/)는 이 이벤트 루프에서
                         // 처리하지 않고 아래에서 consume_key로 "소비"한다 — 소비하지 않으면 같은
@@ -2088,7 +2176,7 @@ impl RawBlowApp {
 
         // 마우스 휠 이동(단일 뷰): 창맞춤 상태에서 Ctrl 없이 휠 → 사진 넘김.
         // (확대 상태이거나 Ctrl 휠은 photo_view에서 줌으로 처리.)
-        if self.view == ViewMode::Single && self.fit && !modifiers.ctrl && !modifiers.command {
+        if self.view == ViewMode::Single && self.fit && !modifiers.ctrl && !modifiers.command && !look_menu_open {
             if scroll < -1.0 {
                 self.advance(1);
             } else if scroll > 1.0 {
@@ -2311,7 +2399,7 @@ mod tests {
         assert_eq!(index_after_filter(&[3, 9], None), 0);
     }
 
-    fn filter_app(n: usize) -> super::RawBlowApp {
+    pub(super) fn filter_app(n: usize) -> super::RawBlowApp {
         let mut app = super::RawBlowApp::for_settings_qa();
         app.items = (0..n)
             .map(|i| {

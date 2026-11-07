@@ -30,9 +30,6 @@ impl RawBlowApp {
 
     pub(super) fn ui_shell(&mut self, ctx: &egui::Context) {
         self.ui_toolbar(ctx);
-        if self.view == ViewMode::Single {
-            self.ui_look_bar(ctx);
-        }
         self.ui_status_bar(ctx);
         self.ui_left_rail(ctx);
         if self.view == ViewMode::Single {
@@ -47,163 +44,412 @@ impl RawBlowApp {
             });
     }
 
-    pub(super) fn ui_toolbar(&mut self, ctx: &egui::Context) {
-        let lang = self.lang;
+    /// 상단 툴바. 창이 좁으면 밀도 단계([`ToolbarTier`])를 내려 「(키)」 힌트를 툴팁으로 옮긴다.
+    /// 단계는 창 폭·언어·내용의 최악 경우로만 정한다(자기 출력을 보지 않아 깜빡이지 않는다).
+    /// 돌려주는 값은 실제로 그린 두 묶음의 끝이다(겹침 테스트용).
+    pub(super) fn ui_toolbar(&mut self, ctx: &egui::Context) -> ToolbarLayout {
+        let mut layout = ToolbarLayout::default();
         egui::TopBottomPanel::top("toolbar")
             .exact_height(TOOLBAR_H)
             .frame(egui::Frame::none().fill(theme::BG1).inner_margin(egui::Margin::symmetric(12.0, 6.0)))
             .show(ctx, |ui| {
+                let avail = ui.available_rect_before_wrap();
+                self.refresh_look_worst(ui);
+                let tier = self.toolbar_tier(ui, avail.width());
+                let (left, right) = toolbar_items(&self.toolbar_content(tier), tier);
+                layout.tier = tier;
+                layout.left_end = avail.left();
+                layout.right_start = avail.right();
+                // Tight는 위젯 사이 간격까지 줄인다(측정 tb_extent도 같은 값을 쓴다).
+                let spacing = tb_spacing(ui, tier);
+                ui.spacing_mut().item_spacing.x = spacing;
                 ui.horizontal_centered(|ui| {
-                    // 로고 마크(작게).
-                    let (mr, _) = ui.allocate_exact_size(Vec2::new(22.0, 22.0), Sense::hover());
-                    crate::logo::draw_mark(ui.painter(), mr);
-                    ui.add_space(6.0);
-                    vsep(ui);
-                    // 폴더 열기(이슈 #2: 폴더 연 상태에서 다른 폴더 여는 버튼 없음 — ⌘O를 못 찾음).
-                    if toggle_btn(ui, &format!("{} ({}O)", tr(lang, "폴더 열기"), cmd_key()), false).clicked() {
-                        self.pick_folder();
-                    }
-                    vsep(ui);
-                    let single = self.view == ViewMode::Single;
-                    // "(T)"만으로는 토글임이 드러나지 않아 툴팁으로 보완(#72).
-                    if toggle_btn(ui, "Single (T)", single).on_hover_text(tr(lang, "T 키로 전환")).clicked() {
-                        self.view = ViewMode::Single;
-                    }
-                    if toggle_btn(ui, "Grid (T)", !single).on_hover_text(tr(lang, "T 키로 전환")).clicked() {
-                        self.view = ViewMode::Grid;
-                    }
-                    vsep(ui);
-
-                    if ui.add(egui::Button::new("◀").frame(false)).clicked() {
-                        self.advance(-1);
-                    }
-                    let f = self.filtered();
-                    let pos = format!("{:03} / {}", (self.index + 1).min(f.len().max(1)), f.len());
-                    ui.label(egui::RichText::new(pos).font(mono(12.0)).color(theme::INK).background_color(theme::BG2));
-                    if ui.add(egui::Button::new("▶").frame(false)).clicked() {
-                        self.advance(1);
-                    }
-                    vsep(ui);
-
-                    if toggle_btn(ui, "Fit (Space)", self.fit).clicked() {
-                        self.fit = true;
-                        self.pan = Vec2::ZERO;
-                    }
-                    // 1:1은 **실측** 기준이다(#48) — 표시 배율(원본 픽셀 대비)이 100%일 때 켜진다.
-                    // zoom을 그대로 보면 프리뷰/ORIG에서 같은 화면 크기가 다른 값이라 칩이 깜빡인다.
-                    let at_one_to_one = !self.fit
-                        && self
-                            .current_real()
-                            .and_then(|r| self.display_zoom(r))
-                            .is_some_and(|z| (z - 1.0).abs() < 0.01);
-                    if toggle_btn(ui, "1:1 (Space)", at_one_to_one).clicked() {
-                        self.request_one_to_one();
-                        self.pan = Vec2::ZERO;
-                    }
-                    if toggle_btn(ui, "ORIG (D)", self.full_raw).clicked() {
-                        self.full_raw = !self.full_raw;
-                    }
-                    // 전체화면 토글(#31). 버튼/F11 어느 쪽이든 OS 창 풀스크린으로(update에서 동기화).
-                    if toggle_btn(ui, "Full (F11)", self.fullscreen).clicked() {
-                        self.fullscreen = !self.fullscreen;
-                    }
-                    vsep(ui);
-                    if toggle_btn(ui, "EXIF (I)", self.show_exif).clicked() {
-                        self.show_exif = !self.show_exif;
-                    }
-                    if toggle_btn(ui, "Hist (H)", self.show_hist).clicked() {
-                        self.show_hist = !self.show_hist;
-                    }
-                    // 구도 보조선(#90)은 단일 보기 툴바에서만 순환한다. 그리드 썸네일에는 그리지 않는다.
-                    if self.view == ViewMode::Single {
-                        let on = self.cfg.guides != GuidePreset::Off;
-                        let name = tr(lang, self.cfg.guides.label_ko());
-                        if toggle_btn(ui, &format!("{name} (])"), on).clicked() {
-                            self.cycle_guides();
-                        }
+                    for item in &left {
+                        let r = self.ui_toolbar_item(ui, item, &mut layout);
+                        layout.left_end = layout.left_end.max(r.right());
                     }
                     // (필터 변경은 좌측 레일에서 전담 — 상단 Filter 버튼 제거, #toolbar feedback)
-
+                    // 폴더 자동 분류(#34)는 좌측 레일 하단으로 이동(테스트 피드백) — 오른쪽은 전송/점프/일괄/⚙/?.
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui
-                            .add(egui::Button::new(egui::RichText::new(format!(" {} ({}E) ", tr(lang, "전송"), cmd_key())).color(Color32::from_rgb(0x0a, 0x14, 0x20))).fill(theme::ACCENT))
-                            .clicked()
-                        {
-                            self.open_transfer();
-                        }
-                        // 폴더 자동 분류(#34)는 좌측 레일 하단으로 이동(테스트 피드백) — 여긴 전송/점프/일괄만.
-                        if toggle_btn(ui, &format!("{} (G)", tr(lang, "점프")), false).clicked() {
-                            self.jump_open = true;
-                        }
-                        // 그리드 모드 한정: 파일명으로 일괄 라벨링(#3).
-                        if self.view == ViewMode::Grid
-                            && toggle_btn(ui, &format!("{} (B)", tr(lang, "일괄")), false).clicked()
-                        {
-                            self.bulk_open = true;
-                            self.bulk_searched = false;
-                            self.bulk_hits.clear();
-                        }
-                        // 아이콘만으로는 기능이 드러나지 않아 툴팁으로 보완(#72).
-                        if toggle_btn(ui, "⚙", self.show_settings).on_hover_text(tr(lang, "설정")).clicked() {
-                            self.show_settings = true;
-                            self.cache_size = None; // 설정 열 때 캐시 용량 새로 계산.
-                            self.bg_hex = hex_str(self.photo_bg_rgb()); // 배경 HEX 입력 버퍼 동기화(#36).
-                            self.settings_reset_armed = false; // '기본값 복원' 확인 arm 해제(#69).
-                        }
-                        // 단축키 치트시트(#66): ⚙ 옆 작은 ? 토글(⚙과 같은 스타일). ?/F1로도 여닫는다.
-                        if toggle_btn(ui, "?", self.show_help).on_hover_text(tr(lang, "단축키")).clicked() {
-                            self.show_help = !self.show_help;
+                        for item in &right {
+                            let r = self.ui_toolbar_item(ui, item, &mut layout);
+                            layout.right_start = layout.right_start.min(r.left());
                         }
                     });
                 });
             });
+        layout
     }
 
-    /// 단일 보기·전체화면에서 룩을 고른다(#125). 그리드에는 두지 않는다. 단축키 순환은 없다.
-    pub(super) fn ui_look_bar(&mut self, ctx: &egui::Context) {
+    /// 툴바 위젯 하나를 그리고 클릭을 처리한다. 돌려주는 사각형은 위젯이 차지한 자리다.
+    fn ui_toolbar_item(&mut self, ui: &mut egui::Ui, item: &TbItem, layout: &mut ToolbarLayout) -> Rect {
+        match item {
+            TbItem::Logo => {
+                // 로고 마크(작게).
+                let (mr, _) = ui.allocate_exact_size(Vec2::splat(TB_LOGO), Sense::hover());
+                crate::logo::draw_mark(ui.painter(), mr);
+                ui.add_space(TB_LOGO_GAP);
+                mr
+            }
+            TbItem::Sep => vsep(ui),
+            TbItem::Toggle { label, tip, action } => {
+                let resp = toggle_btn(ui, label, self.tb_active(*action));
+                let resp = match tip {
+                    Some(t) => resp.on_hover_text(t.as_str()),
+                    None => resp,
+                };
+                if resp.clicked() {
+                    self.tb_click(*action);
+                }
+                resp.rect
+            }
+            TbItem::Arrow { glyph, action } => {
+                let resp = ui.add(egui::Button::new(*glyph).frame(false));
+                if resp.clicked() {
+                    self.tb_click(*action);
+                }
+                resp.rect
+            }
+            TbItem::Counter(text) => ui.label(counter_text(text)).rect,
+            TbItem::Look(btn) => {
+                let r = self.ui_look_button(ui, btn);
+                layout.look = Some(r);
+                r
+            }
+            TbItem::Accent { label, tip, action } => {
+                let resp = ui.add(egui::Button::new(accent_text(label)).fill(theme::ACCENT));
+                let resp = match tip {
+                    Some(t) => resp.on_hover_text(t.as_str()),
+                    None => resp,
+                };
+                if resp.clicked() {
+                    self.tb_click(*action);
+                }
+                resp.rect
+            }
+        }
+    }
+
+    /// 툴바 토글이 켜져 보이는지.
+    fn tb_active(&self, action: TbAction) -> bool {
+        match action {
+            TbAction::Single => self.view == ViewMode::Single,
+            TbAction::Grid => self.view == ViewMode::Grid,
+            TbAction::Fit => self.fit,
+            // 1:1은 **실측** 기준이다(#48) — 표시 배율(원본 픽셀 대비)이 100%일 때 켜진다.
+            // zoom을 그대로 보면 프리뷰/ORIG에서 같은 화면 크기가 다른 값이라 칩이 깜빡인다.
+            TbAction::OneToOne => {
+                !self.fit
+                    && self
+                        .current_real()
+                        .and_then(|r| self.display_zoom(r))
+                        .is_some_and(|z| (z - 1.0).abs() < 0.01)
+            }
+            TbAction::Orig => self.full_raw,
+            TbAction::Full => self.fullscreen,
+            TbAction::Exif => self.show_exif,
+            TbAction::Hist => self.show_hist,
+            TbAction::Guides => self.cfg.guides != GuidePreset::Off,
+            TbAction::Settings => self.show_settings,
+            TbAction::Help => self.show_help,
+            TbAction::OpenFolder
+            | TbAction::Prev
+            | TbAction::Next
+            | TbAction::Transfer
+            | TbAction::Jump
+            | TbAction::Bulk => false,
+        }
+    }
+
+    fn tb_click(&mut self, action: TbAction) {
+        match action {
+            // 폴더 열기(이슈 #2: 폴더 연 상태에서 다른 폴더 여는 버튼 없음 — ⌘O를 못 찾음).
+            TbAction::OpenFolder => self.pick_folder(),
+            TbAction::Single => self.view = ViewMode::Single,
+            TbAction::Grid => self.view = ViewMode::Grid,
+            TbAction::Prev => self.advance(-1),
+            TbAction::Next => self.advance(1),
+            TbAction::Fit => {
+                self.fit = true;
+                self.pan = Vec2::ZERO;
+            }
+            TbAction::OneToOne => {
+                self.request_one_to_one();
+                self.pan = Vec2::ZERO;
+            }
+            TbAction::Orig => self.full_raw = !self.full_raw,
+            // 전체화면 토글(#31). 버튼/F11 어느 쪽이든 OS 창 풀스크린으로(update에서 동기화).
+            TbAction::Full => self.fullscreen = !self.fullscreen,
+            TbAction::Exif => self.show_exif = !self.show_exif,
+            TbAction::Hist => self.show_hist = !self.show_hist,
+            TbAction::Guides => self.cycle_guides(),
+            TbAction::Transfer => self.open_transfer(),
+            TbAction::Jump => self.jump_open = true,
+            // 그리드 모드 한정: 파일명으로 일괄 라벨링(#3).
+            TbAction::Bulk => {
+                self.bulk_open = true;
+                self.bulk_searched = false;
+                self.bulk_hits.clear();
+            }
+            TbAction::Settings => self.open_settings(),
+            // 단축키 치트시트(#66): ⚙ 옆 작은 ? 토글(⚙과 같은 스타일). ?/F1로도 여닫는다.
+            TbAction::Help => self.show_help = !self.show_help,
+        }
+    }
+
+    /// 지금 화면에 그릴 툴바 내용.
+    fn toolbar_content(&self, tier: ToolbarTier) -> TbContent {
+        let f = self.filtered();
+        TbContent {
+            lang: self.lang,
+            view: self.view,
+            counter: counter_label((self.index + 1).min(f.len().max(1)), f.len()),
+            guide: tr(self.lang, self.cfg.guides.label_ko()),
+            look: look_button(&self.cfg.look, self.look_compare, tier),
+        }
+    }
+
+    /// 밀도 단계. 넓은 단계부터 최악 내용이 들어가는지 본다. 단일 보기와 그리드 중 넓은 쪽을 써서
+    /// T로 보기를 바꿔도 단계가 같다. 어느 것도 안 들어가면 가장 좁은 Tight.
+    pub(super) fn toolbar_tier(&self, ui: &egui::Ui, avail: f32) -> ToolbarTier {
+        [ToolbarTier::Full, ToolbarTier::NoHints, ToolbarTier::Compact]
+            .into_iter()
+            .find(|&tier| self.toolbar_need(ui, tier) + TB_MIN_GAP <= avail)
+            .unwrap_or(ToolbarTier::Tight)
+    }
+
+    /// 이 단계에서 최악 내용이 차지하는 폭(왼쪽 묶음 + 오른쪽 묶음, 사이 여백 제외).
+    /// 최악 내용: 이 폴더 장수의 카운터, 가장 넓은 구도 이름, 나올 수 있는 가장 넓은 LUT 라벨.
+    pub(super) fn toolbar_need(&self, ui: &egui::Ui, tier: ToolbarTier) -> f32 {
         let lang = self.lang;
-        let path_label = std::path::Path::new(&self.cfg.look.cube_path)
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "LUT".into());
-        let mut picked: Option<std::path::PathBuf> = None;
-        let mut name = self.cfg.look.name.clone();
-        let before = name.clone();
-        egui::TopBottomPanel::top("look")
-            .exact_height(40.0)
-            .frame(egui::Frame::none().fill(theme::BG1).inner_margin(egui::Margin::symmetric(12.0, 6.0)))
-            .show(ctx, |ui| {
-                ui.horizontal_centered(|ui| {
-                    let shown = if name == "file" {
-                        path_label.clone()
-                    } else if name.is_empty() {
-                        tr(lang, "없음").to_string()
-                    } else {
-                        name.clone()
-                    };
-                    egui::ComboBox::from_id_salt("look_pick")
-                        .selected_text(egui::RichText::new(shown).font(mono(12.0)))
-                        .width(160.0)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut name, String::new(), tr(lang, "없음"));
-                            for builtin in rawblow_core::lut::BUILTINS {
-                                ui.selectable_value(&mut name, builtin.to_string(), builtin);
-                            }
-                            if !self.cfg.look.cube_path.is_empty() {
-                                ui.selectable_value(&mut name, "file".to_string(), path_label.as_str());
-                            }
-                        });
-                    if ui.button("LUT").clicked() {
-                        picked = rfd::FileDialog::new().add_filter("cube", &["cube"]).pick_file();
+        // 카운터는 「{:03} / 전체」라 위치·필터와 상관없이 전체 장수의 자릿수가 상한이다.
+        let n = self.items.len().max(999);
+        let counter = counter_label(n, n);
+        let guide = GUIDE_PRESETS
+            .iter()
+            .map(|g| tr(lang, g.label_ko()))
+            .max_by(|a, b| {
+                let w = |s: &str| tb_galley(ui, toggle_btn_text(s, false)).size().x;
+                w(a).total_cmp(&w(b))
+            })
+            .unwrap_or("");
+        let look = self.look_button_worst(ui, tier);
+        [ViewMode::Single, ViewMode::Grid]
+            .into_iter()
+            .map(|view| {
+                let c = TbContent { lang, view, counter: counter.clone(), guide, look: look.clone() };
+                let (left, right) = toolbar_items(&c, tier);
+                let spacing = tb_spacing(ui, tier);
+                tb_extent(ui, &left, spacing) + tb_extent(ui, &right, spacing)
+            })
+            .fold(0.0, f32::max)
+    }
+
+    /// 이 단계에서 LUT 버튼이 가질 수 있는 가장 넓은 모양. 글자는 [`Self::refresh_look_worst`]가
+    /// 골라 둔 것을 쓴다(프레임마다 폴더 파일 전부를 다시 재지 않게).
+    fn look_button_worst(&self, ui: &egui::Ui, tier: ToolbarTier) -> LookBtn {
+        let widest = if tier >= ToolbarTier::Compact {
+            "LUT".to_string()
+        } else {
+            match &self.look_worst {
+                Some(w) => w.text.clone(),
+                None => self.pick_look_worst(ui).0,
+            }
+        };
+        LookBtn { text: widest.clone(), state: LookState::Off, widths: vec![widest], tip_head: None }
+    }
+
+    /// 단계 계산용 가장 넓은 LUT 글자를 (언어, 폴더 목록, 룩 경로)가 바뀔 때만 다시 고른다.
+    /// 룩 메뉴가 열려 있는 동안은 바꾸지 않는다 — 메뉴를 열 때 폴더를 다시 읽어 목록이 길어져도
+    /// 열린 메뉴와 LUT 버튼이 옆으로 뛰지 않게. 닫힌 뒤 다음 프레임에 반영된다.
+    pub(super) fn refresh_look_worst(&mut self, ui: &egui::Ui) {
+        let key = (self.lang, self.lut_gen, self.cfg.look.cube_path.clone());
+        if let Some(w) = &self.look_worst {
+            let open = ui.memory(|m| m.is_popup_open(egui::Id::new(LOOK_MENU_ID)));
+            if open || w.key == key {
+                return;
+            }
+        }
+        let (text, floor) = self.pick_look_worst(ui);
+        self.look_label_floor = floor;
+        self.look_worst = Some(LookWorst { key, text });
+    }
+
+    /// 후보(비교 글자·빌트인·폴더 목록·룩 경로·세션 동안 본 가장 넓은 룩 경로) 중 가장 넓은 글자와,
+    /// 갱신한 세션 최댓값. 룩 경로는 이름이 빌트인이어도 넣는다 — 메뉴가 그 파일 줄을 계속 보이므로.
+    fn pick_look_worst(&self, ui: &egui::Ui) -> (String, Option<String>) {
+        let w = |t: &str| tb_galley(ui, look_btn_text(t, theme::INK)).size().x;
+        let cur = (!self.cfg.look.cube_path.is_empty())
+            .then(|| look_on_label(&short_stem(Path::new(&self.cfg.look.cube_path), LOOK_BTN_STEM)));
+        let floor = match (cur, &self.look_label_floor) {
+            (Some(c), Some(f)) if w(f) >= w(&c) => Some(f.clone()),
+            (Some(c), _) => Some(c),
+            (None, f) => f.clone(),
+        };
+        let candidates = std::iter::once(LOOK_COMPARE.to_string())
+            .chain(rawblow_core::lut::BUILTINS.iter().map(|b| look_on_label(b)))
+            .chain(self.lut_files.iter().map(|p| look_on_label(&short_stem(p, LOOK_BTN_STEM))))
+            .chain(floor.clone());
+        let mut widest = "LUT".to_string();
+        let mut best = w(&widest);
+        for c in candidates {
+            let cw = w(&c);
+            if cw > best {
+                best = cw;
+                widest = c;
+            }
+        }
+        (widest, floor)
+    }
+
+    /// 툴바 LUT 버튼과 룩 메뉴. 단일 보기 툴바에서만 그린다.
+    fn ui_look_button(&mut self, ui: &mut egui::Ui, btn: &LookBtn) -> Rect {
+        let lang = self.lang;
+        let menu_id = egui::Id::new(LOOK_MENU_ID);
+        let (rect, resp) = ui.allocate_exact_size(look_btn_size(ui, btn), Sense::click());
+        // 모달 아래에서는 누를 수 없다. 그리지 않은 것으로 치므로 열린 메뉴는 ui_screen이 닫는다.
+        let interactive = !self.has_modal();
+        if interactive {
+            self.look_button_drawn = true;
+        }
+        paint_look_button(ui, rect, &resp, btn);
+        if resp.hovered() && interactive {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let cube = (self.cfg.look.name == "file" && !self.cfg.look.cube_path.is_empty())
+            .then(|| self.cfg.look.cube_path.clone());
+        let head = btn.tip_head.clone();
+        let resp = resp.on_hover_ui(|ui| {
+            if let Some(h) = head {
+                ui.label(h);
+            }
+            // prop 폰트라 백슬래시 키 이름을 넣지 않는다(윈도우 맑은 고딕은 ₩로 그린다).
+            ui.label(tr(lang, "룩(LUT) 고르기 · 히스토그램은 룩 적용 전"));
+            if let Some(path) = cube {
+                ui.label(egui::RichText::new(nfc_hangul(&path)).font(mono(11.0)));
+            }
+        });
+        if !interactive {
+            return rect;
+        }
+        if resp.clicked() {
+            if !ui.memory(|m| m.is_popup_open(menu_id)) {
+                // 폴더에 파일을 넣고 바로 메뉴를 열면 보이게, 열 때마다 다시 읽는다.
+                self.reload_lut_files();
+            }
+            ui.memory_mut(|m| m.toggle_popup(menu_id));
+        }
+        // CloseOnClick은 메뉴 안의 스크롤바·캡션을 눌러도 닫으므로 바깥 클릭만 닫게 하고,
+        // 항목을 고르면 아래에서 직접 닫는다.
+        let pick = egui::popup_below_widget(ui, menu_id, &resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+            self.look_menu(ui)
+        })
+        .flatten();
+        if pick.is_some() {
+            ui.memory_mut(|m| m.close_popup());
+        }
+        let ctx = ui.ctx().clone();
+        match pick {
+            Some(LookPick::Name(name)) => {
+                if self.cfg.look.name != name {
+                    self.set_look_name(&name, &ctx);
+                }
+            }
+            Some(LookPick::File(path)) => {
+                let same = self.cfg.look.name == "file" && same_cube(Path::new(&self.cfg.look.cube_path), &path);
+                if !same {
+                    // 실패하면 set_cube_path가 토스트를 띄우고 이전 룩을 둔다.
+                    self.set_cube_path(&path, &ctx);
+                }
+            }
+            Some(LookPick::Settings) => {
+                self.settings_focus_lut = true;
+                self.open_settings();
+            }
+            None => {}
+        }
+        rect
+    }
+
+    /// 룩 메뉴 내용. 고른 것을 돌려주고 적용은 부르는 쪽이 한다.
+    fn look_menu(&self, ui: &mut egui::Ui) -> Option<LookPick> {
+        let lang = self.lang;
+        ui.set_min_width(LOOK_MENU_MIN_W);
+        // 좁은 메뉴에서 이름이 일찍 줄바꿈되지 않게(ComboBox와 같은 설정).
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+        let mut pick = None;
+        let look = &self.cfg.look;
+        if ui.selectable_label(look_name(look).is_none(), tr(lang, "없음")).clicked() {
+            pick = Some(LookPick::Name(String::new()));
+        }
+        ui.separator();
+        for b in rawblow_core::lut::BUILTINS {
+            if ui.selectable_label(look.name == b, b).clicked() {
+                pick = Some(LookPick::Name(b.to_string()));
+            }
+        }
+        ui.separator();
+        // 룩 경로(폴더 밖일 수 있다). 이름이 빌트인이어도 경로는 남아 있어 그 파일로 돌아갈 수 있게 줄을 둔다.
+        // 선택 표시는 지금 룩이 그 파일일 때만.
+        let cur_path = (!look.cube_path.is_empty()).then(|| Path::new(&look.cube_path));
+        let cur_file = cur_path.filter(|_| look.name == "file");
+        // 폴더 경로는 NFC로 적어 두고 옛 「LUT」 버튼은 디스크 그대로(NFD)를 저장했으므로 NFC로 비교한다.
+        let outside = cur_path.filter(|cur| !self.lut_files.iter().any(|p| same_cube(p, cur)));
+        let mut file_row = |ui: &mut egui::Ui, path: &Path| {
+            let on = cur_file.is_some_and(|cur| same_cube(cur, path));
+            let resp = ui.selectable_label(on, short_stem(path, LOOK_MENU_STEM)).on_hover_ui(|ui| {
+                ui.label(egui::RichText::new(nfc_path_label(path)).font(mono(11.0)));
+            });
+            if resp.clicked() {
+                pick = Some(LookPick::File(path.to_path_buf()));
+            }
+        };
+        if !self.lut_files.is_empty() {
+            // 목록 아래 고정 줄(폴더 밖 줄·구분선·「LUT 폴더 설정…」·구분선·안내 줄)과 팝업 아래 여백을 남기고
+            // 화면 바닥까지만 쓴다. 넘치면 egui가 팝업을 위로 밀어 LUT 버튼을 덮는다.
+            let row = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+            let sep = LOOK_MENU_SEP_H + ui.spacing().item_spacing.y;
+            let rows_below = if outside.is_some() { 3.0 } else { 2.0 };
+            let tail = rows_below * row + 2.0 * sep + LOOK_MENU_TAIL_PAD;
+            let room = ui.ctx().screen_rect().bottom() - ui.cursor().top() - tail;
+            egui::ScrollArea::vertical()
+                .id_salt("look_menu_files")
+                .max_height(room.clamp(LOOK_MENU_LIST_MIN_H, LOOK_MENU_LIST_H))
+                .show(ui, |ui| {
+                    for path in &self.lut_files {
+                        file_row(ui, path);
                     }
                 });
-            });
-        if name != before {
-            self.set_look_name(&name, ctx);
         }
-        if let Some(path) = picked {
-            self.set_cube_path(&path, ctx);
+        if let Some(cur) = outside {
+            file_row(ui, cur);
         }
+        let caption = match self.lut_dir_status {
+            rawblow_core::lut::CubeDir::Unset => Some("설정에서 LUT 폴더를 지정하면 .cube 파일이 여기 나옵니다"),
+            rawblow_core::lut::CubeDir::Empty => Some("LUT 폴더에 .cube 파일이 없습니다"),
+            rawblow_core::lut::CubeDir::Missing => Some("LUT 폴더를 찾을 수 없습니다"),
+            rawblow_core::lut::CubeDir::Unreadable => Some("LUT 폴더를 읽을 수 없습니다(접근 권한)"),
+            rawblow_core::lut::CubeDir::Found { .. } => None,
+        };
+        if let Some(c) = caption {
+            // 폭 고정 줄바꿈 — 메뉴가 캡션 길이만큼 넓어지지 않게.
+            let galley = ui.fonts(|f| f.layout(tr(lang, c).to_string(), prop(11.5), theme::INK3, LOOK_MENU_MIN_W));
+            ui.add_space(2.0);
+            ui.label(galley);
+            ui.add_space(2.0);
+        }
+        ui.separator();
+        if ui.selectable_label(false, tr(lang, "LUT 폴더 설정…")).clicked() {
+            pick = Some(LookPick::Settings);
+        }
+        ui.separator();
+        // 선택 항목처럼 보이지 않는 안내 줄.
+        ui.horizontal(|ui| {
+            kbd(ui, "\\");
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(tr(lang, "누르고 있는 동안 룩 끄기")).font(mono(9.5)).color(theme::INK4));
+        });
+        pick
     }
 
     pub(super) fn ui_left_rail(&mut self, ctx: &egui::Context) {
@@ -660,46 +906,88 @@ impl RawBlowApp {
         // 원본 픽셀 대비 배율(#48). 100%가 실측 1:1이며, D로 프리뷰↔ORIG를 오가도 사진 크기가
         // 그대로면 숫자도 그대로다(zoom을 그대로 쓰면 텍스처 기준이라 100%↔23%로 튀었다).
         let zoom_pct = self.current_real().and_then(|r| self.display_zoom(r)).map(|z| z * 100.0);
+        // 보기 방식 · 화면 출력 색(단일 보기만). 예전에는 사진 HUD 카운터 아래 꼬리에 있었다.
+        let view_text = (self.view == ViewMode::Single).then(|| {
+            let real = self.current_real();
+            status_view_text(
+                self.lang,
+                real.is_some_and(|r| self.thumb_only(r)),
+                self.full_raw,
+                real.is_some_and(|r| self.orig_fallback.contains(&r)),
+                self.output_kind(),
+            )
+        });
         egui::TopBottomPanel::bottom("status")
             .exact_height(STATUS_H)
             .frame(egui::Frame::none().fill(theme::BG2).inner_margin(egui::Margin::symmetric(12.0, 4.0)))
             .show(ctx, |ui| {
+                // 오른쪽 묶음(오른쪽 끝부터, right_to_left): (글자, 툴팁). 폭 재기와 그리기가 같은 목록을 쓴다.
+                // 맨 오른쪽: 자동저장 상태(레일에서 이동). 글자(우) 왼쪽에 상태 점을 둬 "● saved"/"● saving…"로
+                // 보이게 한다. 저장 실패(#62)가 최우선: 실패 중에도 dirty가 유지된 채 재시도하므로
+                // "saving…"으로 보이면 거짓 안심이다. 원인(원본 오류 문자열)과 대상 폴더는 hover로(상태바 폭 유지).
+                let (dot, txt) = if self.save_error.is_some() {
+                    (theme::REJECT, tr(self.lang, "저장 실패"))
+                } else if self.sidecar_dirty {
+                    (theme::HOLD, "saving…")
+                } else {
+                    (theme::OK, "saved")
+                };
+                let save_tip = self.save_error.as_ref().map(|err| {
+                    let dir = self.folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                    format!("{dir}\n{err}")
+                });
+                let sep = || (egui::RichText::new("·").font(mono(10.5)).color(theme::INK4), None);
+                let mut right: Vec<(egui::RichText, Option<String>)> = vec![
+                    (egui::RichText::new(txt).font(mono(10.5)).color(theme::INK3), save_tip),
+                    (egui::RichText::new("●").color(dot).size(8.0), None),
+                ];
+                // 그 왼쪽: 배율(단일/전체화면에서만 의미).
+                if self.view == ViewMode::Single || self.fullscreen {
+                    let zoom = match zoom_pct {
+                        Some(p) => format!("{p:.0}%"),
+                        None => "—".to_string(),
+                    };
+                    right.push(sep());
+                    right.push((egui::RichText::new(zoom).font(mono(10.5)).color(theme::INK2), None));
+                }
+                // 맨 왼쪽: 보기 방식 · 출력 색 → 「FIT · Display P3 · 12% · ● saved」.
+                if let Some(text) = &view_text {
+                    right.push(sep());
+                    right.push((
+                        egui::RichText::new(text).font(mono(10.5)).color(theme::INK3),
+                        Some(tr(self.lang, "보기 방식 · 화면 출력 색").to_string()),
+                    ));
+                }
                 ui.horizontal_centered(|ui| {
                     ui.label(egui::RichText::new("●").color(theme::OK).size(8.0));
                     ui.label(egui::RichText::new(format!("READY · {} ITEMS · {}/{}", self.items.len(), (self.index + 1).min(f_len.max(1)), f_len)).font(mono(10.5)).color(theme::INK3));
                     ui.label(egui::RichText::new(format!("· P {pick} H {hold} X {reject} · {unrated}")).font(mono(10.5)).color(theme::INK3));
-                    // 로딩·프레임 통계: 우측 → 좌측으로 이동(테스트 피드백).
-                    ui.label(egui::RichText::new(format!("· {:.1}ms · {:.0} FPS · GPU wgpu · PRELOAD ±{}", self.frame_ms, fps, self.cfg.preload)).font(mono(10.5)).color(theme::INK4));
+                    // 로딩·프레임 통계: 우측 → 좌측으로 이동(테스트 피드백). 오른쪽 묶음(저장·배율·보기 문구)이
+                    // 우선이라, 좁은 창에 장수가 많으면 이 줄만 남는 폭에 맞춰 줄임표로 자른다(전문은 hover).
+                    let spacing = ui.spacing().item_spacing.x;
+                    let right_w: f32 = right
+                        .iter()
+                        .map(|(t, _)| {
+                            egui::WidgetText::from(t.clone())
+                                .into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body)
+                                .size()
+                                .x
+                                + spacing
+                        })
+                        .sum();
+                    let room = (ui.available_width() - right_w - STATUS_MIN_GAP).max(0.0);
+                    let stats = egui::RichText::new(format!("· {:.1}ms · {:.0} FPS · GPU wgpu · PRELOAD ±{}", self.frame_ms, fps, self.cfg.preload))
+                        .font(mono(10.5))
+                        .color(theme::INK4);
+                    ui.allocate_ui(Vec2::new(room, ui.available_height()), |ui| {
+                        ui.add(egui::Label::new(stats).truncate());
+                    });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        // 맨 오른쪽: 자동저장 상태(레일에서 이동). right_to_left이므로 먼저 추가 = 최우측.
-                        // 글자(우) 왼쪽에 상태 점을 둬 "● saved"/"● saving…"로 보이게 한다.
-                        // 저장 실패(#62)가 최우선: 실패 중에도 dirty가 유지된 채 재시도하므로
-                        // "saving…"으로 보이면 거짓 안심이다. 원인은 hover로(상태바 폭 유지).
-                        let (dot, txt) = if self.save_error.is_some() {
-                            (theme::REJECT, tr(self.lang, "저장 실패"))
-                        } else if self.sidecar_dirty {
-                            (theme::HOLD, "saving…")
-                        } else {
-                            (theme::OK, "saved")
-                        };
-                        let resp = ui.label(egui::RichText::new(txt).font(mono(10.5)).color(theme::INK3));
-                        if let Some(err) = &self.save_error {
-                            // 원인(원본 오류 문자열)과 대상 폴더를 hover에 — 진단은 여기서.
-                            let dir = self.folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-                            resp.on_hover_text(format!("{dir}\n{err}"));
-                        }
-                        ui.label(egui::RichText::new("●").color(dot).size(8.0));
-                        // 그 왼쪽: 배율(단일/전체화면에서만 의미).
-                        if self.view == ViewMode::Single || self.fullscreen {
-                            ui.label(egui::RichText::new("·").font(mono(10.5)).color(theme::INK4));
-                            ui.label(
-                                egui::RichText::new(match zoom_pct {
-                                    Some(p) => format!("{p:.0}%"),
-                                    None => "—".to_string(),
-                                })
-                                .font(mono(10.5))
-                                .color(theme::INK2),
-                            );
+                        for (text, tip) in right {
+                            let resp = ui.label(text);
+                            if let Some(tip) = tip {
+                                resp.on_hover_text(tip);
+                            }
                         }
                     });
                 });
@@ -759,25 +1047,29 @@ impl RawBlowApp {
 
     pub(super) fn ui_single(&mut self, ui: &mut egui::Ui) {
         let rect = ui.max_rect();
-        let real = match self.current_real() {
-            Some(r) => r,
-            None => {
-                self.ui_empty_state(ui);
-                return;
+        match self.current_real() {
+            None => self.ui_empty_state(ui),
+            Some(real) => {
+                self.photo_view(ui, rect, real);
+                if !self.has_modal() {
+                    // 카운터 아래 꼬리는 경고만. 보기 방식·출력 색은 상태 바로 옮겼다.
+                    let warn = single_hud_warning(
+                        self.lang,
+                        self.thumb_only(real),
+                        self.full_raw,
+                        self.orig_fallback.contains(&real),
+                    );
+                    self.paint_hud(ui, rect, real, warn);
+                    self.paint_thumb_only_banner(ui, rect, real);
+                    self.ui_map_overlay(ui, rect, real);
+                }
             }
-        };
-        self.photo_view(ui, rect, real);
-        if !self.has_modal() {
-            let suffix = single_hud_suffix(
-                self.lang,
-                self.thumb_only(real),
-                self.full_raw,
-                self.orig_fallback.contains(&real),
-                self.output_kind(),
-            );
-            self.paint_hud(ui, rect, real, &suffix);
-            self.paint_thumb_only_banner(ui, rect, real);
-            self.ui_map_overlay(ui, rect, real);
+        }
+        // 룩 메뉴가 열려 있으면 사진 위에 클릭 방패를 둔다. 메뉴를 닫으려는 클릭이 Fit↔1:1·재시도·
+        // 지도(브라우저)·±로 새지 않게. click 전용이라 드래그 팬과 Ctrl+휠 줌은 그대로 사진이 받는다.
+        // 사진·배너·지도보다 뒤에 등록해야 위에 놓인다.
+        if ui.memory(|m| m.is_popup_open(egui::Id::new(LOOK_MENU_ID))) {
+            let _ = ui.interact(rect, ui.id().with("look_menu_shield"), Sense::click());
         }
     }
 
@@ -1180,7 +1472,9 @@ impl RawBlowApp {
         }
     }
 
-    pub(super) fn paint_hud(&self, ui: &egui::Ui, area: Rect, real: usize, counter_suffix: &str) {
+    /// `counter_suffix`는 카운터 아래 작은 꼬리(단일 보기는 경고, 전체화면은 「FULLSCREEN · ESC」).
+    /// None이면 그 줄을 그리지 않는다.
+    pub(super) fn paint_hud(&self, ui: &egui::Ui, area: Rect, real: usize, counter_suffix: Option<&str>) {
         let lang = self.lang;
         let it = &self.items[real];
         let f = self.filtered();
@@ -1201,7 +1495,9 @@ impl RawBlowApp {
         // TR: 카운터.
         let tr = area.right_top() + Vec2::new(-18.0, 14.0);
         hud_text(ui, tr, Align2::RIGHT_TOP, &format!("{:03} / {}", (self.index + 1).min(f.len().max(1)), f.len()), mono(30.0), theme::INK);
-        hud_text(ui, tr + Vec2::new(0.0, 34.0), Align2::RIGHT_TOP, counter_suffix, mono(10.0), theme::INK3);
+        if let Some(suffix) = counter_suffix {
+            hud_text(ui, tr + Vec2::new(0.0, 34.0), Align2::RIGHT_TOP, suffix, mono(10.0), theme::INK3);
+        }
 
         // BL: AI 컬링 판정 근거(#91) + EXIF. 근거는 판정·핵심 사유를 늘 보이고,
         // EXIF 오버레이(I)를 켜면 참고 사유(통과 점수·그룹 순위)까지 펼친다.
@@ -1497,8 +1793,8 @@ impl RawBlowApp {
         }
     }
 
+    /// 전체화면. 룩 고르기 UI는 두지 않는다(룩 적용과 `\` 비교는 그대로 동작).
     pub(super) fn ui_fullscreen(&mut self, ctx: &egui::Context) {
-        self.ui_look_bar(ctx);
         let bg = self.photo_bg();
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(bg))
@@ -1506,7 +1802,7 @@ impl RawBlowApp {
                 let rect = ui.max_rect();
                 if let Some(real) = self.current_real() {
                     self.photo_view(ui, rect, real);
-                    self.paint_hud(ui, rect, real, "FULLSCREEN · ESC");
+                    self.paint_hud(ui, rect, real, Some("FULLSCREEN · ESC"));
                     self.paint_thumb_only_banner(ui, rect, real);
                     self.ui_map_overlay(ui, rect, real);
                 }
@@ -1578,24 +1874,404 @@ impl RawBlowApp {
     }
 }
 
-/// 단일 보기 카운터 아래 꼬리. 경고가 색 표기보다 먼저다(분기 순서는 예전과 같다).
-/// 색 표기는 이 창의 실제 출력이라 설정 「현재 출력」과 같은 말을 쓴다.
-fn single_hud_suffix(
+/// 상태 바 오른쪽 보기 문구(단일 보기): 「{MODE} · {출력}」. 배율 왼쪽에 붙는다.
+/// MODE는 썸네일 대체면 THUMB, ORIG를 켰는데 원본을 못 구했으면 PREVIEW, 그 밖은 ORIG/FIT.
+/// 출력은 이 창의 실제 출력이라 설정 「현재 출력」과 같은 말을 쓴다.
+pub(super) fn status_view_text(
     lang: Lang,
     thumb_only: bool,
     full_raw: bool,
     orig_fallback: bool,
     out: rawblow_core::color::OutputKind,
-) -> std::borrow::Cow<'static, str> {
-    use std::borrow::Cow;
+) -> String {
+    let mode = if thumb_only {
+        "THUMB"
+    } else if full_raw && orig_fallback {
+        "PREVIEW"
+    } else if full_raw {
+        "ORIG"
+    } else {
+        "FIT"
+    };
+    format!("{mode} · {}", output_short(lang, out))
+}
+
+/// 단일 보기 카운터 아래 꼬리. 경고만 남는다. 없으면 꼬리 줄을 그리지 않는다.
+fn single_hud_warning(lang: Lang, thumb_only: bool, full_raw: bool, orig_fallback: bool) -> Option<&'static str> {
     if thumb_only {
-        return Cow::Borrowed(tr(lang, "썸네일 · 본 이미지 열기 실패"));
+        Some(tr(lang, "썸네일 · 본 이미지 열기 실패"))
+    } else if full_raw && orig_fallback {
+        Some(tr(lang, "PREVIEW · 원본 없음"))
+    } else {
+        None
     }
-    if full_raw && orig_fallback {
-        return Cow::Borrowed(tr(lang, "PREVIEW · 원본 없음"));
+}
+
+// ── 툴바 밀도와 LUT 버튼(#125 후속) ─────────────────────────────
+
+/// 룩 메뉴 팝업 id. handle_keys(Esc·휠 가드)·사진 클릭 방패·고아 정리(ui_screen)가 같은 id를 본다.
+pub(super) const LOOK_MENU_ID: &str = "look_menu";
+/// 룩 메뉴 최소 폭(pt).
+const LOOK_MENU_MIN_W: f32 = 200.0;
+/// 메뉴의 LUT 폴더 목록 최대 높이(pt). 넘으면 스크롤. 창이 낮으면 남은 높이만큼으로 줄인다.
+const LOOK_MENU_LIST_H: f32 = 320.0;
+/// 창이 아주 낮아도 목록에 남기는 높이(pt).
+const LOOK_MENU_LIST_MIN_H: f32 = 80.0;
+/// egui Separator 기본 높이(pt).
+const LOOK_MENU_SEP_H: f32 = 6.0;
+/// 목록 아래 고정 줄 말고 남겨 둘 여백(팝업 프레임 아래 여백·테두리 + 여유, pt).
+const LOOK_MENU_TAIL_PAD: f32 = 16.0;
+/// 툴바 버튼의 파일 이름 최대 글자 수(넘으면 13자 + …).
+const LOOK_BTN_STEM: usize = 14;
+/// 메뉴의 파일 이름 최대 글자 수(넘으면 23자 + …).
+const LOOK_MENU_STEM: usize = 24;
+/// `\`를 누르는 동안의 LUT 버튼 글자. 「원본」은 ORIG·「PREVIEW · 원본 없음」과 헷갈려 쓰지 않는다.
+/// prop 폰트라 백슬래시를 넣지 않는다(윈도우 맑은 고딕은 ₩로 그린다).
+const LOOK_COMPARE: &str = "LUT · OFF";
+/// LUT 버튼 글자와 삼각형 사이, 삼각형 폭(pt).
+const LOOK_TRI_GAP: f32 = 5.0;
+const LOOK_TRI_W: f32 = 7.0;
+/// 툴바 로고 크기와 그 뒤 여백.
+const TB_LOGO: f32 = 22.0;
+const TB_LOGO_GAP: f32 = 6.0;
+/// 두 묶음 사이에 남겨야 하는 최소 여백(pt). 테스트는 4 이상을 본다.
+const TB_MIN_GAP: f32 = 8.0;
+/// 상태 바 왼쪽 통계 줄과 오른쪽 묶음 사이 최소 여백(pt).
+const STATUS_MIN_GAP: f32 = 8.0;
+/// Tight 단계의 툴바 위젯 사이 간격(pt). 다른 단계는 egui 기본(8).
+const TB_TIGHT_SPACING: f32 = 4.0;
+/// 구도 프리셋 전부(가장 넓은 이름을 재는 데 쓴다).
+const GUIDE_PRESETS: [GuidePreset; 5] = [
+    GuidePreset::Off,
+    GuidePreset::Thirds,
+    GuidePreset::CenterCross,
+    GuidePreset::Square,
+    GuidePreset::Custom,
+];
+
+/// 툴바 밀도 단계. 넓은 창 → 좁은 창 순.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum ToolbarTier {
+    /// 「Fit (Space)」처럼 키 힌트까지.
+    #[default]
+    Full,
+    /// 모든 「(키)」 힌트를 라벨에서 떼어 툴팁으로(라벨 「Fit」, 툴팁 「Fit (Space)」).
+    NoHints,
+    /// 힌트 없음 + 구도 버튼은 「구도」 고정, LUT 버튼은 「LUT」만(이름은 툴팁, 켜짐은 채움).
+    Compact,
+    /// Compact + 위젯 사이 간격을 [`TB_TIGHT_SPACING`]으로. 글꼴이 넓은 윈도우(맑은 고딕·Yu Gothic)나
+    /// 화면 배율에서 Compact도 최소 창(900pt)에 안 들어갈 때.
+    Tight,
+}
+
+/// 단계 계산용 가장 넓은 LUT 글자 캐시([`RawBlowApp::refresh_look_worst`]).
+pub(super) struct LookWorst {
+    /// (언어, LUT 폴더 목록 세대, 룩 경로).
+    key: (Lang, u64, String),
+    text: String,
+}
+
+/// 실제로 그린 툴바(테스트가 겹침을 본다).
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct ToolbarLayout {
+    pub tier: ToolbarTier,
+    /// 왼쪽 묶음 위젯들의 가장 오른쪽 끝.
+    pub left_end: f32,
+    /// 오른쪽 묶음 위젯들의 가장 왼쪽 끝.
+    pub right_start: f32,
+    /// LUT 버튼 자리(단일 보기만).
+    pub look: Option<Rect>,
+}
+
+/// 툴바 버튼이 하는 일.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TbAction {
+    OpenFolder,
+    Single,
+    Grid,
+    Prev,
+    Next,
+    Fit,
+    OneToOne,
+    Orig,
+    Full,
+    Exif,
+    Hist,
+    Guides,
+    Transfer,
+    Jump,
+    Bulk,
+    Settings,
+    Help,
+}
+
+/// 툴바 위젯 하나. 폭 측정(tb_extent)과 그리기(ui_toolbar_item)가 같은 목록을 쓴다.
+enum TbItem {
+    Logo,
+    Sep,
+    /// toggle_btn. 힌트를 뗀 단계에서는 원래 라벨이 툴팁으로 간다.
+    Toggle { label: String, tip: Option<String>, action: TbAction },
+    /// 테두리 없는 ◀ ▶.
+    Arrow { glyph: &'static str, action: TbAction },
+    /// 위치 카운터(mono 12).
+    Counter(String),
+    Look(LookBtn),
+    /// 강조색 전송 버튼.
+    Accent { label: String, tip: Option<String>, action: TbAction },
+}
+
+/// 툴바 내용 중 바뀌는 부분. 그리기는 지금 값, 단계 측정은 최악 값을 넣는다.
+struct TbContent {
+    lang: Lang,
+    view: ViewMode,
+    counter: String,
+    /// 구도 버튼 이름(번역됨). 끔이면 「구도」.
+    guide: &'static str,
+    look: LookBtn,
+}
+
+/// 「이름 (키)」. Full이면 그대로, 아니면 라벨은 이름만이고 원래 라벨은 툴팁으로 간다.
+/// `extra`는 원래 있던 툴팁(「T 키로 전환」 등) — 함께 보인다.
+fn hinted(tier: ToolbarTier, name: &str, key: &str, extra: Option<&str>) -> (String, Option<String>) {
+    let full = format!("{name} ({key})");
+    if tier == ToolbarTier::Full {
+        (full, extra.map(str::to_string))
+    } else {
+        let tip = match extra {
+            Some(e) => format!("{full}\n{e}"),
+            None => full,
+        };
+        (name.to_string(), Some(tip))
     }
-    let mode = if full_raw { "ORIG" } else { "FIT" };
-    Cow::Owned(format!("{mode} · {}", output_short(lang, out)))
+}
+
+/// 툴바 위젯 목록(왼쪽, 오른쪽). 오른쪽은 right_to_left라 먼저 넣은 것이 오른쪽 끝이다.
+fn toolbar_items(c: &TbContent, tier: ToolbarTier) -> (Vec<TbItem>, Vec<TbItem>) {
+    let lang = c.lang;
+    let toggle = |name: &str, key: &str, extra: Option<&str>, action: TbAction| {
+        let (label, tip) = hinted(tier, name, key, extra);
+        TbItem::Toggle { label, tip, action }
+    };
+    // "(T)"만으로는 토글임이 드러나지 않아 툴팁으로 보완(#72).
+    let switch = tr(lang, "T 키로 전환");
+    let mut left = vec![
+        TbItem::Logo,
+        TbItem::Sep,
+        toggle(tr(lang, "폴더 열기"), &format!("{}O", cmd_key()), None, TbAction::OpenFolder),
+        TbItem::Sep,
+        toggle("Single", "T", Some(switch), TbAction::Single),
+        toggle("Grid", "T", Some(switch), TbAction::Grid),
+        TbItem::Sep,
+        TbItem::Arrow { glyph: "◀", action: TbAction::Prev },
+        TbItem::Counter(c.counter.clone()),
+        TbItem::Arrow { glyph: "▶", action: TbAction::Next },
+        TbItem::Sep,
+        toggle("Fit", "Space", None, TbAction::Fit),
+        toggle("1:1", "Space", None, TbAction::OneToOne),
+        toggle("ORIG", "D", None, TbAction::Orig),
+        toggle("Full", "F11", None, TbAction::Full),
+        TbItem::Sep,
+        toggle("EXIF", "I", None, TbAction::Exif),
+        toggle("Hist", "H", None, TbAction::Hist),
+    ];
+    // 구도 보조선(#90)과 룩(#125)은 단일 보기 툴바에만. 그리드 썸네일에는 그리지 않는다.
+    if c.view == ViewMode::Single {
+        let full = format!("{} (])", c.guide);
+        let (label, tip) = match tier {
+            ToolbarTier::Full => (full, None),
+            ToolbarTier::NoHints => (c.guide.to_string(), Some(full)),
+            ToolbarTier::Compact | ToolbarTier::Tight => (tr(lang, "구도").to_string(), Some(full)),
+        };
+        left.push(TbItem::Toggle { label, tip, action: TbAction::Guides });
+        left.push(TbItem::Look(c.look.clone()));
+    }
+    let (send, send_tip) = hinted(tier, tr(lang, "전송"), &format!("{}E", cmd_key()), None);
+    let mut right = vec![
+        TbItem::Accent { label: format!(" {send} "), tip: send_tip, action: TbAction::Transfer },
+        toggle(tr(lang, "점프"), "G", None, TbAction::Jump),
+    ];
+    if c.view == ViewMode::Grid {
+        right.push(toggle(tr(lang, "일괄"), "B", None, TbAction::Bulk));
+    }
+    // 아이콘만으로는 기능이 드러나지 않아 툴팁으로 보완(#72).
+    right.push(TbItem::Toggle { label: "⚙".into(), tip: Some(tr(lang, "설정").into()), action: TbAction::Settings });
+    right.push(TbItem::Toggle { label: "?".into(), tip: Some(tr(lang, "단축키").into()), action: TbAction::Help });
+    (left, right)
+}
+
+/// 버튼·라벨과 같은 방식으로 글자를 배치한다(줄바꿈 없음, 기본 글꼴은 Button).
+fn tb_galley(ui: &egui::Ui, text: egui::RichText) -> std::sync::Arc<egui::Galley> {
+    egui::WidgetText::from(text).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button)
+}
+
+fn counter_label(pos: usize, len: usize) -> String {
+    format!("{pos:03} / {len}")
+}
+
+fn counter_text(text: &str) -> egui::RichText {
+    egui::RichText::new(text).font(mono(12.0)).color(theme::INK).background_color(theme::BG2)
+}
+
+fn accent_text(label: &str) -> egui::RichText {
+    egui::RichText::new(label).color(Color32::from_rgb(0x0a, 0x14, 0x20))
+}
+
+/// 이 단계의 툴바 위젯 사이 간격.
+fn tb_spacing(ui: &egui::Ui, tier: ToolbarTier) -> f32 {
+    if tier == ToolbarTier::Tight {
+        TB_TIGHT_SPACING
+    } else {
+        ui.style().spacing.item_spacing.x
+    }
+}
+
+/// 묶음 하나가 차지하는 폭. egui 가로 배치를 그대로 따라간다: 위젯 뒤마다 `spacing`,
+/// add_space는 그 자리에서 더한다. 끝은 마지막 위젯의 바깥쪽 끝이다.
+fn tb_extent(ui: &egui::Ui, items: &[TbItem], spacing: f32) -> f32 {
+    let pad = ui.spacing().button_padding.x;
+    let (mut x, mut end) = (0.0_f32, 0.0_f32);
+    for item in items {
+        let (before, w, after) = match item {
+            TbItem::Logo => (0.0, TB_LOGO, TB_LOGO_GAP),
+            TbItem::Sep => (VSEP_GAP, 1.0, VSEP_GAP),
+            TbItem::Toggle { label, .. } => (0.0, tb_galley(ui, toggle_btn_text(label, false)).size().x + 2.0 * pad, 0.0),
+            TbItem::Arrow { glyph, .. } => (0.0, tb_galley(ui, egui::RichText::new(*glyph)).size().x, 0.0),
+            TbItem::Counter(text) => (0.0, tb_galley(ui, counter_text(text)).size().x, 0.0),
+            TbItem::Look(btn) => (0.0, look_btn_size(ui, btn).x, 0.0),
+            TbItem::Accent { label, .. } => (0.0, tb_galley(ui, accent_text(label)).size().x + 2.0 * pad, 0.0),
+        };
+        x += before;
+        end = x + w;
+        x = end + spacing + after;
+    }
+    end
+}
+
+/// LUT 버튼 상태. 켜짐 판정은 resolve_look과 같다.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LookState {
+    Off,
+    On,
+    /// 룩이 켜져 있고 `\`를 누르고 있다.
+    Compare,
+}
+
+/// LUT 버튼 모양.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct LookBtn {
+    /// 화면 글자.
+    pub text: String,
+    pub state: LookState,
+    /// 폭을 정하는 글자들. 가장 넓은 것에 맞춰 `\`를 눌러도 툴바가 흔들리지 않는다.
+    pub widths: Vec<String>,
+    /// 툴팁 첫 줄(Compact에서 룩 이름이 글자에서 빠졌을 때).
+    pub tip_head: Option<String>,
+}
+
+/// 메뉴에서 고른 것.
+enum LookPick {
+    /// 빌트인 이름 또는 빈 이름(없음).
+    Name(String),
+    File(PathBuf),
+    Settings,
+}
+
+/// 켜진 룩의 표시 이름. resolve_look 규칙과 같다: name=="file"이고 경로가 있으면 파일 stem,
+/// 빌트인 이름이면 그 이름. 그 밖(빈 이름·모르는 이름)은 꺼짐(None).
+pub(super) fn look_name(look: &rawblow_core::lut::LookPref) -> Option<String> {
+    if look.name == "file" && !look.cube_path.is_empty() {
+        Some(short_stem(Path::new(&look.cube_path), LOOK_BTN_STEM))
+    } else if rawblow_core::lut::BUILTINS.contains(&look.name.as_str()) {
+        Some(look.name.clone())
+    } else {
+        None
+    }
+}
+
+/// 켜진 LUT 버튼 글자. 「LUT」·「OFF」는 FIT·ORIG 같은 약어라 번역하지 않는다.
+fn look_on_label(name: &str) -> String {
+    format!("LUT · {name}")
+}
+
+/// 지금 룩·비교 상태·밀도 단계에 맞는 LUT 버튼.
+pub(super) fn look_button(look: &rawblow_core::lut::LookPref, compare: bool, tier: ToolbarTier) -> LookBtn {
+    let Some(name) = look_name(look) else {
+        return LookBtn { text: "LUT".into(), state: LookState::Off, widths: vec!["LUT".into()], tip_head: None };
+    };
+    let state = if compare { LookState::Compare } else { LookState::On };
+    let on = look_on_label(&name);
+    if tier >= ToolbarTier::Compact {
+        // 비교 중에도 툴팁은 룩 이름 — 꺼져 보인다는 표시는 ACCENT 글자가 한다.
+        return LookBtn { text: "LUT".into(), state, widths: vec!["LUT".into()], tip_head: Some(on) };
+    }
+    let text = if compare { LOOK_COMPARE.to_string() } else { on.clone() };
+    LookBtn { text, state, widths: vec![on, LOOK_COMPARE.to_string()], tip_head: None }
+}
+
+/// LUT 버튼 글자(toggle_btn과 같은 글꼴).
+fn look_btn_text(text: &str, color: Color32) -> egui::RichText {
+    egui::RichText::new(text).font(prop(12.0)).color(color)
+}
+
+/// LUT 버튼 크기: 버튼 안쪽 여백 + 가장 넓은 글자 + 삼각형. 높이는 egui Button과 같은 규칙.
+fn look_btn_size(ui: &egui::Ui, btn: &LookBtn) -> Vec2 {
+    let pad = ui.spacing().button_padding;
+    let text = btn
+        .widths
+        .iter()
+        .chain(std::iter::once(&btn.text))
+        .map(|t| tb_galley(ui, look_btn_text(t, theme::INK)).size())
+        .fold(Vec2::ZERO, |a, b| a.max(b));
+    Vec2::new(
+        pad.x * 2.0 + text.x + LOOK_TRI_GAP + LOOK_TRI_W,
+        (text.y + pad.y * 2.0).max(ui.spacing().interact_size.y),
+    )
+}
+
+/// LUT 버튼을 그린다. 꺼짐은 투명(꺼진 토글), 켜짐은 BG3+LINE2 채움, 비교 중은 채움 없이 ACCENT 글자.
+/// ▾ 글리프는 폰트에 따라 두부(□)가 되므로 삼각형을 직접 그린다.
+fn paint_look_button(ui: &egui::Ui, rect: Rect, resp: &egui::Response, btn: &LookBtn) {
+    let visuals = ui.style().interact(resp);
+    let (fill, stroke, color) = match btn.state {
+        LookState::On => (theme::BG3, theme::LINE2, theme::INK),
+        LookState::Off => (Color32::TRANSPARENT, Color32::TRANSPARENT, theme::INK2),
+        LookState::Compare => (Color32::TRANSPARENT, Color32::TRANSPARENT, theme::ACCENT),
+    };
+    let p = ui.painter();
+    p.rect(rect.expand(visuals.expansion), visuals.rounding, fill, Stroke::new(1.0_f32, stroke));
+    let pad = ui.spacing().button_padding.x;
+    let galley = tb_galley(ui, look_btn_text(&btn.text, color));
+    let pos = Pos2::new(rect.left() + pad, rect.center().y - galley.size().y / 2.0);
+    p.galley(pos, galley, color);
+    let c = Pos2::new(rect.right() - pad - LOOK_TRI_W / 2.0, rect.center().y + 0.5);
+    let h = LOOK_TRI_W / 2.0;
+    p.add(egui::Shape::convex_polygon(
+        vec![c + Vec2::new(-h, -2.0), c + Vec2::new(h, -2.0), c + Vec2::new(0.0, 2.5)],
+        color,
+        Stroke::NONE,
+    ));
+}
+
+/// 같은 `.cube`인지. LUT 폴더는 NFC 글자로 저장하고(설정 「찾아보기…」) 옛 「LUT」 버튼은 디스크 그대로
+/// (맥 NFD)를 저장했으므로, 바이트가 아니라 NFC로 묶은 경로끼리 비교한다.
+fn same_cube(a: &Path, b: &Path) -> bool {
+    a == b || nfc_path_label(a) == nfc_path_label(b)
+}
+
+/// `.cube` 경로의 확장자 뗀 이름(NFC). `max`자를 넘으면 `max−1`자에 「…」를 붙인다.
+pub(super) fn short_stem(path: &Path, max: usize) -> String {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned());
+    let stem = nfc_hangul(&stem);
+    if stem.chars().count() > max {
+        let mut s: String = stem.chars().take(max.saturating_sub(1)).collect();
+        s.push('…');
+        s
+    } else {
+        stem
+    }
 }
 
 #[cfg(test)]
@@ -1603,40 +2279,60 @@ mod tests {
     use super::*;
     use rawblow_core::color::OutputKind;
 
+    const KINDS: [OutputKind; 4] = [OutputKind::Srgb, OutputKind::SrgbFallback, OutputKind::DisplayP3, OutputKind::MonitorIcc];
+
+    // ── 상태 바 보기 문구 · HUD 꼬리 ─────────────────────────────
+
     #[test]
-    fn single_hud_suffix_names_the_output() {
-        let s = |lang, full_raw, kind| single_hud_suffix(lang, false, full_raw, false, kind).into_owned();
-        // 끔은 예전 그대로.
-        assert_eq!(s(Lang::Ko, false, OutputKind::Srgb), "FIT · sRGB");
-        assert_eq!(s(Lang::Ko, true, OutputKind::Srgb), "ORIG · sRGB");
+    fn status_view_text_table() {
+        let out = |lang, kind| match (lang, kind) {
+            (_, OutputKind::Srgb) => "sRGB",
+            (_, OutputKind::DisplayP3) => "Display P3",
+            (Lang::Ko, OutputKind::SrgbFallback) => "sRGB(폴백)",
+            (Lang::En, OutputKind::SrgbFallback) => "sRGB (fallback)",
+            (Lang::Ja, OutputKind::SrgbFallback) => "sRGB（フォールバック）",
+            (Lang::Ko, OutputKind::MonitorIcc) => "모니터 ICC",
+            (Lang::En, OutputKind::MonitorIcc) => "Monitor ICC",
+            (Lang::Ja, OutputKind::MonitorIcc) => "モニター ICC",
+        };
+        // (썸네일 대체, ORIG, 원본 폴백) → MODE. 약어는 번역하지 않는다.
+        let modes = [
+            ((false, false, false), "FIT"),
+            ((false, false, true), "FIT"),
+            ((false, true, false), "ORIG"),
+            ((false, true, true), "PREVIEW"),
+            ((true, false, false), "THUMB"),
+            ((true, true, false), "THUMB"),
+            ((true, true, true), "THUMB"),
+        ];
         for lang in [Lang::Ko, Lang::En, Lang::Ja] {
-            assert_eq!(s(lang, false, OutputKind::DisplayP3), "FIT · Display P3");
+            for kind in KINDS {
+                for ((thumb, raw, fallback), mode) in modes {
+                    assert_eq!(
+                        status_view_text(lang, thumb, raw, fallback, kind),
+                        format!("{mode} · {}", out(lang, kind)),
+                        "{lang:?} {kind:?} {thumb} {raw} {fallback}"
+                    );
+                }
+            }
         }
-        assert_eq!(s(Lang::Ko, true, OutputKind::MonitorIcc), "ORIG · 모니터 ICC");
-        assert_eq!(s(Lang::En, true, OutputKind::MonitorIcc), "ORIG · Monitor ICC");
-        assert_eq!(s(Lang::Ja, true, OutputKind::MonitorIcc), "ORIG · モニター ICC");
-        assert_eq!(s(Lang::Ko, false, OutputKind::SrgbFallback), "FIT · sRGB(폴백)");
-        assert_eq!(s(Lang::En, false, OutputKind::SrgbFallback), "FIT · sRGB (fallback)");
-        assert_eq!(s(Lang::Ja, false, OutputKind::SrgbFallback), "FIT · sRGB（フォールバック）");
     }
 
     #[test]
-    fn single_hud_suffix_warnings_win_over_color() {
-        for kind in [OutputKind::Srgb, OutputKind::SrgbFallback, OutputKind::DisplayP3, OutputKind::MonitorIcc] {
-            assert_eq!(
-                single_hud_suffix(Lang::Ko, true, true, true, kind),
-                tr(Lang::Ko, "썸네일 · 본 이미지 열기 실패")
-            );
-            assert_eq!(single_hud_suffix(Lang::En, false, true, true, kind), tr(Lang::En, "PREVIEW · 원본 없음"));
+    fn hud_tail_keeps_only_warnings() {
+        for lang in [Lang::Ko, Lang::En, Lang::Ja] {
+            assert_eq!(single_hud_warning(lang, false, false, false), None);
+            assert_eq!(single_hud_warning(lang, false, true, false), None, "ORIG도 꼬리 없음");
+            assert_eq!(single_hud_warning(lang, false, false, true), None, "프리뷰로 보면 폴백 기록은 무시");
+            assert_eq!(single_hud_warning(lang, true, true, true), Some(tr(lang, "썸네일 · 본 이미지 열기 실패")));
+            assert_eq!(single_hud_warning(lang, false, true, true), Some(tr(lang, "PREVIEW · 원본 없음")));
         }
-        // 프리뷰로 보고 있으면 원본 폴백 기록이 있어도 FIT 표기다.
-        assert_eq!(single_hud_suffix(Lang::Ko, false, false, true, OutputKind::DisplayP3), "FIT · Display P3");
     }
 
-    /// 실제 앱 상태(설정 + OS 조사 결과)에서 배지와 설정 「현재 출력」이 같은 출력 이름을 쓴다
+    /// 실제 앱 상태(설정 + OS 조사 결과)에서 상태 바 문구와 설정 「현재 출력」이 같은 출력 이름을 쓴다
     /// (모니터 이름을 모를 때). 윈도우 probe는 끈 상태에서도 ICC를 주므로 그 경우를 꼭 넣는다.
     #[test]
-    fn badge_and_settings_row_name_the_output_from_app_state() {
+    fn status_bar_and_settings_row_name_the_output_from_app_state() {
         use rawblow_core::color::OsColor;
         RawBlowApp::settings_qa_begin();
         let mut app = RawBlowApp::for_settings_qa();
@@ -1655,48 +2351,1146 @@ mod tests {
             app.cfg.wide_gamut = wide;
             app.os_color = os.clone();
             app.monitor_name.clear();
-            let badge = single_hud_suffix(Lang::Ko, false, false, false, app.output_kind());
-            assert_eq!(badge, format!("FIT · {tail}"), "{wide} {os:?}");
+            let text = status_view_text(Lang::Ko, false, false, false, app.output_kind());
+            assert_eq!(text, format!("FIT · {tail}"), "{wide} {os:?}");
             assert_eq!(app.wide_gamut_status(), format!("현재 출력: {tail}"), "{wide} {os:?}");
         }
     }
 
-    fn shell_text(view: ViewMode) -> String {
-        RawBlowApp::settings_qa_begin();
-        let mut app = RawBlowApp::for_settings_qa();
-        app.view = view;
-        let ctx = egui::Context::default();
-        crate::theme::apply(&ctx);
-        crate::fonts::install(&ctx, Lang::Ko);
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))),
-            ..Default::default()
-        };
-        let out = ctx.run(input, |ctx| app.ui_shell(ctx));
-        let mut text = String::new();
-        fn walk(shapes: &[egui::Shape], text: &mut String) {
-            for s in shapes {
-                match s {
-                    egui::Shape::Text(t) => {
-                        text.push_str(t.galley.text());
-                        text.push('\n');
-                    }
-                    egui::Shape::Vec(v) => walk(v, text),
-                    _ => {}
+    // ── 테스트 도우미 ───────────────────────────────────────────
+
+    type Texts = Vec<(String, Rect)>;
+
+    fn walk(shapes: &[egui::Shape], out: &mut Texts) {
+        for s in shapes {
+            match s {
+                egui::Shape::Text(t) => {
+                    out.push((t.galley.text().to_string(), t.galley.rect.translate(t.pos.to_vec2())));
                 }
+                egui::Shape::Vec(v) => walk(v, out),
+                _ => {}
             }
         }
+    }
+
+    fn texts_of(out: &egui::FullOutput) -> Texts {
         let shapes: Vec<_> = out.shapes.iter().map(|c| c.shape.clone()).collect();
-        walk(&shapes, &mut text);
-        text
+        let mut texts = Vec::new();
+        walk(&shapes, &mut texts);
+        texts
+    }
+
+    fn joined(texts: &Texts) -> String {
+        texts.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>().join("\n")
+    }
+
+    fn find<'a>(texts: &'a Texts, text: &str) -> Vec<&'a Rect> {
+        texts.iter().filter(|(t, _)| t == text).map(|(_, r)| r).collect()
+    }
+
+    fn lang_ctx(lang: Lang) -> egui::Context {
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        crate::fonts::install(&ctx, lang);
+        ctx
+    }
+
+    fn ko_ctx() -> egui::Context {
+        lang_ctx(Lang::Ko)
+    }
+
+    const SCREEN: Vec2 = Vec2::new(1280.0, 800.0);
+
+    fn run_at<R>(
+        ctx: &egui::Context,
+        app: &mut RawBlowApp,
+        size: Vec2,
+        events: Vec<egui::Event>,
+        mut f: impl FnMut(&mut RawBlowApp, &egui::Context) -> R,
+    ) -> (Texts, R) {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+            events,
+            ..Default::default()
+        };
+        let mut r = None;
+        let out = ctx.run(input, |ctx| r = Some(f(app, ctx)));
+        (texts_of(&out), r.expect("프레임이 한 번 돌아야 한다"))
+    }
+
+    fn frame(
+        ctx: &egui::Context,
+        app: &mut RawBlowApp,
+        events: Vec<egui::Event>,
+        f: impl FnMut(&mut RawBlowApp, &egui::Context),
+    ) -> Texts {
+        run_at(ctx, app, SCREEN, events, f).0
+    }
+
+    fn shell(app: &mut RawBlowApp, ctx: &egui::Context) {
+        app.ui_shell(ctx);
+    }
+
+    fn screen(app: &mut RawBlowApp, ctx: &egui::Context) {
+        app.ui_screen(ctx);
+    }
+
+    fn button(pos: Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }
+    }
+
+    fn click_at(pos: Pos2) -> Vec<egui::Event> {
+        vec![egui::Event::PointerMoved(pos), button(pos, true), button(pos, false)]
+    }
+
+    fn key(key: egui::Key) -> egui::Event {
+        egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
+    }
+
+    /// 단일 보기 앱. 항목 n개, 설정·지도 끔.
+    fn hud_app(n: usize) -> RawBlowApp {
+        RawBlowApp::settings_qa_begin();
+        let mut app = crate::app::tests::filter_app(n);
+        app.view = ViewMode::Single;
+        app.show_settings = false;
+        app.show_map = false;
+        app.folder = Some(PathBuf::from("Z:/filter"));
+        app
+    }
+
+    /// 0번 항목에 가짜 썸네일 텍스처를 넣는다(사진 클릭·팬이 살아 있게).
+    fn give_texture(ctx: &egui::Context, app: &mut RawBlowApp) {
+        let img = egui::ColorImage::new([2000, 1500], Color32::GRAY);
+        let tex = ctx.load_texture("fake_photo", img, egui::TextureOptions::LINEAR);
+        app.thumbs.insert(0, tex, false);
+    }
+
+    /// ui_shell의 중앙(사진) 영역.
+    fn central_area() -> Rect {
+        Rect::from_min_max(Pos2::new(RAIL_W, TOOLBAR_H), Pos2::new(SCREEN.x, SCREEN.y - FILMSTRIP_H - STATUS_H))
+    }
+
+    fn menu_open(ctx: &egui::Context) -> bool {
+        ctx.memory(|m| m.is_popup_open(egui::Id::new(LOOK_MENU_ID)))
+    }
+
+    fn open_menu(ctx: &egui::Context) {
+        ctx.memory_mut(|m| m.open_popup(egui::Id::new(LOOK_MENU_ID)));
+    }
+
+    fn look(name: &str, cube: &str) -> rawblow_core::lut::LookPref {
+        rawblow_core::lut::LookPref { name: name.into(), cube_path: cube.into() }
+    }
+
+    /// 툴바 띠 안의 LUT 버튼 글자(「LUT」 또는 「LUT · …」) 사각형.
+    fn lut_text(texts: &Texts) -> Option<Rect> {
+        texts.iter().find(|(t, r)| t.starts_with("LUT") && r.bottom() <= TOOLBAR_H).map(|(_, r)| *r)
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rb_views_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    const GOOD_CUBE: &str = "LUT_3D_SIZE 2\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n";
+
+    /// 메뉴를 열고(버튼 클릭) 메뉴가 그려진 프레임의 글자를 돌려준다.
+    fn open_menu_by_click(ctx: &egui::Context, app: &mut RawBlowApp) -> Texts {
+        let texts = frame(ctx, app, vec![], shell);
+        let c = lut_text(&texts).expect("툴바 LUT 버튼").center();
+        frame(ctx, app, click_at(c), shell);
+        assert!(menu_open(ctx), "LUT 버튼을 누르면 메뉴가 열린다");
+        frame(ctx, app, vec![], shell);
+        frame(ctx, app, vec![], shell)
+    }
+
+    // ── 룩 줄 → 툴바 LUT 버튼 ───────────────────────────────────
+
+    #[test]
+    fn look_bar_is_gone_and_lut_button_is_on_the_single_toolbar_only() {
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        let texts = frame(&ctx, &mut app, vec![], shell);
+        assert!(egui::containers::panel::PanelState::load(&ctx, egui::Id::new("look")).is_none(), "룩 줄 없음");
+        assert!(lut_text(&texts).is_some(), "단일 보기 툴바에 LUT 버튼");
+        let (_, layout) = run_at(&ctx, &mut app, SCREEN, vec![], |app, ctx| app.ui_toolbar(ctx));
+        let look_rect = layout.look.expect("LUT 버튼 자리");
+        // 구도 버튼 바로 뒤(왼쪽 묶음 맨 끝).
+        assert!((look_rect.right() - layout.left_end).abs() < 0.5);
+
+        app.view = ViewMode::Grid;
+        let grid = frame(&ctx, &mut app, vec![], shell);
+        assert!(!joined(&grid).contains("LUT"), "그리드에는 LUT 버튼이 없다");
+        let (_, layout) = run_at(&ctx, &mut app, SCREEN, vec![], |app, ctx| app.ui_toolbar(ctx));
+        assert!(layout.look.is_none());
+
+        app.view = ViewMode::Single;
+        app.fullscreen = true;
+        let ctx = ko_ctx();
+        give_texture(&ctx, &mut app);
+        frame(&ctx, &mut app, vec![], screen);
+        let full = frame(&ctx, &mut app, vec![], screen);
+        assert!(!joined(&full).contains("LUT"), "전체화면에는 LUT UI가 없다");
+        assert!(egui::containers::panel::PanelState::load(&ctx, egui::Id::new("look")).is_none());
+        assert!(!find(&full, "FULLSCREEN · ESC").is_empty(), "전체화면 꼬리는 그대로");
     }
 
     #[test]
-    fn look_picker_is_on_the_single_view_only() {
-        let single = shell_text(ViewMode::Single);
-        assert!(single.contains("LUT"), "단일 보기에 LUT 버튼이 있어야 한다");
-        assert!(single.contains("없음"), "룩을 끈 상태가 보여야 한다");
-        let grid = shell_text(ViewMode::Grid);
-        assert!(!grid.contains("LUT"), "그리드에는 룩 줄을 두지 않는다");
+    fn look_button_labels() {
+        let full = ToolbarTier::Full;
+        let b = |l: rawblow_core::lut::LookPref, compare| look_button(&l, compare, full);
+        assert_eq!((b(look("", ""), false).text, b(look("", ""), false).state), ("LUT".to_string(), LookState::Off));
+        assert_eq!((b(look("Warm", ""), false).text, b(look("Warm", ""), false).state), ("LUT · Warm".to_string(), LookState::On));
+        let long = look("file", "/Users/me/LUTs/kodak_2383_film_emulation.cube");
+        assert_eq!(b(long.clone(), false).text, "LUT · kodak_2383_fi…", "14자 넘으면 13자 + …");
+        assert_eq!(b(look("file", "/l/abcdefghijklmn.cube"), false).text, "LUT · abcdefghijklmn", "14자는 그대로");
+        // NFD 한글 파일 이름도 NFC로 센다.
+        let nfd = "\u{1112}\u{1161}\u{11AB}\u{1100}\u{1173}\u{11AF}";
+        assert_eq!(b(look("file", &format!("/l/{nfd}.cube")), false).text, "LUT · 한글");
+        // 비교 중: 「LUT · OFF」, 폭은 켜짐·비교 라벨 중 넓은 쪽.
+        let cmp = b(look("Warm", ""), true);
+        assert_eq!((cmp.text.as_str(), cmp.state), ("LUT · OFF", LookState::Compare));
+        assert_eq!(cmp.widths, vec!["LUT · Warm".to_string(), "LUT · OFF".to_string()]);
+        assert_eq!(b(look("Warm", ""), false).widths, cmp.widths, "켜짐·비교가 같은 폭 후보");
+        // 모르는 이름·경로 없는 file·빈 이름은 꺼짐(비교 키를 눌러도).
+        for off in [look("Foo", ""), look("file", ""), look("", "/l/a.cube")] {
+            for compare in [false, true] {
+                let o = b(off.clone(), compare);
+                assert_eq!((o.text.as_str(), o.state), ("LUT", LookState::Off), "{off:?}");
+            }
+        }
+        // Compact: 글자는 「LUT」뿐, 이름은 툴팁 첫 줄, 켜짐은 채움(상태로 그린다).
+        let c = look_button(&look("Tungsten", ""), false, ToolbarTier::Compact);
+        assert_eq!((c.text.as_str(), c.state, c.tip_head.as_deref()), ("LUT", LookState::On, Some("LUT · Tungsten")));
+        let c = look_button(&look("Tungsten", ""), true, ToolbarTier::Compact);
+        assert_eq!((c.text.as_str(), c.state, c.tip_head.as_deref()), ("LUT", LookState::Compare, Some("LUT · Tungsten")));
+        // 백슬래시는 prop 글자에 넣지 않는다(윈도우 맑은 고딕은 ₩).
+        assert!(!LOOK_COMPARE.contains('\\'));
+    }
+
+    #[test]
+    fn lut_button_width_is_stable_while_comparing() {
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        for pref in [look("Warm", ""), look("Pan", ""), look("file", "/l/kodak_2383_film_emulation.cube")] {
+            app.cfg.look = pref;
+            app.look_compare = false;
+            let (_, on) = run_at(&ctx, &mut app, SCREEN, vec![], |app, ctx| app.ui_toolbar(ctx));
+            app.look_compare = true;
+            let (texts, cmp) = run_at(&ctx, &mut app, SCREEN, vec![], |app, ctx| app.ui_toolbar(ctx));
+            assert_eq!(on.tier, cmp.tier);
+            assert_eq!(on.look, cmp.look, "{:?}", app.cfg.look);
+            assert_eq!(on.right_start, cmp.right_start);
+            let off = lut_text(&texts).expect("비교 글자");
+            assert!(on.look.unwrap().contains_rect(off.shrink(0.5)), "비교 글자가 버튼 안");
+        }
+        // 꺼짐은 「LUT」 폭이라 켜짐보다 좁다.
+        app.look_compare = false;
+        app.cfg.look = look("", "");
+        let (_, off) = run_at(&ctx, &mut app, SCREEN, vec![], |app, ctx| app.ui_toolbar(ctx));
+        app.cfg.look = look("Pan", "");
+        let (_, on) = run_at(&ctx, &mut app, SCREEN, vec![], |app, ctx| app.ui_toolbar(ctx));
+        assert!(off.look.unwrap().width() < on.look.unwrap().width());
+    }
+
+    // ── 툴바 밀도 ──────────────────────────────────────────────
+
+    /// 최악 내용: 장수 n장, LUT 폴더에 긴 영문·한글 이름, 지금 룩은 가장 긴 파일, 룩 켜짐.
+    fn worst_app_n(lang: Lang, n: usize) -> RawBlowApp {
+        let mut app = hud_app(n);
+        app.lang = lang;
+        let long_en = PathBuf::from("/Users/me/LUTs/Kodak_Portra_400_Film_Emulation_v2.cube");
+        let long_ko = PathBuf::from("/Users/me/LUTs/코닥포트라필름에뮬레이션따뜻한톤.cube");
+        app.lut_files = vec![long_en, long_ko.clone()];
+        app.lut_dir_status = rawblow_core::lut::CubeDir::Found { shown: 2, total: 2 };
+        app.cfg.look = look("file", &long_ko.display().to_string());
+        app
+    }
+
+    fn worst_app(lang: Lang) -> RawBlowApp {
+        worst_app_n(lang, 1500)
+    }
+
+    /// 모든 글꼴을 `scale`배로 넓힌 문맥. 윈도우 글꼴(맑은 고딕·Yu Gothic Medium)은 맥 글꼴보다
+    /// 툴바 글자가 약 8% 넓다 — 테스트가 이 기계의 OS 글꼴에만 기대지 않게 10%로 흉내 낸다.
+    fn wide_ctx(lang: Lang, scale: f32) -> egui::Context {
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let mut defs = crate::fonts::definitions(lang);
+        for fd in defs.font_data.values_mut() {
+            fd.tweak.scale *= scale;
+        }
+        ctx.set_fonts(defs);
+        ctx
+    }
+
+    /// 창 폭·언어·보기·구도·비교·장수 전부에서 두 묶음이 겹치지 않는다. 돌려주는 값은 본 단계들.
+    fn assert_toolbar_never_overlaps(ctx_of: impl Fn(Lang) -> egui::Context, what: &str) -> Vec<(Lang, ToolbarTier)> {
+        let mut seen = Vec::new();
+        for lang in [Lang::Ko, Lang::En, Lang::Ja] {
+            let ctx = ctx_of(lang);
+            for n in [3, 1500, 12000] {
+                let mut app = worst_app_n(lang, n);
+                for w in [900.0, 1000.0, 1100.0, 1280.0, 1440.0] {
+                    for view in [ViewMode::Single, ViewMode::Grid] {
+                        app.view = view;
+                        for guides in GUIDE_PRESETS {
+                            app.cfg.guides = guides;
+                            for compare in [false, true] {
+                                app.look_compare = compare;
+                                let (_, l) = run_at(&ctx, &mut app, Vec2::new(w, 800.0), vec![], |app, ctx| app.ui_toolbar(ctx));
+                                let gap = l.right_start - l.left_end;
+                                assert!(
+                                    gap >= 4.0,
+                                    "{what} {lang:?} {n}장 {w} {view:?} {guides:?} compare={compare}: 겹침/여백 {gap:.1} (tier {:?})",
+                                    l.tier
+                                );
+                                if !seen.contains(&(lang, l.tier)) {
+                                    seen.push((lang, l.tier));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        seen
+    }
+
+    #[test]
+    fn toolbar_never_overlaps_at_any_width_language_or_view() {
+        assert_toolbar_never_overlaps(lang_ctx, "OS 글꼴");
+    }
+
+    /// 글자가 넓은 글꼴(윈도우)에서도 900pt에 들어간다 — Compact로도 모자라면 Tight가 간격을 줄인다.
+    #[test]
+    fn toolbar_never_overlaps_with_wide_fonts() {
+        let seen = assert_toolbar_never_overlaps(|lang| wide_ctx(lang, 1.10), "넓은 글꼴");
+        assert!(seen.iter().any(|(_, t)| *t == ToolbarTier::Tight), "넓은 글꼴 900pt에서는 Tight까지 내려간다 {seen:?}");
+        assert!(seen.iter().any(|(_, t)| *t == ToolbarTier::Full), "넓은 창은 여전히 Full {seen:?}");
+    }
+
+    /// Tight는 Compact와 같은 글자에 간격만 줄인다. 측정과 그리기가 같다.
+    #[test]
+    fn tight_tier_keeps_compact_labels_and_measures_what_it_draws() {
+        let ctx = wide_ctx(Lang::Ja, 1.10);
+        let mut app = worst_app_n(Lang::Ja, 12000);
+        let size = Vec2::new(900.0, 800.0);
+        let (texts, l) = run_at(&ctx, &mut app, size, vec![], |app, ctx| app.ui_toolbar(ctx));
+        assert_eq!(l.tier, ToolbarTier::Tight);
+        assert!(!find(&texts, "LUT").is_empty(), "LUT 버튼은 「LUT」만");
+        assert!(!find(&texts, tr(Lang::Ja, "구도")).is_empty(), "구도 버튼은 고정 이름");
+        let (_, (ml, mr)) = run_at(&ctx, &mut app, size, vec![], |app, ctx| {
+            let mut m = (0.0, 0.0);
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let (left, right) = toolbar_items(&app.toolbar_content(l.tier), l.tier);
+                let spacing = tb_spacing(ui, l.tier);
+                assert_eq!(spacing, TB_TIGHT_SPACING);
+                m = (tb_extent(ui, &left, spacing), tb_extent(ui, &right, spacing));
+            });
+            m
+        });
+        assert!((ml - (l.left_end - 12.0)).abs() < 0.5, "왼쪽 측정 {ml} 실제 {}", l.left_end - 12.0);
+        assert!((mr - (size.x - 12.0 - l.right_start)).abs() < 0.5, "오른쪽 측정 {mr} 실제 {}", size.x - 12.0 - l.right_start);
+    }
+
+    #[test]
+    fn toolbar_is_full_at_1440_ko_and_drops_hints_when_narrow() {
+        let ctx = ko_ctx();
+        let mut app = worst_app(Lang::Ko);
+        for guides in GUIDE_PRESETS {
+            app.cfg.guides = guides;
+            let (texts, l) = run_at(&ctx, &mut app, Vec2::new(1440.0, 900.0), vec![], |app, ctx| app.ui_toolbar(ctx));
+            assert_eq!(l.tier, ToolbarTier::Full, "1440 KO는 힌트까지 {guides:?}");
+            assert!(!find(&texts, "Fit (Space)").is_empty(), "힌트 보임");
+        }
+        let (texts, l) = run_at(&ctx, &mut app, Vec2::new(900.0, 700.0), vec![], |app, ctx| app.ui_toolbar(ctx));
+        assert_ne!(l.tier, ToolbarTier::Full, "900에서는 힌트를 뗀다");
+        assert!(find(&texts, "Fit (Space)").is_empty());
+        assert!(!find(&texts, "Fit").is_empty(), "라벨은 이름만");
+    }
+
+    #[test]
+    fn toolbar_tier_is_the_same_for_single_and_grid() {
+        for lang in [Lang::Ko, Lang::En, Lang::Ja] {
+            let ctx = lang_ctx(lang);
+            let mut app = worst_app(lang);
+            let mut seen = std::collections::BTreeSet::new();
+            for w in (900..=1600).step_by(20) {
+                let size = Vec2::new(w as f32, 800.0);
+                app.view = ViewMode::Single;
+                let (_, single) = run_at(&ctx, &mut app, size, vec![], |app, ctx| app.ui_toolbar(ctx));
+                app.view = ViewMode::Grid;
+                let (_, grid) = run_at(&ctx, &mut app, size, vec![], |app, ctx| app.ui_toolbar(ctx));
+                assert_eq!(single.tier, grid.tier, "{lang:?} {w}: T로 바꿔도 같은 단계");
+                seen.insert(single.tier);
+            }
+            assert!(seen.contains(&ToolbarTier::Full), "{lang:?}: 넓은 창은 Full {seen:?}");
+        }
+    }
+
+    /// 단계 측정(tb_extent)이 실제로 그린 폭과 같다 — 측정과 그리기가 같은 목록을 쓴다.
+    #[test]
+    fn toolbar_measure_matches_what_is_drawn() {
+        for lang in [Lang::Ko, Lang::En, Lang::Ja] {
+            let ctx = lang_ctx(lang);
+            let mut app = worst_app(lang);
+            for (w, view) in [(1440.0, ViewMode::Single), (1000.0, ViewMode::Single), (900.0, ViewMode::Grid), (900.0, ViewMode::Single)] {
+                app.view = view;
+                let size = Vec2::new(w, 800.0);
+                let (_, l) = run_at(&ctx, &mut app, size, vec![], |app, ctx| app.ui_toolbar(ctx));
+                let (_, (ml, mr)) = run_at(&ctx, &mut app, size, vec![], |app, ctx| {
+                    let mut m = (0.0, 0.0);
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let (left, right) = toolbar_items(&app.toolbar_content(l.tier), l.tier);
+                        let spacing = tb_spacing(ui, l.tier);
+                        m = (tb_extent(ui, &left, spacing), tb_extent(ui, &right, spacing));
+                    });
+                    m
+                });
+                let drawn_left = l.left_end - 12.0;
+                let drawn_right = (w - 12.0) - l.right_start;
+                assert!((ml - drawn_left).abs() < 0.5, "{lang:?} {w} {view:?} 왼쪽 측정 {ml} 실제 {drawn_left}");
+                assert!((mr - drawn_right).abs() < 0.5, "{lang:?} {w} {view:?} 오른쪽 측정 {mr} 실제 {drawn_right}");
+            }
+        }
+    }
+
+    #[test]
+    fn hints_move_to_tooltips_and_compact_fixes_guide_and_lut_labels() {
+        let tip = "T 키로 전환";
+        assert_eq!(hinted(ToolbarTier::Full, "Single", "T", Some(tip)), ("Single (T)".into(), Some(tip.into())));
+        assert_eq!(
+            hinted(ToolbarTier::NoHints, "Single", "T", Some(tip)),
+            ("Single".into(), Some(format!("Single (T)\n{tip}")))
+        );
+        assert_eq!(hinted(ToolbarTier::Compact, "Fit", "Space", None), ("Fit".into(), Some("Fit (Space)".into())));
+        let labels = |tier, guide: &'static str| {
+            let c = TbContent {
+                lang: Lang::Ko,
+                view: ViewMode::Single,
+                counter: counter_label(1, 3),
+                guide,
+                look: look_button(&look("Warm", ""), false, tier),
+            };
+            let (left, right) = toolbar_items(&c, tier);
+            left.iter()
+                .chain(&right)
+                .filter_map(|it| match it {
+                    TbItem::Toggle { label, tip, .. } | TbItem::Accent { label, tip, .. } => Some((label.clone(), tip.clone())),
+                    TbItem::Look(b) => Some((b.text.clone(), b.tip_head.clone())),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let full = labels(ToolbarTier::Full, "삼분할");
+        let no = labels(ToolbarTier::NoHints, "삼분할");
+        let compact = labels(ToolbarTier::Compact, "삼분할");
+        let has = |v: &Vec<(String, Option<String>)>, l: &str, t: Option<&str>| {
+            v.iter().any(|(a, b)| a == l && b.as_deref() == t)
+        };
+        assert!(has(&full, "삼분할 (])", None));
+        assert!(has(&full, "LUT · Warm", None));
+        assert!(has(&no, "삼분할", Some("삼분할 (])")));
+        assert!(has(&no, "LUT · Warm", None));
+        assert!(has(&compact, "구도", Some("삼분할 (])")), "Compact 구도는 고정 이름");
+        assert!(has(&compact, "LUT", Some("LUT · Warm")), "Compact LUT는 이름을 툴팁으로");
+        // NoHints부터는 어떤 라벨에도 「(키)」가 없다.
+        for v in [&no, &compact] {
+            for (label, _) in v.iter() {
+                assert!(!label.contains(" ("), "힌트가 남았다: {label}");
+            }
+        }
+        assert!(has(&no, "폴더 열기", Some(&format!("폴더 열기 ({}O)", cmd_key()))));
+        assert!(has(&no, " 전송 ", Some(&format!("전송 ({}E)", cmd_key()))));
+    }
+
+    // ── 상태 바 문구 · HUD 꼬리(화면) ────────────────────────────
+
+    fn status_band(texts: &Texts) -> Vec<(String, Rect)> {
+        texts.iter().filter(|(_, r)| r.top() >= SCREEN.y - STATUS_H - 0.5).cloned().collect()
+    }
+
+    #[test]
+    fn view_text_moves_from_hud_to_status_bar() {
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        give_texture(&ctx, &mut app);
+        frame(&ctx, &mut app, vec![], shell);
+        let texts = frame(&ctx, &mut app, vec![], shell);
+        let status = status_band(&texts);
+        let fit = status.iter().find(|(t, _)| t == "FIT · sRGB").map(|(_, r)| *r).expect("상태 바에 FIT · sRGB");
+        let saved = status.iter().find(|(t, _)| t == "saved").map(|(_, r)| *r).expect("saved");
+        let zoom = status.iter().find(|(t, _)| t.ends_with('%')).map(|(_, r)| *r).expect("배율");
+        assert!(fit.right() < zoom.left() && zoom.right() < saved.left(), "FIT · 출력 · 배율 · ● saved 순서");
+        assert!(fit.left() > SCREEN.x / 2.0, "오른쪽 묶음");
+        assert!(!joined(&texts).lines().any(|t| t.starts_with("FIT · ") && !status.iter().any(|(s, _)| s == t)));
+        assert_eq!(texts.iter().filter(|(t, _)| t.contains("FIT")).count(), 1, "HUD에는 FIT 문구가 없다");
+
+        // 썸네일 대체: HUD에는 경고, 상태 바에는 THUMB.
+        app.decode_fails.insert(0, DECODE_DEAD_THRESHOLD);
+        let texts = frame(&ctx, &mut app, vec![], shell);
+        let warn = find(&texts, "썸네일 · 본 이미지 열기 실패");
+        assert!(!warn.is_empty() && warn.iter().all(|r| r.bottom() < SCREEN.y / 2.0), "경고는 HUD 오른쪽 위");
+        assert!(status_band(&texts).iter().any(|(t, _)| t == "THUMB · sRGB"));
+        app.decode_fails.clear();
+
+        // ORIG를 켰는데 원본을 못 구했다.
+        app.full_raw = true;
+        app.orig_fallback.insert(0);
+        let texts = frame(&ctx, &mut app, vec![], shell);
+        assert!(!find(&texts, "PREVIEW · 원본 없음").is_empty(), "경고는 HUD에 남는다");
+        assert!(status_band(&texts).iter().any(|(t, _)| t == "PREVIEW · sRGB"));
+        app.orig_fallback.clear();
+        let texts = frame(&ctx, &mut app, vec![], shell);
+        assert!(status_band(&texts).iter().any(|(t, _)| t == "ORIG · sRGB"));
+        assert!(find(&texts, "PREVIEW · 원본 없음").is_empty());
+
+        // 그리드 상태 바에는 문구가 없다.
+        app.view = ViewMode::Grid;
+        let texts = frame(&ctx, &mut app, vec![], shell);
+        assert!(!joined(&texts).contains(" · sRGB"), "그리드에는 보기 문구 없음");
+    }
+
+    /// 최소 창(900pt)에서도 상태 바 오른쪽 묶음(보기 문구 · 배율 · 저장)이 왼쪽 통계에 닿지 않는다.
+    /// 가장 긴 경우: 장수 5자리(라벨이 고루 나뉘어 P/H/X/미분류가 모두 4자리), 유휴 뒤의 긴 프레임 시간,
+    /// PREVIEW + 모니터 ICC, 「저장 실패」. 모자라면 왼쪽 프레임 통계 줄만 줄임표로 잘린다.
+    /// 흔한 경우(장수 4자리, 보통 프레임 시간)에는 자르지 않는다.
+    #[test]
+    fn status_bar_view_text_fits_at_min_width() {
+        let labels = [Label::Pick, Label::Hold, Label::Reject, Label::Unrated];
+        for lang in [Lang::Ko, Lang::En, Lang::Ja] {
+            let ctx = lang_ctx(lang);
+            for (n, ms) in [(1500, 16.7), (12000, 16.7), (12000, 1234.5), (12000, 98765.4)] {
+                let mut app = hud_app(n);
+                for (i, it) in app.items.iter_mut().enumerate() {
+                    it.entry.label = labels[i % 4];
+                }
+                app.index = n - 1;
+                app.lang = lang;
+                app.frame_ms = ms;
+                app.cfg.wide_gamut = true;
+                app.os_color = rawblow_core::color::OsColor::Windows { icc: Some(vec![1]), acm_or_hdr: false };
+                app.save_error = Some("x".into());
+                app.full_raw = true;
+                app.orig_fallback.insert(n - 1);
+                let (texts, full_w) = run_at(&ctx, &mut app, Vec2::new(900.0, 700.0), vec![], |app, ctx| {
+                    app.ui_status_bar(ctx);
+                    let fps = 1000.0 / app.frame_ms;
+                    let stats = format!("· {:.1}ms · {:.0} FPS · GPU wgpu · PRELOAD ±{}", app.frame_ms, fps, app.cfg.preload);
+                    ctx.fonts(|f| f.layout_no_wrap(stats, mono(10.5), theme::INK).size().x)
+                });
+                let stats = texts.iter().find(|(t, _)| t.contains("PRELOAD")).map(|(_, r)| *r).expect("통계");
+                let (view, left) = texts
+                    .iter()
+                    .find(|(t, _)| t.starts_with("PREVIEW · "))
+                    .map(|(t, r)| (t.clone(), r.left()))
+                    .expect("보기 문구");
+                let gap = left - stats.right();
+                assert!(gap >= 4.0, "{lang:?} {n}장 {ms}ms: {view:?}와 통계 사이 {gap:.0}pt");
+                let first = texts.iter().find(|(t, _)| t.starts_with("READY · ")).map(|(_, r)| *r).expect("READY");
+                assert!(first.left() >= 12.0 - 0.5, "왼쪽 첫 줄은 그대로");
+                assert!(stats.width() <= full_w + 0.5);
+            }
+            // 흔한 경우(장수 4자리, FIT · sRGB, saved, 보통 프레임 시간)에는 900pt에서도 통계를 자르지 않는다.
+            let mut app = hud_app(1500);
+            app.lang = lang;
+            app.frame_ms = 16.7;
+            let (texts, full_w) = run_at(&ctx, &mut app, Vec2::new(900.0, 700.0), vec![], |app, ctx| {
+                app.ui_status_bar(ctx);
+                let stats = format!("· {:.1}ms · {:.0} FPS · GPU wgpu · PRELOAD ±{}", app.frame_ms, 1000.0 / app.frame_ms, app.cfg.preload);
+                ctx.fonts(|f| f.layout_no_wrap(stats, mono(10.5), theme::INK).size().x)
+            });
+            let stats = texts.iter().find(|(t, _)| t.contains("PRELOAD")).map(|(_, r)| *r).expect("통계");
+            assert!((stats.width() - full_w).abs() < 0.5, "{lang:?}: 흔한 경우에는 통계를 자르지 않는다");
+            assert!(texts.iter().any(|(t, _)| t == "FIT · sRGB"));
+        }
+    }
+
+    // ── 치트시트 ───────────────────────────────────────────────
+
+    /// 글자와 그 글자를 자르는 영역(clip). 스크롤 영역 밖으로 밀린 줄을 찾는 데 쓴다.
+    fn clipped_texts(out: &egui::FullOutput) -> Vec<(String, Rect, Rect)> {
+        let mut v = Vec::new();
+        for c in &out.shapes {
+            let mut texts = Vec::new();
+            walk(std::slice::from_ref(&c.shape), &mut texts);
+            v.extend(texts.into_iter().map(|(t, r)| (t, r, c.clip_rect)));
+        }
+        v
+    }
+
+    /// 치트시트(고정 크기 창) 두 열의 마지막 줄이 스크롤하지 않아도 보인다(#66 「표가 잘림」 회귀 방지).
+    /// 룩 고르기 안내도 보인다.
+    #[test]
+    fn cheatsheet_last_rows_fit_without_scrolling() {
+        for lang in [Lang::Ko, Lang::En, Lang::Ja] {
+            for size in [SCREEN, Vec2::new(900.0, 600.0)] {
+                let ctx = lang_ctx(lang);
+                let mut app = hud_app(3);
+                app.lang = lang;
+                app.show_help = true;
+                let mut texts = Vec::new();
+                for _ in 0..3 {
+                    let input = egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                        ..Default::default()
+                    };
+                    let out = ctx.run(input, |ctx| app.ui_help(ctx));
+                    texts = clipped_texts(&out);
+                }
+                for last in [tr(lang, "드래그앤드롭으로 폴더 열기"), tr(lang, "태그 해제")] {
+                    let (_, r, clip) = texts
+                        .iter()
+                        .find(|(t, _, _)| t == last)
+                        .unwrap_or_else(|| panic!("{lang:?} {size:?}: 마지막 줄 {last:?}가 그려지지 않았다"));
+                    assert!(
+                        r.bottom() <= clip.bottom() + 0.5,
+                        "{lang:?} {size:?}: {last:?} 아래 끝 {} > 보이는 영역 {}",
+                        r.bottom(),
+                        clip.bottom()
+                    );
+                }
+                let cap = tr(lang, "룩 고르기: 툴바 LUT · 폴더는 설정");
+                let (_, r, clip) = texts.iter().find(|(t, _, _)| t == cap).unwrap_or_else(|| panic!("{lang:?}: 룩 고르기 안내"));
+                assert!(clip.contains_rect(*r) && r.bottom() <= size.y, "{lang:?} {size:?}: 안내가 잘렸다 {r:?} {clip:?}");
+                // 푸터 오른쪽: 왼쪽의 「Esc 닫기」와 겹치지 않는다.
+                let close = texts.iter().find(|(t, _, _)| t == tr(lang, "닫기")).map(|(_, r, _)| *r).expect("닫기");
+                assert!(r.left() - close.right() >= 8.0, "{lang:?}: 안내가 「닫기」에 닿는다 {r:?} {close:?}");
+            }
+        }
+    }
+
+    // ── 룩 메뉴 ────────────────────────────────────────────────
+
+    #[test]
+    fn menu_lists_lut_folder_cubes_in_order_and_rereads_on_open() {
+        let dir = temp_dir("menu_list");
+        for name in ["a.cube", "B.CUBE", "c.txt", ".hidden.cube"] {
+            std::fs::write(dir.join(name), GOOD_CUBE).unwrap();
+        }
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub").join("d.cube"), GOOD_CUBE).unwrap();
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        // 폴더만 바꿔 두고 다시 읽지 않는다 — 메뉴를 열 때 읽어야 한다.
+        app.cfg.lut_dir = dir.display().to_string();
+        assert!(app.lut_files.is_empty());
+        let texts = open_menu_by_click(&ctx, &mut app);
+        assert_eq!(app.lut_files.len(), 2, "열 때 다시 읽는다");
+        let top = |t: &str| find(&texts, t).first().map(|r| r.top()).unwrap_or_else(|| panic!("메뉴에 {t}: {}", joined(&texts)));
+        let order = ["없음", "Warm", "Tungsten", "Chrome", "Pan", "Vivid", "Snap", "a", "B", "LUT 폴더 설정…", "누르고 있는 동안 룩 끄기"];
+        for pair in order.windows(2) {
+            assert!(top(pair[0]) < top(pair[1]), "{} 다음 {}", pair[0], pair[1]);
+        }
+        for absent in ["c", "d", ".hidden", "hidden"] {
+            assert!(find(&texts, absent).is_empty(), "{absent}는 없어야 한다");
+        }
+        for caption in [
+            "설정에서 LUT 폴더를 지정하면 .cube 파일이 여기 나옵니다",
+            "LUT 폴더에 .cube 파일이 없습니다",
+            "LUT 폴더를 찾을 수 없습니다",
+        ] {
+            assert!(find(&texts, caption).is_empty(), "목록이 있으면 캡션 없음");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn menu_captions_for_unset_empty_and_missing_folder() {
+        let empty = temp_dir("menu_empty");
+        std::fs::write(empty.join("readme.txt"), "x").unwrap();
+        let gone = std::env::temp_dir().join(format!("rb_views_gone_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&gone);
+        for (dir, caption) in [
+            (String::new(), "설정에서 LUT 폴더를 지정하면 .cube 파일이 여기 나옵니다"),
+            (empty.display().to_string(), "LUT 폴더에 .cube 파일이 없습니다"),
+            (gone.display().to_string(), "LUT 폴더를 찾을 수 없습니다"),
+        ] {
+            let ctx = ko_ctx();
+            let mut app = hud_app(3);
+            app.cfg.lut_dir = dir;
+            let texts = open_menu_by_click(&ctx, &mut app);
+            assert!(!find(&texts, caption).is_empty(), "캡션 {caption}: {}", joined(&texts));
+            assert!(!find(&texts, "LUT 폴더 설정…").is_empty());
+        }
+        let _ = std::fs::remove_dir_all(&empty);
+
+        // 폴더는 있는데 권한이 없다: 「찾을 수 없음」이 아니다(root는 권한과 상관없이 읽어 만들 수 없다).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let locked = temp_dir("menu_locked");
+            std::fs::write(locked.join("a.cube"), GOOD_CUBE).unwrap();
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let blocked = std::fs::read_dir(&locked).is_err();
+            let ctx = ko_ctx();
+            let mut app = hud_app(3);
+            app.cfg.lut_dir = locked.display().to_string();
+            let texts = open_menu_by_click(&ctx, &mut app);
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let _ = std::fs::remove_dir_all(&locked);
+            if blocked {
+                assert!(!find(&texts, "LUT 폴더를 읽을 수 없습니다(접근 권한)").is_empty(), "{}", joined(&texts));
+                assert!(find(&texts, "LUT 폴더를 찾을 수 없습니다").is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn current_file_outside_the_folder_stays_in_the_menu() {
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        app.cfg.look = look("file", "/somewhere/else/MyFilm.cube");
+        let texts = open_menu_by_click(&ctx, &mut app);
+        assert!(!find(&texts, "MyFilm").is_empty(), "지금 룩 파일이 한 줄 보인다");
+        assert!(lut_text(&texts).is_some_and(|_| texts.iter().any(|(t, _)| t == "LUT · MyFilm")));
+    }
+
+    #[test]
+    fn picking_from_menu_sets_look_and_same_pick_does_not_save() {
+        let dir = temp_dir("menu_pick");
+        let good = dir.join("good.cube");
+        let bad = dir.join("bad.cube");
+        std::fs::write(&good, GOOD_CUBE).unwrap();
+        std::fs::write(&bad, "LUT_1D_SIZE 2\n0 0 0\n").unwrap();
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        app.cfg.lut_dir = dir.display().to_string();
+
+        // 빌트인.
+        let texts = open_menu_by_click(&ctx, &mut app);
+        let warm = *find(&texts, "Warm").first().expect("메뉴에 Warm");
+        frame(&ctx, &mut app, click_at(warm.center()), shell);
+        assert_eq!(app.cfg.look.name, "Warm");
+        assert!(!menu_open(&ctx), "고르면 닫힌다");
+        let persisted = RawBlowApp::settings_qa_persist_count();
+        assert!(persisted > 0);
+        // 같은 빌트인을 다시 골라도 저장하지 않는다.
+        let texts = open_menu_by_click(&ctx, &mut app);
+        assert!(texts.iter().any(|(t, _)| t == "LUT · Warm"), "버튼에 룩 이름");
+        let warm = *find(&texts, "Warm").first().unwrap();
+        frame(&ctx, &mut app, click_at(warm.center()), shell);
+        assert_eq!(RawBlowApp::settings_qa_persist_count(), persisted);
+
+        // 폴더의 유효한 .cube.
+        let texts = open_menu_by_click(&ctx, &mut app);
+        let row = *find(&texts, "good").first().expect("메뉴에 good");
+        frame(&ctx, &mut app, click_at(row.center()), shell);
+        assert_eq!(app.cfg.look.name, "file");
+        assert_eq!(app.cfg.look.cube_path, good.display().to_string());
+        let persisted = RawBlowApp::settings_qa_persist_count();
+        // 같은 파일 재선택은 저장하지 않는다.
+        let texts = open_menu_by_click(&ctx, &mut app);
+        let row = *find(&texts, "good").first().unwrap();
+        frame(&ctx, &mut app, click_at(row.center()), shell);
+        assert_eq!(RawBlowApp::settings_qa_persist_count(), persisted);
+
+        // 잘못된 .cube: 토스트, 이전 룩 유지, 저장 없음.
+        app.toast = None;
+        let texts = open_menu_by_click(&ctx, &mut app);
+        let row = *find(&texts, "bad").first().expect("메뉴에 bad");
+        frame(&ctx, &mut app, click_at(row.center()), shell);
+        assert!(app.toast.is_some(), "토스트");
+        assert_eq!(app.cfg.look.cube_path, good.display().to_string(), "이전 룩 유지");
+        assert_eq!(RawBlowApp::settings_qa_persist_count(), persisted);
+
+        // 없음.
+        let texts = open_menu_by_click(&ctx, &mut app);
+        let none = *find(&texts, "없음").first().unwrap();
+        frame(&ctx, &mut app, click_at(none.center()), shell);
+        assert_eq!(app.cfg.look.name, "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn menu_folder_settings_item_opens_settings() {
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        app.settings_reset_armed = true;
+        let texts = open_menu_by_click(&ctx, &mut app);
+        let item = *find(&texts, "LUT 폴더 설정…").first().expect("LUT 폴더 설정…");
+        frame(&ctx, &mut app, click_at(item.center()), screen);
+        assert!(app.show_settings, "설정 화면을 연다");
+        assert!(!app.settings_reset_armed, "⚙ 클릭과 같은 부수 처리");
+        assert!(app.cache_size.is_none());
+        frame(&ctx, &mut app, vec![], screen);
+        assert!(!menu_open(&ctx));
+    }
+
+    // ── 키·포인터 가드 ─────────────────────────────────────────
+
+    #[test]
+    fn lut_button_click_across_frames_opens_menu() {
+        // 실제 마우스는 누르기와 떼기가 다른 프레임에 온다. 고아 정리(ui_screen)를 거쳐도 열려 있어야 한다.
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        give_texture(&ctx, &mut app);
+        let texts = frame(&ctx, &mut app, vec![], screen);
+        let c = lut_text(&texts).expect("LUT 버튼").center();
+        frame(&ctx, &mut app, vec![egui::Event::PointerMoved(c)], screen);
+        frame(&ctx, &mut app, vec![button(c, true)], screen);
+        assert!(!menu_open(&ctx), "누르기만으로는 열리지 않는다");
+        frame(&ctx, &mut app, vec![button(c, false)], screen);
+        frame(&ctx, &mut app, vec![], screen);
+        assert!(menu_open(&ctx), "떼면 열리고 다음 프레임에도 열려 있다");
+        assert!(app.fit);
+        // 다시 누르면 닫힌다.
+        frame(&ctx, &mut app, click_at(c), screen);
+        assert!(!menu_open(&ctx));
+    }
+
+    #[test]
+    fn shield_blocks_photo_click_and_closes_menu() {
+        let center = central_area().center();
+        // 대조: 메뉴가 닫혀 있으면 사진 클릭이 1:1을 요청한다.
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        give_texture(&ctx, &mut app);
+        frame(&ctx, &mut app, vec![], shell);
+        frame(&ctx, &mut app, click_at(center), shell);
+        assert!(!app.fit, "대조: 메뉴 없이 누르면 1:1");
+
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        give_texture(&ctx, &mut app);
+        frame(&ctx, &mut app, vec![], shell);
+        open_menu(&ctx);
+        frame(&ctx, &mut app, vec![], shell);
+        frame(&ctx, &mut app, click_at(center), shell);
+        assert!(!menu_open(&ctx), "사진을 누르면 메뉴가 닫힌다");
+        assert!(app.fit, "닫는 클릭은 Fit↔1:1에 쓰지 않는다");
+        assert!(!app.one_to_one_pending);
+        // 닫힌 뒤에는 사진 클릭이 다시 산다.
+        frame(&ctx, &mut app, vec![], shell);
+        frame(&ctx, &mut app, click_at(center), shell);
+        assert!(!app.fit);
+
+        // 디코딩 실패 화면의 「클릭하여 재시도」로도 새지 않는다.
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        app.decode_fails.insert(0, DECODE_DEAD_THRESHOLD);
+        frame(&ctx, &mut app, vec![], shell);
+        open_menu(&ctx);
+        frame(&ctx, &mut app, vec![], shell);
+        frame(&ctx, &mut app, click_at(center), shell);
+        assert!(!menu_open(&ctx));
+        assert_eq!(app.decode_fails.get(&0), Some(&DECODE_DEAD_THRESHOLD), "재시도가 불리지 않았다");
+    }
+
+    #[test]
+    fn shield_lets_drag_pan_the_photo() {
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        give_texture(&ctx, &mut app);
+        frame(&ctx, &mut app, vec![], shell);
+        app.fit = false;
+        app.zoom = 1.0;
+        frame(&ctx, &mut app, vec![], shell);
+        open_menu(&ctx);
+        frame(&ctx, &mut app, vec![], shell);
+        let pan0 = app.pan;
+        let start = central_area().center();
+        frame(&ctx, &mut app, vec![egui::Event::PointerMoved(start), button(start, true)], shell);
+        for dx in [20.0, 40.0, 60.0] {
+            frame(&ctx, &mut app, vec![egui::Event::PointerMoved(start - Vec2::new(dx, 0.0))], shell);
+        }
+        frame(&ctx, &mut app, vec![button(start - Vec2::new(60.0, 0.0), false)], shell);
+        assert!((app.pan.x - pan0.x).abs() > 30.0, "방패는 click 전용 — 드래그는 사진 팬 {pan0:?} → {:?}", app.pan);
+    }
+
+    #[test]
+    fn wheel_does_not_flip_while_menu_open() {
+        let wheel = || egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: Vec2::new(0.0, -10.0),
+            modifiers: egui::Modifiers::NONE,
+        };
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        open_menu(&ctx);
+        frame(&ctx, &mut app, vec![wheel()], |app, ctx| app.handle_keys(ctx));
+        assert_eq!(app.index, 0, "메뉴가 열려 있으면 휠로 넘기지 않는다");
+        ctx.memory_mut(|m| m.close_popup());
+        frame(&ctx, &mut app, vec![wheel()], |app, ctx| app.handle_keys(ctx));
+        assert_eq!(app.index, 1, "대조: 메뉴가 닫혀 있으면 넘긴다");
+    }
+
+    /// update와 같은 순서(키 처리 → 화면 분기).
+    fn keys_then_screen(app: &mut RawBlowApp, ctx: &egui::Context) {
+        app.handle_keys(ctx);
+        app.ui_screen(ctx);
+    }
+
+    /// 단일 보기에서 메뉴가 열린 채 Esc: 메뉴만 닫히고 보기·위치·배율은 그대로.
+    /// F11: 전체화면에는 LUT 버튼이 없어 같은 프레임에 메뉴가 닫히고, 다음 Esc는 전체화면을 푼다.
+    #[test]
+    fn escape_closes_only_the_menu_and_f11_drops_it() {
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        give_texture(&ctx, &mut app);
+        let texts = frame(&ctx, &mut app, vec![], keys_then_screen);
+        let c = lut_text(&texts).expect("LUT 버튼").center();
+        frame(&ctx, &mut app, click_at(c), keys_then_screen);
+        frame(&ctx, &mut app, vec![], keys_then_screen);
+        assert!(menu_open(&ctx));
+        frame(&ctx, &mut app, vec![key(egui::Key::Escape)], keys_then_screen);
+        assert!(!menu_open(&ctx), "Esc는 메뉴를 닫는다");
+        assert_eq!((app.fullscreen, app.view, app.index, app.fit), (false, ViewMode::Single, 0, true), "그 밖은 그대로");
+
+        frame(&ctx, &mut app, click_at(c), keys_then_screen);
+        frame(&ctx, &mut app, vec![], keys_then_screen);
+        assert!(menu_open(&ctx));
+        frame(&ctx, &mut app, vec![key(egui::Key::F11)], keys_then_screen);
+        assert!(app.fullscreen);
+        assert!(!menu_open(&ctx), "전체화면으로 가는 프레임에 메뉴가 닫힌다");
+        frame(&ctx, &mut app, vec![key(egui::Key::Escape)], keys_then_screen);
+        assert!(!app.fullscreen, "다음 Esc는 전체화면을 푼다");
+        frame(&ctx, &mut app, vec![], keys_then_screen);
+        assert!(!menu_open(&ctx), "돌아와도 메뉴가 다시 뜨지 않는다");
+    }
+
+    /// 메뉴 안의 스크롤바·안내 줄을 눌러도 메뉴는 열린 채(항목을 누르면 닫힌다 — picking 테스트).
+    #[test]
+    fn clicking_inside_the_menu_off_items_keeps_it_open() {
+        let dir = temp_dir("menu_scroll");
+        for i in 0..40 {
+            std::fs::write(dir.join(format!("file_{i:02}.cube")), GOOD_CUBE).unwrap();
+        }
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        app.cfg.lut_dir = dir.display().to_string();
+        let texts = open_menu_by_click(&ctx, &mut app);
+        let area = ctx.memory(|m| m.area_rect(egui::Id::new(LOOK_MENU_ID))).expect("메뉴 자리");
+        let row = |texts: &Texts, t: &str| find(texts, t).first().map(|r| **r);
+        let first = row(&texts, "file_00").expect("file_00");
+        let mid = row(&texts, "file_08").expect("file_08");
+        // 오른쪽 끝 스크롤바 트랙.
+        let bar = Pos2::new(area.right() - 7.0, mid.center().y);
+        let texts = frame(&ctx, &mut app, vec![egui::Event::PointerMoved(bar)], shell);
+        let texts2 = frame(&ctx, &mut app, click_at(bar), shell);
+        let _ = texts;
+        assert!(menu_open(&ctx), "스크롤바를 눌러도 열린 채");
+        let texts = frame(&ctx, &mut app, vec![], shell);
+        let moved = row(&texts, "file_00").is_none_or(|r| (r.top() - first.top()).abs() > 1.0)
+            || row(&texts2, "file_00").is_none_or(|r| (r.top() - first.top()).abs() > 1.0);
+        assert!(moved, "스크롤바를 누른 것이 맞다(목록이 넘어감)");
+        // 안내 줄(선택 항목이 아님).
+        let hint = *find(&texts, "누르고 있는 동안 룩 끄기").first().expect("안내 줄");
+        frame(&ctx, &mut app, click_at(hint.center()), shell);
+        frame(&ctx, &mut app, vec![], shell);
+        assert!(menu_open(&ctx), "안내 줄을 눌러도 열린 채");
+        assert_eq!(app.cfg.look.name, "", "룩은 그대로");
+        // 대조: 메뉴 밖(사진)을 누르면 닫힌다.
+        frame(&ctx, &mut app, click_at(central_area().center()), shell);
+        assert!(!menu_open(&ctx));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 메뉴를 열 때 폴더를 다시 읽어 더 긴 이름이 생겨도, 열린 동안은 툴바 단계·LUT 버튼 자리가 그대로다.
+    /// 닫힌 뒤에 반영된다.
+    #[test]
+    fn toolbar_does_not_jump_while_menu_is_open() {
+        let dir = temp_dir("menu_freeze");
+        std::fs::write(dir.join("readme.txt"), "x").unwrap();
+        let ctx = lang_ctx(Lang::En);
+        let mut app = hud_app(3);
+        app.lang = Lang::En;
+        app.cfg.lut_dir = dir.display().to_string();
+        app.reload_lut_files();
+        let toolbar = |app: &mut RawBlowApp, ctx: &egui::Context| app.ui_toolbar(ctx);
+        let (_, before) = run_at(&ctx, &mut app, SCREEN, vec![], toolbar);
+        for name in ["Kodak_Portra_400_Film_Emulation_v2.cube", "코닥포트라필름에뮬레이션따뜻한톤.cube"] {
+            std::fs::write(dir.join(name), GOOD_CUBE).unwrap();
+        }
+        let c = before.look.expect("LUT 버튼").center();
+        run_at(&ctx, &mut app, SCREEN, click_at(c), toolbar);
+        assert_eq!(app.lut_files.len(), 2, "열 때 다시 읽었다");
+        for _ in 0..3 {
+            let (_, open) = run_at(&ctx, &mut app, SCREEN, vec![], toolbar);
+            assert!(menu_open(&ctx));
+            assert_eq!((open.tier, open.look), (before.tier, before.look), "열린 동안 그대로");
+        }
+        run_at(&ctx, &mut app, SCREEN, click_at(c), toolbar);
+        assert!(!menu_open(&ctx));
+        let (_, after) = run_at(&ctx, &mut app, SCREEN, vec![], toolbar);
+        assert_ne!(after.tier, before.tier, "닫힌 뒤에는 긴 이름을 반영한다(이 테스트가 뜻이 있는지)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 폴더 밖 파일 룩에서 빌트인으로 바꿔도 툴바 단계가 그대로다(그 파일 줄은 메뉴에 남는다).
+    #[test]
+    fn picking_a_builtin_does_not_change_the_toolbar_tier() {
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        app.cfg.look = look("file", "/somewhere/else/코닥포트라필름에뮬레이션따뜻한톤.cube");
+        for w in (900..=1500).step_by(10) {
+            let size = Vec2::new(w as f32, 800.0);
+            app.cfg.look.name = "file".into();
+            let (_, file) = run_at(&ctx, &mut app, size, vec![], |app, ctx| app.ui_toolbar(ctx));
+            app.cfg.look.name = "Tungsten".into();
+            let (_, builtin) = run_at(&ctx, &mut app, size, vec![], |app, ctx| app.ui_toolbar(ctx));
+            app.cfg.look.name = String::new();
+            let (_, off) = run_at(&ctx, &mut app, size, vec![], |app, ctx| app.ui_toolbar(ctx));
+            assert_eq!((file.tier, builtin.tier, off.tier), (file.tier, file.tier, file.tier), "{w}");
+        }
+        // 짧은 이름의 파일로 바꿔도(경로가 바뀌어도) 세션 동안 가장 넓은 이름을 붙잡아 둔다.
+        // 처음부터 짧은 파일이었던 앱과는 단계가 갈리는 폭이 있어야 이 검사가 뜻이 있다.
+        let long_look = look("file", "/somewhere/else/코닥포트라필름에뮬레이션따뜻한톤.cube");
+        let short_look = look("file", "/l/a.cube");
+        let toolbar = |app: &mut RawBlowApp, ctx: &egui::Context| app.ui_toolbar(ctx);
+        let mut differs = 0;
+        for w in (900..=1500).step_by(5) {
+            let size = Vec2::new(w as f32, 800.0);
+            let mut seen = hud_app(3);
+            seen.cfg.look = long_look.clone();
+            let (_, long) = run_at(&ctx, &mut seen, size, vec![], toolbar);
+            seen.cfg.look = short_look.clone();
+            let (_, after) = run_at(&ctx, &mut seen, size, vec![], toolbar);
+            assert_eq!(after.tier, long.tier, "{w}: 짧은 파일로 바꿔도 단계 그대로");
+            let mut fresh = hud_app(3);
+            fresh.cfg.look = short_look.clone();
+            let (_, short) = run_at(&ctx, &mut fresh, size, vec![], toolbar);
+            differs += usize::from(short.tier != long.tier);
+        }
+        assert!(differs > 0, "긴 이름 때문에 단계가 달라지는 폭이 있어야 한다");
+    }
+
+    /// 「LUT 폴더 설정…」으로 열면 「LUT 폴더」 행이 보이게 스크롤한다. ⚙로 열면 맨 위 그대로.
+    #[test]
+    fn menu_settings_item_scrolls_to_the_lut_folder_row() {
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        let texts = open_menu_by_click(&ctx, &mut app);
+        let item = *find(&texts, "LUT 폴더 설정…").first().expect("LUT 폴더 설정…");
+        frame(&ctx, &mut app, click_at(item.center()), screen);
+        assert!(app.show_settings && app.settings_focus_lut);
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            texts = frame(&ctx, &mut app, vec![], screen);
+        }
+        assert!(!app.settings_focus_lut, "한 번만");
+        let row = find(&texts, "LUT 폴더");
+        assert!(
+            row.first().is_some_and(|r| r.top() >= 52.0 && r.bottom() <= SCREEN.y),
+            "「LUT 폴더」 행이 화면 안에 보인다: {row:?}"
+        );
+
+        // 대조: ⚙(open_settings)로 열면 스크롤하지 않는다 — 그 행은 첫 화면 밖이다.
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        app.open_settings();
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            texts = frame(&ctx, &mut app, vec![], screen);
+        }
+        assert!(find(&texts, "LUT 폴더").is_empty(), "⚙로 열면 맨 위(이 테스트가 뜻이 있는지)");
+    }
+
+    /// 맥에서 만든 NFD 이름 폴더를 NFC로 적어 둔 LUT 폴더와, 옛 「LUT」 버튼이 저장한 NFD 경로가
+    /// 같은 파일로 보인다: 줄은 하나, 다시 골라도 저장하지 않는다.
+    #[test]
+    fn nfd_and_nfc_paths_to_the_same_cube_are_one_row() {
+        let root = temp_dir("menu_nfd");
+        let nfd_dir = root.join("\u{1105}\u{116E}\u{11A8}"); // 「룩」 NFD
+        std::fs::create_dir_all(&nfd_dir).unwrap();
+        std::fs::write(nfd_dir.join("a.cube"), GOOD_CUBE).unwrap();
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        app.cfg.lut_dir = nfc_path_label(&nfd_dir);
+        app.cfg.look = look("file", &nfd_dir.join("a.cube").display().to_string());
+        let texts = open_menu_by_click(&ctx, &mut app);
+        assert_eq!(find(&texts, "a").len(), 1, "같은 파일은 한 줄: {}", joined(&texts));
+        let saved = RawBlowApp::settings_qa_persist_count();
+        let row = *find(&texts, "a").first().unwrap();
+        frame(&ctx, &mut app, click_at(row.center()), shell);
+        assert_eq!(RawBlowApp::settings_qa_persist_count(), saved, "같은 파일을 다시 골라도 저장하지 않는다");
+        assert_eq!(app.cfg.look.name, "file");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 폴더 밖 파일 룩에서 빌트인으로 바꿔도 그 파일 줄이 메뉴에 남아 다시 고를 수 있다.
+    #[test]
+    fn outside_file_stays_reachable_after_picking_a_builtin() {
+        let dir = temp_dir("menu_outside");
+        let film = dir.join("MyFilm.cube");
+        std::fs::write(&film, GOOD_CUBE).unwrap();
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        app.cfg.look = look("file", &film.display().to_string());
+        let texts = open_menu_by_click(&ctx, &mut app);
+        let warm = *find(&texts, "Warm").first().unwrap();
+        frame(&ctx, &mut app, click_at(warm.center()), shell);
+        assert_eq!(app.cfg.look.name, "Warm");
+        let texts = open_menu_by_click(&ctx, &mut app);
+        let row = *find(&texts, "MyFilm").first().expect("빌트인으로 바꿔도 그 파일 줄이 남는다");
+        frame(&ctx, &mut app, click_at(row.center()), shell);
+        assert_eq!(app.cfg.look, look("file", &film.display().to_string()), "다시 고르면 파일 룩");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 낮은 창(최소 900x600)에서 목록이 길고 폴더 밖 줄까지 있어도 메뉴가 화면 안에 있고 LUT 버튼을 덮지 않는다.
+    #[test]
+    fn long_menu_fits_below_the_button_on_a_short_window() {
+        let dir = temp_dir("menu_tall");
+        for i in 0..40 {
+            std::fs::write(dir.join(format!("file_{i:02}.cube")), GOOD_CUBE).unwrap();
+        }
+        for (size, outside) in [
+            (Vec2::new(900.0, 600.0), true),
+            (Vec2::new(900.0, 600.0), false),
+            (SCREEN, true),
+            (Vec2::new(1440.0, 900.0), false),
+        ] {
+            let ctx = ko_ctx();
+            let mut app = hud_app(3);
+            app.cfg.lut_dir = dir.display().to_string();
+            app.reload_lut_files();
+            if outside {
+                app.cfg.look = look("file", "/somewhere/else/MyFilm.cube");
+            }
+            let toolbar = |app: &mut RawBlowApp, ctx: &egui::Context| app.ui_toolbar(ctx);
+            let (_, l) = run_at(&ctx, &mut app, size, vec![], toolbar);
+            let button = l.look.expect("LUT 버튼");
+            run_at(&ctx, &mut app, size, click_at(button.center()), toolbar);
+            for _ in 0..3 {
+                run_at(&ctx, &mut app, size, vec![], toolbar);
+            }
+            assert!(menu_open(&ctx));
+            let area = ctx.memory(|m| m.area_rect(egui::Id::new(LOOK_MENU_ID))).expect("메뉴 자리");
+            assert!(area.top() >= button.bottom() - 0.5, "{size:?} {outside}: 메뉴가 버튼을 덮는다 {area:?} {button:?}");
+            assert!(area.bottom() <= size.y + 0.5, "{size:?} {outside}: 메뉴가 화면 밖 {area:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn orphan_menu_closes_and_does_not_come_back() {
+        type Leave = fn(&mut RawBlowApp);
+        type Back = fn(&mut RawBlowApp);
+        let cases: [(&str, Leave, Back); 4] = [
+            ("T(그리드)", |a| a.view = ViewMode::Grid, |a| a.view = ViewMode::Single),
+            ("F11(전체화면)", |a| a.fullscreen = true, |a| a.fullscreen = false),
+            ("설정", |a| a.open_settings(), |a| a.show_settings = false),
+            ("모달(치트시트)", |a| a.show_help = true, |a| a.show_help = false),
+        ];
+        for (what, leave, back) in cases {
+            let ctx = ko_ctx();
+            let mut app = hud_app(3);
+            frame(&ctx, &mut app, vec![], screen);
+            open_menu(&ctx);
+            frame(&ctx, &mut app, vec![], screen);
+            assert!(menu_open(&ctx), "{what}: 단일 보기에서는 열린 채로 남는다");
+            leave(&mut app);
+            frame(&ctx, &mut app, vec![], screen);
+            assert!(!menu_open(&ctx), "{what}: 떠나면 닫힌다");
+            back(&mut app);
+            frame(&ctx, &mut app, vec![], screen);
+            let texts = frame(&ctx, &mut app, vec![], screen);
+            assert!(!menu_open(&ctx), "{what}: 돌아와도 다시 뜨지 않는다");
+            assert!(!joined(&texts).contains("Tungsten"), "{what}: 메뉴 글자 없음");
+        }
     }
 }

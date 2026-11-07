@@ -351,7 +351,9 @@ impl RawBlowApp {
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             // 높이 고정(0=자동이면 내부 ScrollArea와 순환 의존으로 뷰포트가 붕괴, 표가 잘림 #66).
             // 2열 표(~410px)+헤더/푸터가 들어가는 높이. 콘텐츠가 더 길면 ScrollArea가 스크롤한다.
-            .fixed_size(Vec2::new(680.0, 560.0))
+            // 표 영역은 이 높이에서 헤더를 뺀 만큼이고 푸터는 그 아래에 붙는다 — 푸터 위 여백을 8pt 줄이고
+            // 여기서 8pt 늘려 창 전체 높이는 그대로, 오른쪽 열 마지막 줄이 걸리지 않게 했다.
+            .fixed_size(Vec2::new(680.0, 568.0))
             .frame(modal_frame())
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
@@ -430,8 +432,9 @@ impl RawBlowApp {
                         });
                     });
 
-                // 푸터: ?·F1 열기 — Esc 닫기 (키캡 배지).
-                ui.add_space(12.0);
+                // 푸터: ?·F1 열기 — Esc 닫기 (키캡 배지). 창 높이가 고정이라 표 아래 여백을 줄여야
+                // 오른쪽 열 마지막 줄이 스크롤 없이 다 보인다.
+                ui.add_space(4.0);
                 hline_full(ui);
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
@@ -446,6 +449,15 @@ impl RawBlowApp {
                     kbd(ui, "Esc");
                     ui.add_space(5.0);
                     ui.label(egui::RichText::new(tr(lang, "닫기")).font(mono(10.0)).color(theme::INK3));
+                    // 룩을 고르는 곳(툴바 LUT 버튼)과 .cube 폴더(설정). 표 안(`\` 줄 아래)에 두면 오른쪽 열이
+                    // 고정 높이 창을 넘어 마지막 줄이 스크롤 밖으로 밀려서 푸터 오른쪽에 둔다.
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(tr(lang, "룩 고르기: 툴바 LUT · 폴더는 설정"))
+                                .font(mono(9.5))
+                                .color(theme::INK4),
+                        );
+                    });
                 });
             });
 

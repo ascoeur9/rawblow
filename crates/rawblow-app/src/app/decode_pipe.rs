@@ -424,8 +424,14 @@ impl RawBlowApp {
 
     pub(super) fn set_look_name(&mut self, name: &str, ctx: &egui::Context) {
         self.cfg.look.name = name.to_string();
-        self.look_cache = None;
         self.persist_cfg();
+        self.look_changed(ctx);
+    }
+
+    /// `cfg.look`을 바꾼 뒤 부른다: 캐시를 버리고 화면 텍스처를 새 룩으로 다시 칠한다.
+    /// (설정 기본값 복원처럼 set_look_name을 거치지 않고 룩을 바꾸는 곳도 쓴다.)
+    pub(super) fn look_changed(&mut self, ctx: &egui::Context) {
+        self.look_cache = None;
         self.look_gen = self.look_gen.wrapping_add(1);
         self.regrade_looks(ctx, 4);
     }
