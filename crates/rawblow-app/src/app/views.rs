@@ -350,10 +350,8 @@ impl RawBlowApp {
         }
         let ctx = ui.ctx().clone();
         match pick {
-            Some(LookPick::Name(name)) => {
-                if self.cfg.look.name != name {
-                    self.set_look_name(&name, &ctx);
-                }
+            Some(LookPick::Name(name)) if self.cfg.look.name != name => {
+                self.set_look_name(&name, &ctx);
             }
             Some(LookPick::File(path)) => {
                 let same = self.cfg.look.name == "file" && same_cube(Path::new(&self.cfg.look.cube_path), &path);
@@ -366,7 +364,7 @@ impl RawBlowApp {
                 self.settings_focus_lut = true;
                 self.open_settings();
             }
-            None => {}
+            Some(LookPick::Name(_)) | None => {}
         }
         rect
     }
@@ -2615,7 +2613,10 @@ mod tests {
 
     /// 모든 글꼴을 `scale`배로 넓힌 문맥. 윈도우 글꼴(맑은 고딕·Yu Gothic Medium)은 맥 글꼴보다
     /// 툴바 글자가 약 8% 넓다 — 테스트가 이 기계의 OS 글꼴에만 기대지 않게 10%로 흉내 낸다.
+    /// `scale`은 맥 글꼴 기준이다. 윈도우에서는 OS 글꼴이 이미 8% 넓으므로 그만큼 덜 키운다
+    /// (안 그러면 맥 기준 19%가 되어 실제로 없는 폭을 시험한다).
     fn wide_ctx(lang: Lang, scale: f32) -> egui::Context {
+        let scale = if cfg!(target_os = "windows") { scale / 1.08 } else { scale };
         let ctx = egui::Context::default();
         crate::theme::apply(&ctx);
         let mut defs = crate::fonts::definitions(lang);
@@ -3283,41 +3284,53 @@ mod tests {
         frame(&ctx, &mut app, vec![], shell);
         assert!(menu_open(&ctx), "안내 줄을 눌러도 열린 채");
         assert_eq!(app.cfg.look.name, "", "룩은 그대로");
-        // 대조: 메뉴 밖(사진)을 누르면 닫힌다.
-        frame(&ctx, &mut app, click_at(central_area().center()), shell);
+        // 대조: 메뉴 밖(사진)을 누르면 닫힌다. 사진 가운데는 글꼴에 따라 메뉴에 덮일 수 있어
+        // (윈도우: 메뉴가 넓어 가운데를 덮음) 사진 왼쪽을 누른다.
+        let central = central_area();
+        let outside = Pos2::new(central.left() + 40.0, central.center().y);
+        assert!(!area.contains(outside), "누를 곳이 메뉴 밖이다 {area:?}");
+        frame(&ctx, &mut app, click_at(outside), shell);
         assert!(!menu_open(&ctx));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 메뉴를 열 때 폴더를 다시 읽어 더 긴 이름이 생겨도, 열린 동안은 툴바 단계·LUT 버튼 자리가 그대로다.
-    /// 닫힌 뒤에 반영된다.
+    /// 닫힌 뒤에 반영된다. 단계가 바뀌는 창 폭은 글꼴마다 달라(윈도우 글꼴은 1280에서 이미 NoHints)
+    /// 몇 가지 폭에서 돌려 적어도 한 폭에서는 단계가 바뀌는지 본다.
     #[test]
     fn toolbar_does_not_jump_while_menu_is_open() {
-        let dir = temp_dir("menu_freeze");
-        std::fs::write(dir.join("readme.txt"), "x").unwrap();
-        let ctx = lang_ctx(Lang::En);
-        let mut app = hud_app(3);
-        app.lang = Lang::En;
-        app.cfg.lut_dir = dir.display().to_string();
-        app.reload_lut_files();
-        let toolbar = |app: &mut RawBlowApp, ctx: &egui::Context| app.ui_toolbar(ctx);
-        let (_, before) = run_at(&ctx, &mut app, SCREEN, vec![], toolbar);
-        for name in ["Kodak_Portra_400_Film_Emulation_v2.cube", "코닥포트라필름에뮬레이션따뜻한톤.cube"] {
-            std::fs::write(dir.join(name), GOOD_CUBE).unwrap();
+        let mut changed = Vec::new();
+        for w in [1100.0, 1280.0, 1440.0, 1600.0, 1800.0] {
+            let size = Vec2::new(w, SCREEN.y);
+            let dir = temp_dir(&format!("menu_freeze_{w}"));
+            std::fs::write(dir.join("readme.txt"), "x").unwrap();
+            let ctx = lang_ctx(Lang::En);
+            let mut app = hud_app(3);
+            app.lang = Lang::En;
+            app.cfg.lut_dir = dir.display().to_string();
+            app.reload_lut_files();
+            let toolbar = |app: &mut RawBlowApp, ctx: &egui::Context| app.ui_toolbar(ctx);
+            let (_, before) = run_at(&ctx, &mut app, size, vec![], toolbar);
+            for name in ["Kodak_Portra_400_Film_Emulation_v2.cube", "코닥포트라필름에뮬레이션따뜻한톤.cube"] {
+                std::fs::write(dir.join(name), GOOD_CUBE).unwrap();
+            }
+            let c = before.look.expect("LUT 버튼").center();
+            run_at(&ctx, &mut app, size, click_at(c), toolbar);
+            assert_eq!(app.lut_files.len(), 2, "{w}: 열 때 다시 읽었다");
+            for _ in 0..3 {
+                let (_, open) = run_at(&ctx, &mut app, size, vec![], toolbar);
+                assert!(menu_open(&ctx));
+                assert_eq!((open.tier, open.look), (before.tier, before.look), "{w}: 열린 동안 그대로");
+            }
+            run_at(&ctx, &mut app, size, click_at(c), toolbar);
+            assert!(!menu_open(&ctx));
+            let (_, after) = run_at(&ctx, &mut app, size, vec![], toolbar);
+            if after.tier != before.tier {
+                changed.push(w);
+            }
+            let _ = std::fs::remove_dir_all(&dir);
         }
-        let c = before.look.expect("LUT 버튼").center();
-        run_at(&ctx, &mut app, SCREEN, click_at(c), toolbar);
-        assert_eq!(app.lut_files.len(), 2, "열 때 다시 읽었다");
-        for _ in 0..3 {
-            let (_, open) = run_at(&ctx, &mut app, SCREEN, vec![], toolbar);
-            assert!(menu_open(&ctx));
-            assert_eq!((open.tier, open.look), (before.tier, before.look), "열린 동안 그대로");
-        }
-        run_at(&ctx, &mut app, SCREEN, click_at(c), toolbar);
-        assert!(!menu_open(&ctx));
-        let (_, after) = run_at(&ctx, &mut app, SCREEN, vec![], toolbar);
-        assert_ne!(after.tier, before.tier, "닫힌 뒤에는 긴 이름을 반영한다(이 테스트가 뜻이 있는지)");
-        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!changed.is_empty(), "닫힌 뒤에는 긴 이름을 반영한다 — 단계가 바뀐 폭이 하나는 있어야 이 테스트가 뜻이 있다");
     }
 
     /// 폴더 밖 파일 룩에서 빌트인으로 바꿔도 툴바 단계가 그대로다(그 파일 줄은 메뉴에 남는다).

@@ -312,22 +312,26 @@ impl RawBlowApp {
         let mut close = false;
 
         // 한 줄 = 키캡 배지(들) + 설명. 여러 키는 배지를 나란히 둔다.
+        // 글줄 높이가 맑은 고딕보다 큰 글꼴(윈도우 Yu Gothic: 12pt 19, 10pt 16)에서는 늘어난 만큼
+        // 아래 여백을 줄여 줄 간격을 맞춘다. 안 그러면 고정 높이 창의 마지막 줄이 스크롤 밖으로 밀린다.
+        // 기준(12pt 17, 10pt 13) 이하인 글꼴은 그대로다.
         fn row(ui: &mut egui::Ui, keys: &[&str], desc: &str) {
+            let mut text_h = 0.0_f32;
             ui.horizontal(|ui| {
                 for k in keys {
                     kbd(ui, k);
                     ui.add_space(3.0);
                 }
                 ui.add_space(3.0);
-                ui.label(egui::RichText::new(desc).font(prop(12.0)).color(theme::INK2));
+                text_h = ui.label(egui::RichText::new(desc).font(prop(12.0)).color(theme::INK2)).rect.height();
             });
-            ui.add_space(6.0);
+            ui.add_space((6.0 - (text_h - 17.0).max(0.0)).max(2.0));
         }
         // 섹션 머리(대문자 작은 라벨 — section_head와 같은 톤).
         fn head(ui: &mut egui::Ui, text: &str) {
             ui.add_space(4.0);
-            ui.label(egui::RichText::new(text.to_uppercase()).font(prop(10.0)).color(theme::INK3));
-            ui.add_space(6.0);
+            let h = ui.label(egui::RichText::new(text.to_uppercase()).font(prop(10.0)).color(theme::INK3)).rect.height();
+            ui.add_space((6.0 - (h - 13.0).max(0.0)).max(2.0));
         }
 
         // 뒤 화면 어둡게(dim) + 클릭 차단 — 배경 클릭 시 닫는다(다른 모달과 동일 alpha-180 검정).
@@ -353,7 +357,8 @@ impl RawBlowApp {
             // 2열 표(~410px)+헤더/푸터가 들어가는 높이. 콘텐츠가 더 길면 ScrollArea가 스크롤한다.
             // 표 영역은 이 높이에서 헤더를 뺀 만큼이고 푸터는 그 아래에 붙는다 — 푸터 위 여백을 8pt 줄이고
             // 여기서 8pt 늘려 창 전체 높이는 그대로, 오른쪽 열 마지막 줄이 걸리지 않게 했다.
-            .fixed_size(Vec2::new(680.0, 568.0))
+            // 윈도우 맑은 고딕은 568에서 좌열 마지막 줄이 1pt 걸려 2pt 더 둔다(900×600 화면에도 들어가는 만큼).
+            .fixed_size(Vec2::new(680.0, 570.0))
             .frame(modal_frame())
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
