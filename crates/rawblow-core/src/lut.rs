@@ -1,7 +1,7 @@
 //! 표시 전용 3D LUT(#125).
 //!
 //! `.cube`의 `LUT_3D_SIZE` 2~64만 받는다. 1D, 범위 밖 크기, 데이터가 짧거나
-//! 길면 거절한다. 빌트인은 Warm, Tungsten, Chrome, Pan, Vivid, Snap뿐.
+//! 길면 거절한다. 빌트인은 Rawblow-Warm, -Tungsten, -Chrome, -Pan, -Vivid, -Snap뿐(코드로 만드는 룩).
 //! 룩이 없거나 비교 키를 누르고 있으면 입력 바이트를 그대로 돌려준다.
 
 use serde::{Deserialize, Serialize};
@@ -15,7 +15,7 @@ pub struct LookPref {
     pub cube_path: String,
 }
 
-pub const BUILTINS: [&str; 6] = ["Warm", "Tungsten", "Chrome", "Pan", "Vivid", "Snap"];
+pub const BUILTINS: [&str; 6] = ["Rawblow-Warm", "Rawblow-Tungsten", "Rawblow-Chrome", "Rawblow-Pan", "Rawblow-Vivid", "Rawblow-Snap"];
 
 /// LUT 폴더에서 읽는 `.cube` 상한. 넘으면 이름순 앞에서 자른다.
 pub const CUBE_DIR_CAP: usize = 500;
@@ -127,12 +127,12 @@ pub fn display_rgba(src: &[u8], lut: Option<&Lut3d>, compare_held: bool) -> Vec<
 
 pub fn builtin(name: &str) -> Option<Lut3d> {
     let f: fn(f32, f32, f32) -> [f32; 3] = match name {
-        "Warm" => warm,
-        "Tungsten" => tungsten,
-        "Chrome" => chrome,
-        "Pan" => pan,
-        "Vivid" => vivid,
-        "Snap" => snap,
+        "Rawblow-Warm" => warm,
+        "Rawblow-Tungsten" => tungsten,
+        "Rawblow-Chrome" => chrome,
+        "Rawblow-Pan" => pan,
+        "Rawblow-Vivid" => vivid,
+        "Rawblow-Snap" => snap,
         _ => return None,
     };
     Some(bake(f))

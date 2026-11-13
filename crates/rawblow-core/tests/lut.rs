@@ -82,15 +82,15 @@ fn builtins_change_pixels_and_brand_names_do_not_exist() {
     let red = px([180, 40, 40]);
     for name in BUILTINS {
         let lut = builtin(name).unwrap_or_else(|| panic!("{name}"));
-        let sample = if name == "Pan" || name == "Vivid" || name == "Snap" { &red } else { &gray };
+        let sample = if name == "Rawblow-Pan" || name == "Rawblow-Vivid" || name == "Rawblow-Snap" { &red } else { &gray };
         assert_ne!(display_rgba(sample, Some(&lut), false), *sample, "{name}");
     }
-    let warm = display_rgba(&gray, Some(&builtin("Warm").unwrap()), false);
+    let warm = display_rgba(&gray, Some(&builtin("Rawblow-Warm").unwrap()), false);
     assert!(warm[0] > warm[2], "Warm은 회색을 따뜻하게");
-    let pan = display_rgba(&red, Some(&builtin("Pan").unwrap()), false);
+    let pan = display_rgba(&red, Some(&builtin("Rawblow-Pan").unwrap()), false);
     assert!((pan[0] as i16 - pan[1] as i16).abs() <= 2);
     assert!((pan[1] as i16 - pan[2] as i16).abs() <= 2);
-    let vivid = display_rgba(&red, Some(&builtin("Vivid").unwrap()), false);
+    let vivid = display_rgba(&red, Some(&builtin("Rawblow-Vivid").unwrap()), false);
     let src_span = 180 - 40;
     let out_span = vivid[0].max(vivid[1]).max(vivid[2]) - vivid[0].min(vivid[1]).min(vivid[2]);
     assert!(out_span > src_span, "Vivid는 채도를 올린다");
@@ -105,7 +105,7 @@ fn missing_config_field_is_off_and_session_has_no_look() {
     assert!(cfg.look.name.is_empty());
     assert!(cfg.look.cube_path.is_empty());
     let mut cfg = Config::default();
-    cfg.look.name = "Warm".into();
+    cfg.look.name = "Rawblow-Warm".into();
     cfg.look.cube_path = "/tmp/a.cube".into();
     let back: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
     assert_eq!(back.look, cfg.look);

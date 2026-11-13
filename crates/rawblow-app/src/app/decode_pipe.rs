@@ -571,11 +571,11 @@ mod tests {
             app.upload_look_preview(ctx, 3, &rgba, 1, 1, false, None);
             assert_eq!(app.histo.get(&3).map(|h| h.bins[0][32]), Some(1));
             let pending = app.pending_preview.clone();
-            app.set_look_name("Warm", ctx);
+            app.set_look_name("Rawblow-Warm", ctx);
             assert_eq!(app.pending_preview, pending);
             assert!(!app.pending_preview.contains(&3));
             assert_eq!(app.look_src.get(&3).map(|s| s.rgba.as_slice()), Some(rgba.as_slice()));
-            assert_eq!(app.cfg.look.name, "Warm");
+            assert_eq!(app.cfg.look.name, "Rawblow-Warm");
             assert!(RawBlowApp::settings_qa_persist_count() > 0);
             // 히스토그램은 룩을 입힌 뒤에도 원본 128이다.
             assert_eq!(app.histo.get(&3).map(|h| h.bins[0][32]), Some(1));
@@ -611,10 +611,10 @@ mod tests {
         std::fs::write(&good, "LUT_3D_SIZE 2\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n").unwrap();
         ctx_run(|app, ctx| {
             // 빌트인 룩에서 실패하면 빌트인이 남는다.
-            app.set_look_name("Warm", ctx);
+            app.set_look_name("Rawblow-Warm", ctx);
             let persisted = RawBlowApp::settings_qa_persist_count();
             assert!(!app.set_cube_path(&bad, ctx));
-            assert_eq!(app.cfg.look.name, "Warm");
+            assert_eq!(app.cfg.look.name, "Rawblow-Warm");
             assert!(app.cfg.look.cube_path.is_empty());
             assert_eq!(RawBlowApp::settings_qa_persist_count(), persisted);
             assert!(app.cached_lut().is_some());

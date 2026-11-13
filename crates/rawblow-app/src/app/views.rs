@@ -2540,7 +2540,7 @@ mod tests {
         let full = ToolbarTier::Full;
         let b = |l: rawblow_core::lut::LookPref, compare| look_button(&l, compare, full);
         assert_eq!((b(look("", ""), false).text, b(look("", ""), false).state), ("LUT".to_string(), LookState::Off));
-        assert_eq!((b(look("Warm", ""), false).text, b(look("Warm", ""), false).state), ("LUT · Warm".to_string(), LookState::On));
+        assert_eq!((b(look("Rawblow-Warm", ""), false).text, b(look("Rawblow-Warm", ""), false).state), ("LUT · Rawblow-Warm".to_string(), LookState::On));
         let long = look("file", "/Users/me/LUTs/kodak_2383_film_emulation.cube");
         assert_eq!(b(long.clone(), false).text, "LUT · kodak_2383_fi…", "14자 넘으면 13자 + …");
         assert_eq!(b(look("file", "/l/abcdefghijklmn.cube"), false).text, "LUT · abcdefghijklmn", "14자는 그대로");
@@ -2548,10 +2548,10 @@ mod tests {
         let nfd = "\u{1112}\u{1161}\u{11AB}\u{1100}\u{1173}\u{11AF}";
         assert_eq!(b(look("file", &format!("/l/{nfd}.cube")), false).text, "LUT · 한글");
         // 비교 중: 「LUT · OFF」, 폭은 켜짐·비교 라벨 중 넓은 쪽.
-        let cmp = b(look("Warm", ""), true);
+        let cmp = b(look("Rawblow-Warm", ""), true);
         assert_eq!((cmp.text.as_str(), cmp.state), ("LUT · OFF", LookState::Compare));
-        assert_eq!(cmp.widths, vec!["LUT · Warm".to_string(), "LUT · OFF".to_string()]);
-        assert_eq!(b(look("Warm", ""), false).widths, cmp.widths, "켜짐·비교가 같은 폭 후보");
+        assert_eq!(cmp.widths, vec!["LUT · Rawblow-Warm".to_string(), "LUT · OFF".to_string()]);
+        assert_eq!(b(look("Rawblow-Warm", ""), false).widths, cmp.widths, "켜짐·비교가 같은 폭 후보");
         // 모르는 이름·경로 없는 file·빈 이름은 꺼짐(비교 키를 눌러도).
         for off in [look("Foo", ""), look("file", ""), look("", "/l/a.cube")] {
             for compare in [false, true] {
@@ -2560,10 +2560,10 @@ mod tests {
             }
         }
         // Compact: 글자는 「LUT」뿐, 이름은 툴팁 첫 줄, 켜짐은 채움(상태로 그린다).
-        let c = look_button(&look("Tungsten", ""), false, ToolbarTier::Compact);
-        assert_eq!((c.text.as_str(), c.state, c.tip_head.as_deref()), ("LUT", LookState::On, Some("LUT · Tungsten")));
-        let c = look_button(&look("Tungsten", ""), true, ToolbarTier::Compact);
-        assert_eq!((c.text.as_str(), c.state, c.tip_head.as_deref()), ("LUT", LookState::Compare, Some("LUT · Tungsten")));
+        let c = look_button(&look("Rawblow-Tungsten", ""), false, ToolbarTier::Compact);
+        assert_eq!((c.text.as_str(), c.state, c.tip_head.as_deref()), ("LUT", LookState::On, Some("LUT · Rawblow-Tungsten")));
+        let c = look_button(&look("Rawblow-Tungsten", ""), true, ToolbarTier::Compact);
+        assert_eq!((c.text.as_str(), c.state, c.tip_head.as_deref()), ("LUT", LookState::Compare, Some("LUT · Rawblow-Tungsten")));
         // 백슬래시는 prop 글자에 넣지 않는다(윈도우 맑은 고딕은 ₩).
         assert!(!LOOK_COMPARE.contains('\\'));
     }
@@ -2572,7 +2572,7 @@ mod tests {
     fn lut_button_width_is_stable_while_comparing() {
         let ctx = ko_ctx();
         let mut app = hud_app(3);
-        for pref in [look("Warm", ""), look("Pan", ""), look("file", "/l/kodak_2383_film_emulation.cube")] {
+        for pref in [look("Rawblow-Warm", ""), look("Rawblow-Pan", ""), look("file", "/l/kodak_2383_film_emulation.cube")] {
             app.cfg.look = pref;
             app.look_compare = false;
             let (_, on) = run_at(&ctx, &mut app, SCREEN, vec![], |app, ctx| app.ui_toolbar(ctx));
@@ -2588,7 +2588,7 @@ mod tests {
         app.look_compare = false;
         app.cfg.look = look("", "");
         let (_, off) = run_at(&ctx, &mut app, SCREEN, vec![], |app, ctx| app.ui_toolbar(ctx));
-        app.cfg.look = look("Pan", "");
+        app.cfg.look = look("Rawblow-Pan", "");
         let (_, on) = run_at(&ctx, &mut app, SCREEN, vec![], |app, ctx| app.ui_toolbar(ctx));
         assert!(off.look.unwrap().width() < on.look.unwrap().width());
     }
@@ -2774,7 +2774,7 @@ mod tests {
                 view: ViewMode::Single,
                 counter: counter_label(1, 3),
                 guide,
-                look: look_button(&look("Warm", ""), false, tier),
+                look: look_button(&look("Rawblow-Warm", ""), false, tier),
             };
             let (left, right) = toolbar_items(&c, tier);
             left.iter()
@@ -2793,11 +2793,11 @@ mod tests {
             v.iter().any(|(a, b)| a == l && b.as_deref() == t)
         };
         assert!(has(&full, "삼분할 (])", None));
-        assert!(has(&full, "LUT · Warm", None));
+        assert!(has(&full, "LUT · Rawblow-Warm", None));
         assert!(has(&no, "삼분할", Some("삼분할 (])")));
-        assert!(has(&no, "LUT · Warm", None));
+        assert!(has(&no, "LUT · Rawblow-Warm", None));
         assert!(has(&compact, "구도", Some("삼분할 (])")), "Compact 구도는 고정 이름");
-        assert!(has(&compact, "LUT", Some("LUT · Warm")), "Compact LUT는 이름을 툴팁으로");
+        assert!(has(&compact, "LUT", Some("LUT · Rawblow-Warm")), "Compact LUT는 이름을 툴팁으로");
         // NoHints부터는 어떤 라벨에도 「(키)」가 없다.
         for v in [&no, &compact] {
             for (label, _) in v.iter() {
@@ -2982,7 +2982,7 @@ mod tests {
         let texts = open_menu_by_click(&ctx, &mut app);
         assert_eq!(app.lut_files.len(), 2, "열 때 다시 읽는다");
         let top = |t: &str| find(&texts, t).first().map(|r| r.top()).unwrap_or_else(|| panic!("메뉴에 {t}: {}", joined(&texts)));
-        let order = ["없음", "Warm", "Tungsten", "Chrome", "Pan", "Vivid", "Snap", "a", "B", "LUT 폴더 설정…", "누르고 있는 동안 룩 끄기"];
+        let order = ["없음", "Rawblow-Warm", "Rawblow-Tungsten", "Rawblow-Chrome", "Rawblow-Pan", "Rawblow-Vivid", "Rawblow-Snap", "a", "B", "LUT 폴더 설정…", "누르고 있는 동안 룩 끄기"];
         for pair in order.windows(2) {
             assert!(top(pair[0]) < top(pair[1]), "{} 다음 {}", pair[0], pair[1]);
         }
@@ -3063,16 +3063,16 @@ mod tests {
 
         // 빌트인.
         let texts = open_menu_by_click(&ctx, &mut app);
-        let warm = *find(&texts, "Warm").first().expect("메뉴에 Warm");
+        let warm = *find(&texts, "Rawblow-Warm").first().expect("메뉴에 Warm");
         frame(&ctx, &mut app, click_at(warm.center()), shell);
-        assert_eq!(app.cfg.look.name, "Warm");
+        assert_eq!(app.cfg.look.name, "Rawblow-Warm");
         assert!(!menu_open(&ctx), "고르면 닫힌다");
         let persisted = RawBlowApp::settings_qa_persist_count();
         assert!(persisted > 0);
         // 같은 빌트인을 다시 골라도 저장하지 않는다.
         let texts = open_menu_by_click(&ctx, &mut app);
-        assert!(texts.iter().any(|(t, _)| t == "LUT · Warm"), "버튼에 룩 이름");
-        let warm = *find(&texts, "Warm").first().unwrap();
+        assert!(texts.iter().any(|(t, _)| t == "LUT · Rawblow-Warm"), "버튼에 룩 이름");
+        let warm = *find(&texts, "Rawblow-Warm").first().unwrap();
         frame(&ctx, &mut app, click_at(warm.center()), shell);
         assert_eq!(RawBlowApp::settings_qa_persist_count(), persisted);
 
@@ -3343,7 +3343,7 @@ mod tests {
             let size = Vec2::new(w as f32, 800.0);
             app.cfg.look.name = "file".into();
             let (_, file) = run_at(&ctx, &mut app, size, vec![], |app, ctx| app.ui_toolbar(ctx));
-            app.cfg.look.name = "Tungsten".into();
+            app.cfg.look.name = "Rawblow-Tungsten".into();
             let (_, builtin) = run_at(&ctx, &mut app, size, vec![], |app, ctx| app.ui_toolbar(ctx));
             app.cfg.look.name = String::new();
             let (_, off) = run_at(&ctx, &mut app, size, vec![], |app, ctx| app.ui_toolbar(ctx));
@@ -3434,9 +3434,9 @@ mod tests {
         let mut app = hud_app(3);
         app.cfg.look = look("file", &film.display().to_string());
         let texts = open_menu_by_click(&ctx, &mut app);
-        let warm = *find(&texts, "Warm").first().unwrap();
+        let warm = *find(&texts, "Rawblow-Warm").first().unwrap();
         frame(&ctx, &mut app, click_at(warm.center()), shell);
-        assert_eq!(app.cfg.look.name, "Warm");
+        assert_eq!(app.cfg.look.name, "Rawblow-Warm");
         let texts = open_menu_by_click(&ctx, &mut app);
         let row = *find(&texts, "MyFilm").first().expect("빌트인으로 바꿔도 그 파일 줄이 남는다");
         frame(&ctx, &mut app, click_at(row.center()), shell);
@@ -3503,7 +3503,7 @@ mod tests {
             frame(&ctx, &mut app, vec![], screen);
             let texts = frame(&ctx, &mut app, vec![], screen);
             assert!(!menu_open(&ctx), "{what}: 돌아와도 다시 뜨지 않는다");
-            assert!(!joined(&texts).contains("Tungsten"), "{what}: 메뉴 글자 없음");
+            assert!(!joined(&texts).contains("Rawblow-Tungsten"), "{what}: 메뉴 글자 없음");
         }
     }
 }

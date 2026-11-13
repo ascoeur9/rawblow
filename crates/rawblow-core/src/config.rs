@@ -918,9 +918,9 @@ mod tests {
     #[test]
     fn old_config_has_no_lut_dir() {
         // 옛 설정 파일에는 lut_dir가 없다 → 빈 문자열(미지정).
-        let cfg: Config = serde_json::from_str(r#"{"wide_gamut":true,"look":{"name":"Warm"}}"#).unwrap();
+        let cfg: Config = serde_json::from_str(r#"{"wide_gamut":true,"look":{"name":"Rawblow-Warm"}}"#).unwrap();
         assert_eq!(cfg.lut_dir, "");
-        assert_eq!(cfg.look.name, "Warm");
+        assert_eq!(cfg.look.name, "Rawblow-Warm");
         let saved = serde_json::to_string(&Config { lut_dir: "/Users/me/LUTs".into(), ..Config::default() }).unwrap();
         let back: Config = serde_json::from_str(&saved).unwrap();
         assert_eq!(back.lut_dir, "/Users/me/LUTs");

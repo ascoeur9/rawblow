@@ -1887,7 +1887,7 @@ mod tests {
         qa.app.cfg.lut_dir = "/qa/luts".into();
         qa.app.reload_lut_files();
         assert_eq!(qa.app.lut_dir_status, rawblow_core::lut::CubeDir::Missing);
-        qa.app.cfg.look = rawblow_core::lut::LookPref { name: "Warm".into(), cube_path: String::new() };
+        qa.app.cfg.look = rawblow_core::lut::LookPref { name: "Rawblow-Warm".into(), cube_path: String::new() };
         let look_gen = qa.app.look_gen;
 
         qa.click_exact("복원");
