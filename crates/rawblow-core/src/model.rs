@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 /// 지원 RAW 확장자(소문자). RawPull과 동일 집합에서 시작.
 pub const RAW_EXTENSIONS: &[&str] = &[
-    "arw", "cr2", "cr3", "nef", "orf", "rw2", "raf", "dng", "pef", "srw", "raw",
+    "arw", "cr2", "cr3", "nef", "orf", "rw2", "raf", "dng", "pef", "srw", "raw", "x3f",
 ];
 
 /// 지원 이미지(비RAW) 확장자(소문자). PRD F3 확장 목록.

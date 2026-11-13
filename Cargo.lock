@@ -3039,7 +3039,7 @@ checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 
 [[package]]
 name = "rawblow-app"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "crossbeam-channel",
  "eframe",
@@ -3049,18 +3049,20 @@ dependencies = [
  "image 0.25.10",
  "log",
  "objc",
+ "raw-window-handle",
  "rawblow-core",
  "rfd",
  "serde",
  "serde_json",
  "sha2",
  "ureq 2.12.1",
+ "windows-sys 0.52.0",
  "winresource",
 ]
 
 [[package]]
 name = "rawblow-core"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "chrono",
  "crossbeam-channel",

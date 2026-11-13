@@ -75,6 +75,12 @@ fn load_cjk_fonts(lang: Lang) -> Vec<(String, Vec<u8>)> {
 /// CJK 폰트를 egui에 설치한다(활성 언어의 폰트를 primary로). 없으면 기본 폰트만(라틴) 사용.
 /// 언어 변경 시 다시 호출하면 폰트도 그 언어에 맞게 교체된다(#32 후속: 일본어 세로 어긋남 해결).
 pub fn install(ctx: &egui::Context, lang: Lang) {
+    ctx.set_fonts(definitions(lang));
+}
+
+/// [`install`]이 넣는 글꼴 정의. 테스트는 여기에 크기 조정(FontTweak)을 걸어 글자가 넓은
+/// 윈도우 글꼴(맑은 고딕·Yu Gothic)을 흉내 낸다.
+pub fn definitions(lang: Lang) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let loaded = load_cjk_fonts(lang);
     let names: Vec<String> = loaded.iter().map(|(n, _)| n.clone()).collect();
@@ -96,5 +102,5 @@ pub fn install(ctx: &egui::Context, lang: Lang) {
             mono.push(name.clone());
         }
     }
-    ctx.set_fonts(fonts);
+    fonts
 }

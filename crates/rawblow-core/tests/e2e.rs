@@ -533,7 +533,15 @@ fn e2e_aesthetic_rank_matches_top_n() {
 fn e2e_group_explain_matches_group_verdicts() {
     // 연사 3장(같은 시각대) + 떨어진 1장 + 메타 제외 1장. 연사는 rank 상위 1장만 유지.
     let meta = |iso: u32| cull_ext::PhotoMeta { iso: Some(iso), ..Default::default() };
-    let mk = |good, rank, t: i64, iso| CullItem { good, rank, dhash: None, shot_time: Some(t), meta: meta(iso) };
+    let mk = |good, rank, t: i64, iso| CullItem {
+        good,
+        rank,
+        aesthetic: None,
+        sharp: None,
+        dhash: None,
+        shot_time: Some(t),
+        meta: meta(iso),
+    };
     let items = vec![
         mk(true, 0.3, 100, 100),
         mk(true, 0.9, 101, 100),

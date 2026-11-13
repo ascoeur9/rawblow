@@ -5,17 +5,27 @@ use super::*;
 
 // ── 보조 위젯 ──────────────────────────────────────────────
 pub(super) fn toggle_btn(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
-    let btn = egui::Button::new(egui::RichText::new(label).font(prop(12.0)).color(if active { theme::INK } else { theme::INK2 }))
+    let btn = egui::Button::new(toggle_btn_text(label, active))
         .fill(if active { theme::BG3 } else { Color32::TRANSPARENT })
         .stroke(Stroke::new(1.0_f32, if active { theme::LINE2 } else { Color32::TRANSPARENT }));
     ui.add(btn)
 }
 
-pub(super) fn vsep(ui: &mut egui::Ui) {
-    ui.add_space(4.0);
+/// toggle_btn의 글자. 툴바 폭 측정(views::tb_extent)도 이 글자로 잰다.
+pub(super) fn toggle_btn_text(label: &str, active: bool) -> egui::RichText {
+    egui::RichText::new(label).font(prop(12.0)).color(if active { theme::INK } else { theme::INK2 })
+}
+
+/// 툴바 세로 구분선 양옆 여백. 툴바 폭 측정(views::tb_extent)도 이 값을 쓴다.
+pub(super) const VSEP_GAP: f32 = 4.0;
+
+/// 세로 구분선. 돌려주는 값은 선(폭 1)의 자리다.
+pub(super) fn vsep(ui: &mut egui::Ui) -> Rect {
+    ui.add_space(VSEP_GAP);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(1.0, 18.0), Sense::hover());
     ui.painter().rect_filled(rect, Rounding::ZERO, theme::LINE);
-    ui.add_space(4.0);
+    ui.add_space(VSEP_GAP);
+    rect
 }
 
 /// 사진 배경 색견본(클릭 가능, #36). 선택 시 accent 링을 두른다.
@@ -303,20 +313,10 @@ pub(super) struct Histo {
 
 /// 디코딩된 RGBA에서 히스토그램을 계산(대용량은 서브샘플로 비용 제한).
 pub(super) fn compute_histo(rgba: &[u8]) -> Histo {
-    let mut bins = [[0u32; 64]; 3];
-    let px = rgba.len() / 4;
-    if px == 0 {
-        return Histo { bins, max: 1 };
-    }
-    let step = (px / 200_000).max(1);
-    let mut i = 0;
-    while i < px {
-        let o = i * 4;
-        bins[0][rgba[o] as usize >> 2] += 1;
-        bins[1][rgba[o + 1] as usize >> 2] += 1;
-        bins[2][rgba[o + 2] as usize >> 2] += 1;
-        i += step;
-    }
+    histo_from_bins(rawblow_core::color::source_histogram(rgba))
+}
+
+pub(super) fn histo_from_bins(bins: [[u32; 64]; 3]) -> Histo {
     let max = bins.iter().flatten().copied().max().unwrap_or(1).max(1);
     Histo { bins, max }
 }
@@ -434,51 +434,8 @@ pub(super) fn reveal_in_file_manager(path: &std::path::Path) {
     };
 }
 
-/// 맥 HFS NFD 한글을 NFC로 묶어 표시한다(#94). 자모가 분리되어 깨져 보이던 경로·파일명용.
-pub(super) fn nfc_hangul(s: &str) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let mut out = String::with_capacity(s.len());
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        let cu = c as u32;
-        if (0x1100..=0x1112).contains(&cu) && i + 1 < chars.len() {
-            let v = chars[i + 1] as u32;
-            if (0x1161..=0x1175).contains(&v) {
-                let mut t_idx = 0u32;
-                let mut used = 2;
-                if i + 2 < chars.len() {
-                    let t = chars[i + 2] as u32;
-                    if (0x11A8..=0x11C2).contains(&t) {
-                        t_idx = t - 0x11A8 + 1;
-                        used = 3;
-                    }
-                }
-                let l = cu - 0x1100;
-                let v = v - 0x1161;
-                let sidx = (l * 21 + v) * 28 + t_idx;
-                if let Some(ch) = char::from_u32(0xAC00 + sidx) {
-                    out.push(ch);
-                    i += used;
-                    continue;
-                }
-            }
-        }
-        if (0xAC00..=0xD7A3).contains(&cu) && (cu - 0xAC00).is_multiple_of(28) && i + 1 < chars.len() {
-            let t = chars[i + 1] as u32;
-            if (0x11A8..=0x11C2).contains(&t) {
-                if let Some(ch) = char::from_u32(cu + (t - 0x11A8 + 1)) {
-                    out.push(ch);
-                    i += 2;
-                    continue;
-                }
-            }
-        }
-        out.push(c);
-        i += 1;
-    }
-    out
-}
+/// 맥 HFS NFD 한글을 NFC로 묶어 표시한다(#94). LUT 폴더 정렬(core)도 같은 함수를 쓴다.
+pub(super) use rawblow_core::text::nfc_hangul;
 
 pub(super) fn nfc_path_label(path: &std::path::Path) -> String {
     nfc_hangul(&path.to_string_lossy())

@@ -10,7 +10,8 @@
 //! 전경 대역폭을 남긴다.
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use rawblow_core::decode::{decode_file, DecodeOptions, DecodedImage};
+use rawblow_core::color::OutputColor;
+use rawblow_core::decode::{decode_file_to, DecodeOptions, DecodedImage};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -78,6 +79,8 @@ pub struct Worker {
     res_tx: Sender<DecodeResult>,
     /// 현재 폴더 세대. 워커는 이보다 오래된 요청을 디코딩하지 않고 버린다.
     cur_gen: Arc<AtomicU64>,
+    /// 지금 표시 색. 디코드 시점에 읽는다(#122). sRGB면 캐시 키를 바꾸지 않는다.
+    output: Arc<Mutex<OutputColor>>,
     pub rx: Receiver<DecodeResult>,
 }
 
@@ -85,6 +88,7 @@ impl Worker {
     pub fn new(threads: usize, cache_dir: PathBuf) -> Self {
         let (res_tx, res_rx) = unbounded::<DecodeResult>();
         let cur_gen = Arc::new(AtomicU64::new(0));
+        let output = Arc::new(Mutex::new(OutputColor::Srgb));
         let sched = Arc::new(Sched {
             lanes: Mutex::new(Lanes {
                 preview: VecDeque::new(),
@@ -107,6 +111,7 @@ impl Worker {
             let res_tx = res_tx.clone();
             let cache_dir = cache_dir.clone();
             let cur_gen = cur_gen.clone();
+            let output_slot = output.clone();
             // 스레드 0은 Preview/Normal 전용(스레드 수가 2 이상일 때만). 단일 스레드 환경에서는
             // 유일한 워커라 전체 레인을 처리해야 한다.
             let serves_thumb = idx > 0 || threads < 2;
@@ -152,9 +157,11 @@ impl Worker {
 
                 // 디스크 캐시 대상: 썸네일 + (full_raw 아닌) 빠른 프리뷰. 키에 max_edge가 들어가
                 // 썸네일(320)·프리뷰(1600)가 공존. ORIG(full_raw)는 원본 화질이라 캐시하지 않는다.
+                let output = output_slot.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 let cacheable = is_thumb || !full_raw;
                 let cache_key = if cacheable {
                     rawblow_core::cache::thumb_key(&path, max_edge.unwrap_or(0))
+                        .map(|k| rawblow_core::cache::with_output_tag(k, output.cache_tag()))
                 } else {
                     None
                 };
@@ -170,7 +177,7 @@ impl Worker {
                     if !have {
                         if let Some(key) = &cache_key {
                             let img = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                decode_file(&path, DecodeOptions { full_raw, max_edge })
+                                decode_file_to(&path, DecodeOptions { full_raw, max_edge }, &output)
                             }))
                             .ok()
                             .and_then(|r| r.ok());
@@ -223,7 +230,7 @@ impl Worker {
                 #[cfg(debug_assertions)]
                 let _t0 = std::time::Instant::now();
                 let image = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    decode_file(&path, DecodeOptions { full_raw, max_edge })
+                    decode_file_to(&path, DecodeOptions { full_raw, max_edge }, &output)
                 })) {
                     Ok(r) => r.map_err(|e| e.to_string()),
                     Err(_) => Err("panic during decode".to_string()),
@@ -260,6 +267,7 @@ impl Worker {
             sched,
             res_tx,
             cur_gen,
+            output,
             rx: res_rx,
         }
     }
@@ -321,6 +329,11 @@ impl Worker {
     pub fn set_generation(&self, generation: u64) {
         self.cur_gen.store(generation, Ordering::Relaxed);
     }
+
+    /// 이후 디코드의 표시 색. 이미 큐에 있는 요청도 디코드 시점에 이 값을 읽는다.
+    pub fn set_output(&self, output: OutputColor) {
+        *self.output.lock().unwrap_or_else(|e| e.into_inner()) = output;
+    }
 }
 
 impl Drop for Worker {
@@ -339,5 +352,6 @@ fn empty_image() -> DecodedImage {
         rgba: Vec::new(),
         color_managed: false,
         full_raw: false,
+        source_histo: None,
     }
 }

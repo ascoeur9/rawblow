@@ -265,9 +265,10 @@ fn draw_sicon(p: &egui::Painter, rect: Rect, kind: SIcon) {
                 Rounding::same(1.5),
                 st,
             );
-            p.line_segment([Pos2::new(r.left() + 5.5, mid.y), Pos2::new(r.left() + 5.5, mid.y + 2.0)], Stroke::new(1.2, c));
-            p.line_segment([Pos2::new(mid.x, mid.y), Pos2::new(mid.x, mid.y + 2.0)], Stroke::new(1.2, c));
-            p.line_segment([Pos2::new(r.right() - 5.5, mid.y), Pos2::new(r.right() - 5.5, mid.y + 2.0)], Stroke::new(1.2, c));
+            let key = Stroke::new(1.2_f32, c);
+            p.line_segment([Pos2::new(r.left() + 5.5, mid.y), Pos2::new(r.left() + 5.5, mid.y + 2.0)], key);
+            p.line_segment([Pos2::new(mid.x, mid.y), Pos2::new(mid.x, mid.y + 2.0)], key);
+            p.line_segment([Pos2::new(r.right() - 5.5, mid.y), Pos2::new(r.right() - 5.5, mid.y + 2.0)], key);
         }
     }
 }
@@ -367,6 +368,54 @@ fn settings_toggle_row(
     } else {
         false
     }
+}
+
+/// 구도선 한 축(#90). 개수는 최대 8, 위치는 표시된 사진의 0~1.
+fn guide_axis_editor(
+    ui: &mut egui::Ui,
+    label: &str,
+    add: &str,
+    remove: &str,
+    lines: &mut Vec<f32>,
+) -> bool {
+    let mut changed = false;
+    if lines.len() > rawblow_core::guides::GUIDE_LINE_CAP {
+        lines.truncate(rawblow_core::guides::GUIDE_LINE_CAP);
+        changed = true;
+    }
+    settings_field_row(ui, SIcon::Grid, label, None, |ui| {
+        // 두 버튼은 늘 같은 자리에 둔다. 끝에 닿으면 숨기지 않고 흐리게 막는다.
+        let can_add = lines.len() < rawblow_core::guides::GUIDE_LINE_CAP;
+        if ui.add_enabled(can_add, egui::Button::new(add).small()).clicked() {
+            lines.push(rawblow_core::guides::next_guide_position(lines));
+            changed = true;
+        }
+        if ui.add_enabled(!lines.is_empty(), egui::Button::new(remove).small()).clicked() {
+            lines.pop();
+            changed = true;
+        }
+    });
+    if !lines.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            for t in lines.iter_mut() {
+                if settings_drag(
+                    ui,
+                    72.0,
+                    egui::DragValue::new(t)
+                        .speed(0.01_f32)
+                        .range(0.0_f32..=1.0_f32)
+                        .fixed_decimals(2),
+                )
+                .changed()
+                {
+                    changed = true;
+                }
+            }
+        });
+        ui.add_space(4.0);
+    }
+    changed
 }
 
 /// 값 입력 행(숫자·키 표시·버튼 등). 컨트롤은 오른쪽 끝.
@@ -756,6 +805,83 @@ impl RawBlowApp {
                             self.show_af = self.cfg.show_af;
                             self.persist_cfg();
                         }
+                        settings_inner_rule(ui);
+                        let wide_status = self.wide_gamut_status();
+                        if settings_toggle_row(
+                            ui,
+                            SIcon::Hist,
+                            tr(lang, "광색역 표시"),
+                            &mut self.cfg.wide_gamut,
+                            &wide_status,
+                        ) {
+                            self.persist_cfg();
+                        }
+                        settings_inner_rule(ui);
+                        self.settings_lut_dir_row(ui);
+                        settings_inner_rule(ui);
+                        if guide_axis_editor(
+                            ui,
+                            tr(lang, "세로 선"),
+                            tr(lang, "선 추가"),
+                            tr(lang, "선 빼기"),
+                            &mut self.cfg.guide_custom.vertical,
+                        ) {
+                            self.persist_cfg();
+                        }
+                        if guide_axis_editor(
+                            ui,
+                            tr(lang, "가로 선"),
+                            tr(lang, "선 추가"),
+                            tr(lang, "선 빼기"),
+                            &mut self.cfg.guide_custom.horizontal,
+                        ) {
+                            self.persist_cfg();
+                        }
+                        settings_field_row(ui, SIcon::Grid, tr(lang, "색"), None, |ui| {
+                            if ui.color_edit_button_srgb(&mut self.cfg.guide_custom.rgb).changed() {
+                                self.persist_cfg();
+                            }
+                        });
+                        settings_inner_rule(ui);
+                        settings_field_row(ui, SIcon::Grid, tr(lang, "굵기"), None, |ui| {
+                            let resp = settings_drag(
+                                ui,
+                                72.0,
+                                egui::DragValue::new(&mut self.cfg.guide_custom.weight)
+                                    .speed(0.1_f32)
+                                    .range(1.0_f32..=4.0_f32)
+                                    .fixed_decimals(1),
+                            );
+                            if resp.changed() {
+                                let (weight, opacity) = rawblow_core::guides::clamp_guide_style(
+                                    self.cfg.guide_custom.weight,
+                                    self.cfg.guide_custom.opacity,
+                                );
+                                self.cfg.guide_custom.weight = weight;
+                                self.cfg.guide_custom.opacity = opacity;
+                                self.persist_cfg();
+                            }
+                        });
+                        settings_inner_rule(ui);
+                        settings_field_row(ui, SIcon::Grid, tr(lang, "불투명도"), None, |ui| {
+                            let resp = settings_drag(
+                                ui,
+                                72.0,
+                                egui::DragValue::new(&mut self.cfg.guide_custom.opacity)
+                                    .speed(0.05_f32)
+                                    .range(0.2_f32..=1.0_f32)
+                                    .fixed_decimals(2),
+                            );
+                            if resp.changed() {
+                                let (weight, opacity) = rawblow_core::guides::clamp_guide_style(
+                                    self.cfg.guide_custom.weight,
+                                    self.cfg.guide_custom.opacity,
+                                );
+                                self.cfg.guide_custom.weight = weight;
+                                self.cfg.guide_custom.opacity = opacity;
+                                self.persist_cfg();
+                            }
+                        });
                     });
 
                     // ── PHOTO BACKGROUND (#36): 사진 표시 화면 배경색 — 프리셋 + HEX/RGB ──
@@ -1163,11 +1289,18 @@ impl RawBlowApp {
             let transfer_defaults = self.cfg.transfer_defaults.clone();
             let organize_defaults = self.cfg.organize_defaults.clone();
             let prev_lang = self.lang;
+            let prev_look = self.cfg.look.clone();
             self.cfg = Config::default();
             self.cfg.last_folder = last_folder;
             self.cfg.recent_folders = recent_folders;
             self.cfg.transfer_defaults = transfer_defaults;
             self.cfg.organize_defaults = organize_defaults;
+            // LUT 폴더도 기본(미지정)으로 — 툴바 LUT 목록을 다시 읽는다.
+            self.reload_lut_files();
+            // 룩도 기본(없음)이 됐으면 화면 텍스처를 다시 칠한다(안 하면 이전 룩이 남은 채 버튼만 꺼져 보인다).
+            if self.cfg.look != prev_look {
+                self.look_changed(ctx);
+            }
             // 라이브 미러 재동기화(설정 컨트롤이 하던 것과 동일하게).
             self.show_exif = self.cfg.show_exif;
             self.show_hist = self.cfg.show_histogram;
@@ -1198,12 +1331,85 @@ impl RawBlowApp {
         self.show_hist = self.cfg.show_histogram;
     }
 
+    /// 「LUT 폴더」 행(#125 후속). 고른 폴더의 `.cube`가 툴바 LUT 목록에 빌트인 아래로 나온다.
+    /// 전송 폴더 행과 같은 모양: 제목·설명(+해제) 행, 그 아래 경로 입력칸 + 찾아보기….
+    fn settings_lut_dir_row(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let top = ui.cursor().top();
+        let desc = self.lut_dir_desc();
+        let set = !self.cfg.lut_dir.trim().is_empty();
+        let mut clear = false;
+        settings_field_row(ui, SIcon::Folder, tr(lang, "LUT 폴더"), Some(&desc), |ui| {
+            // 지금 룩이 이 폴더의 파일이어도 룩은 그대로 둔다(경로가 절대 경로라 계속 동작).
+            if set && settings_action_btn(ui, tr(lang, "해제")).clicked() {
+                clear = true;
+            }
+        });
+        if clear {
+            self.set_lut_dir(String::new());
+        }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.set_min_height(SETTINGS_BTN_H);
+            // 첫 항목 앞의 add_space 뒤에는 item_spacing이 붙지 않는다 → 제목 x 그대로.
+            ui.add_space(SICON + SICON_GAP);
+            // TextEdit은 desired_width 바깥에 좌우 안쪽 여백을 더 그린다 — 버튼(128)과 합쳐 카드 폭을 넘지 않게.
+            let pad = ui.spacing().button_padding.x * 2.0;
+            let rest = (ui.available_width() - 128.0 - ui.spacing().item_spacing.x - pad).max(120.0);
+            let mut dir = self.cfg.lut_dir.clone();
+            let edit = ui.add(
+                egui::TextEdit::singleline(&mut dir)
+                    .font(mono(13.0))
+                    .desired_width(rest)
+                    .vertical_align(Align::Center)
+                    .min_size(Vec2::new(0.0, SETTINGS_BTN_H)),
+            );
+            // 글자마다 저장만 하고(전송 폴더 행과 같은 관례), 폴더는 입력을 마치면(Enter·다른 곳 클릭) 읽는다.
+            if edit.changed() {
+                self.type_lut_dir(dir);
+            }
+            if edit.lost_focus() {
+                self.reload_lut_files();
+            }
+            if settings_action_btn(ui, tr(lang, "찾아보기…")).clicked() {
+                if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                    self.set_lut_dir(nfc_path_label(&d));
+                }
+            }
+        });
+        ui.add_space(10.0);
+        // 룩 메뉴 「LUT 폴더 설정…」으로 열었으면 이 행이 보이게 한 번 스크롤한다(⚙로 열면 그대로).
+        // 화면이 막 바뀐 참이라 애니메이션 없이 바로 옮긴다.
+        if std::mem::take(&mut self.settings_focus_lut) {
+            let rect = Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=ui.cursor().top());
+            ui.scroll_to_rect_animation(rect, Some(Align::Center), egui::style::ScrollAnimation::none());
+        }
+    }
+
+    /// 「LUT 폴더」 행 설명: 미지정 안내 또는 지금 폴더에서 읽은 결과.
+    pub(super) fn lut_dir_desc(&self) -> String {
+        use rawblow_core::lut::CubeDir;
+        let lang = self.lang;
+        match self.lut_dir_status {
+            CubeDir::Unset => tr(lang, "폴더를 고르면 안의 .cube 파일이 툴바 LUT 목록에 나옵니다").to_string(),
+            CubeDir::Missing => tr(lang, "폴더를 찾을 수 없습니다").to_string(),
+            CubeDir::Unreadable => tr(lang, "폴더를 읽을 수 없습니다(접근 권한)").to_string(),
+            CubeDir::Empty => tr(lang, ".cube 파일이 없습니다").to_string(),
+            CubeDir::Found { shown, total } if total > shown => {
+                trf(lang, ".cube {}개 중 앞 {}개", &[&total.to_string(), &shown.to_string()])
+            }
+            CubeDir::Found { shown, .. } => trf(lang, ".cube {}개", &[&shown.to_string()]),
+        }
+    }
+
     /// 설정 화면 닫기(#69): '돌아가기' 버튼과 Esc가 공유하는 단일 동작 — 저장 + 변경된 상한으로
     /// 캐시 정리 후 닫는다. 한 곳에 모아 버튼과 Esc 동작이 어긋나지 않게 한다.
     fn settings_back(&mut self) {
         self.show_settings = false;
         self.persist_cfg();
         self.schedule_cache_trim(); // 변경된 상한으로 캐시 정리.
+        // 「LUT 폴더」를 입력하던 중에 닫아도 툴바 LUT 목록이 새 폴더를 따르게.
+        self.reload_lut_files();
     }
 
     /// 오픈소스 라이센스 페이지(#39): 좌측 구성요소 목록(검색 가능) + 우측 라이센스 전문.
@@ -1529,6 +1735,12 @@ mod tests {
             self.click_pos(rect.center());
         }
 
+        /// 이벤트를 한 프레임에 보낸다.
+        fn send(&mut self, events: Vec<egui::Event>) {
+            self.time += 1.0 / 60.0;
+            let _ = self.ctx.run(self.raw(events), |ctx| self.app.ui_settings(ctx));
+        }
+
         fn press_esc(&mut self) {
             self.time += 1.0 / 60.0;
             let _ = self.ctx.run(
@@ -1672,6 +1884,11 @@ mod tests {
         qa.app.cfg.large_badges = false;
         qa.app.cfg.sort = SortOrder::Name;
         qa.app.sort = SortOrder::Name;
+        qa.app.cfg.lut_dir = "/qa/luts".into();
+        qa.app.reload_lut_files();
+        assert_eq!(qa.app.lut_dir_status, rawblow_core::lut::CubeDir::Missing);
+        qa.app.cfg.look = rawblow_core::lut::LookPref { name: "Rawblow-Warm".into(), cube_path: String::new() };
+        let look_gen = qa.app.look_gen;
 
         qa.click_exact("복원");
         assert!(qa.app.settings_reset_armed, "첫 클릭은 arm만");
@@ -1692,6 +1909,119 @@ mod tests {
         assert_eq!(qa.app.cfg.recent_folders, vec!["/qa/a".to_string(), "/qa/b".to_string()]);
         assert!(!qa.app.cfg.transfer_defaults.scope_all);
         assert_eq!(qa.app.cfg.organize_defaults.action, Action::Copy);
+        assert_eq!(qa.app.cfg.lut_dir, "", "LUT 폴더도 기본(미지정)");
+        assert_eq!(qa.app.lut_dir_status, rawblow_core::lut::CubeDir::Unset, "목록도 다시 읽는다");
+        assert_eq!(qa.app.cfg.look.name, "", "룩도 기본(없음)");
+        assert_ne!(qa.app.look_gen, look_gen, "룩이 바뀌었으니 화면 텍스처를 다시 칠한다");
+    }
+
+    /// 「LUT 폴더」 입력칸: 글자마다 저장은 하지만 폴더는 입력을 마칠 때(Enter) 읽는다.
+    /// 설정을 닫을 때도 읽는다(입력하던 채 닫아도 툴바 목록이 새 폴더를 따르게).
+    #[test]
+    fn settings_qa_lut_dir_typing_reads_folder_only_when_done() {
+        let dir = std::env::temp_dir().join(format!("rb_settings_lut_type_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.cube"), "x").unwrap();
+        let path = dir.display().to_string();
+        let mut qa = SettingsQa::new();
+        qa.app.set_lut_dir(path.clone());
+        assert_eq!(qa.app.lut_dir_status, rawblow_core::lut::CubeDir::Found { shown: 1, total: 1 });
+        // 입력칸(지금 경로 글자)을 눌러 포커스.
+        qa.click_exact(&path);
+        let before = RawBlowApp::settings_qa_persist_count();
+        for ch in ["/", "x"] {
+            qa.send(vec![egui::Event::Text(ch.into())]);
+        }
+        assert_eq!(qa.app.cfg.lut_dir, format!("{path}/x"), "입력한 값");
+        assert_eq!(RawBlowApp::settings_qa_persist_count(), before + 2, "글자마다 저장(전송 폴더 행과 같은 관례)");
+        assert_eq!(
+            qa.app.lut_dir_status,
+            rawblow_core::lut::CubeDir::Found { shown: 1, total: 1 },
+            "입력 도중에는 폴더를 다시 읽지 않는다"
+        );
+        qa.send(vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        }]);
+        assert_eq!(qa.app.lut_dir_status, rawblow_core::lut::CubeDir::Missing, "Enter로 마치면 읽는다");
+
+        // 입력하던 채 「돌아가기」(Esc 포함)로 닫아도 읽는다.
+        qa.app.show_settings = true;
+        qa.app.cfg.lut_dir = path.clone();
+        qa.press_esc();
+        assert!(!qa.app.show_settings);
+        assert_eq!(qa.app.lut_dir_status, rawblow_core::lut::CubeDir::Found { shown: 1, total: 1 }, "닫을 때 읽는다");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 상태별 설명: 권한 없음은 「찾을 수 없음」과 다르게, 상한(500)을 넘으면 전체 개수와 함께.
+    #[test]
+    fn lut_dir_desc_names_unreadable_and_capped_folders() {
+        use rawblow_core::lut::CubeDir;
+        let mut qa = SettingsQa::new();
+        for (status, ko) in [
+            (CubeDir::Unreadable, "폴더를 읽을 수 없습니다(접근 권한)".to_string()),
+            (CubeDir::Missing, "폴더를 찾을 수 없습니다".to_string()),
+            (CubeDir::Found { shown: 3, total: 3 }, ".cube 3개".to_string()),
+            (CubeDir::Found { shown: 500, total: 812 }, ".cube 812개 중 앞 500개".to_string()),
+        ] {
+            qa.app.lut_dir_status = status;
+            assert_eq!(qa.app.lut_dir_desc(), ko);
+        }
+    }
+
+    /// 「LUT 폴더」 행: 표시 섹션의 광색역 아래·구도 편집기 앞. 폴더를 바꾸면 저장하고 다시 읽으며,
+    /// 설명이 상태(미지정·N개·비어 있음·없음)를 따른다. 「해제」는 폴더만 비우고 룩은 둔다.
+    #[test]
+    fn settings_qa_lut_dir_row_reads_folder_and_clears() {
+        let dir = std::env::temp_dir().join(format!("rb_settings_lut_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["a.cube", "b.CUBE", "x.txt"] {
+            std::fs::write(dir.join(name), "x").unwrap();
+        }
+        let empty = dir.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+
+        let mut qa = SettingsQa::new();
+        let texts = qa.paint();
+        let top = |texts: &Vec<(String, egui::Rect)>, t: &str| {
+            texts.iter().find(|(s, _)| s == t).map(|(_, r)| r.top()).unwrap_or_else(|| panic!("설정에 {t:?}가 없다"))
+        };
+        assert!(top(&texts, "광색역 표시") < top(&texts, "LUT 폴더"));
+        assert!(top(&texts, "LUT 폴더") < top(&texts, "세로 선"), "구도 편집기 앞");
+        top(&texts, "폴더를 고르면 안의 .cube 파일이 툴바 LUT 목록에 나옵니다");
+        assert!(!texts.iter().any(|(t, _)| t == "해제"), "미지정이면 해제 버튼 없음");
+
+        let before = RawBlowApp::settings_qa_persist_count();
+        qa.app.set_lut_dir(dir.display().to_string());
+        assert_eq!(qa.app.cfg.lut_dir, dir.display().to_string());
+        assert_eq!(qa.app.lut_files.len(), 2);
+        assert_eq!(qa.app.lut_dir_status, rawblow_core::lut::CubeDir::Found { shown: 2, total: 2 });
+        assert!(RawBlowApp::settings_qa_persist_count() > before, "바꾸면 저장");
+        let saved = RawBlowApp::settings_qa_persist_count();
+        qa.app.set_lut_dir(dir.display().to_string());
+        assert_eq!(RawBlowApp::settings_qa_persist_count(), saved, "같은 값이면 저장하지 않는다");
+        let texts = qa.paint();
+        top(&texts, ".cube 2개");
+
+        let file_look = rawblow_core::lut::LookPref { name: "file".into(), cube_path: dir.join("a.cube").display().to_string() };
+        qa.app.cfg.look = file_look.clone();
+        qa.click_exact("해제");
+        assert_eq!(qa.app.cfg.lut_dir, "");
+        assert!(qa.app.lut_files.is_empty());
+        assert_eq!(qa.app.lut_dir_status, rawblow_core::lut::CubeDir::Unset);
+        assert_eq!(qa.app.cfg.look, file_look, "해제해도 룩은 그대로");
+
+        qa.app.set_lut_dir(empty.display().to_string());
+        top(&qa.paint(), ".cube 파일이 없습니다");
+        qa.app.set_lut_dir(dir.join("gone").display().to_string());
+        top(&qa.paint(), "폴더를 찾을 수 없습니다");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1707,6 +2037,20 @@ mod tests {
         qa.app.show_settings = true;
         qa.press_esc();
         assert!(!qa.app.show_settings, "Esc가 설정을 닫는다");
+    }
+
+    #[test]
+    fn wide_gamut_toggle_saves_and_shows_fallback_on_linux_os_color() {
+        let mut qa = SettingsQa::new();
+        assert!(!qa.app.cfg.wide_gamut);
+        let off = qa.paint();
+        assert!(off.iter().any(|(t, _)| t == "현재 출력: sRGB"));
+        let before = RawBlowApp::settings_qa_persist_count();
+        qa.click_exact("광색역 표시");
+        assert!(qa.app.cfg.wide_gamut);
+        assert!(RawBlowApp::settings_qa_persist_count() > before);
+        let on = qa.paint();
+        assert!(on.iter().any(|(t, _)| t == "현재 출력: sRGB(폴백)"));
     }
 
     /// 리스타일 이후에도 모든 옵션/액션 문자열이 설정 경로에 남아 있는지.
@@ -1755,6 +2099,19 @@ mod tests {
             "check_updates",
             "show_map",
             "show_af",
+            "광색역 표시",
+            "wide_gamut",
+            "LUT 폴더",
+            "lut_dir",
+            "set_lut_dir",
+            "lut_dir_desc",
+            "guide_custom",
+            "세로 선",
+            "가로 선",
+            "선 추가",
+            "선 빼기",
+            "굵기",
+            "불투명도",
             "settings_row_head",
             "preload",
             "grid_cols",

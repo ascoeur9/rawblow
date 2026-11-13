@@ -14,8 +14,10 @@ pub mod cull_ext;
 pub mod decode;
 pub mod face_detect;
 pub mod fsio;
+pub mod guides;
 pub mod heif;
 pub mod heif_index;
+pub mod lut;
 pub mod meta;
 pub mod model;
 pub mod object_detect;
@@ -23,7 +25,9 @@ pub mod organize;
 pub mod quality;
 pub mod scan;
 pub mod sidecar;
+pub mod text;
 pub mod transfer;
+pub mod x3f;
 
 pub use model::{
     ColorTag, Entry, Filter, Label, MatchMode, SortOrder, StarFilter, TagFilter, ViewMode,
