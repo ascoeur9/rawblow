@@ -214,6 +214,9 @@ pub struct Entry {
     pub stars: u8,
     /// 컬러 태그(#27). 라벨·별점과 독립된 3번째 축(보정 방식 등). 기본 `None`(무태그).
     pub tag: ColorTag,
+    /// 카메라 바디 프로텍트(#138): 멤버(RAW·이미지) 중 하나라도 파일시스템 읽기 전용이면 true.
+    /// 니콘 바디 프로텍트는 EXIF·XMP가 아니라 파일 속성으로 남는다. 스캔 시 1회 기록(매 프레임 stat 안 함).
+    pub protected: bool,
 }
 
 impl Entry {
@@ -237,7 +240,13 @@ impl Entry {
             label: Label::Unrated,
             stars: 0,
             tag: ColorTag::None,
+            protected: false,
         }
+    }
+
+    /// 멤버 파일의 읽기 전용 비트를 읽어 `protected`를 채운다(#138). 비멤버 사이드카는 보지 않는다.
+    pub fn refresh_protected(&mut self) {
+        self.protected = self.members.iter().any(|p| is_readonly_file(p));
     }
 
     /// RAW 동반 배지(`RAW+`) 표기 여부: 표시 대상이 이미지인데 RAW도 있을 때.
@@ -252,6 +261,13 @@ impl Entry {
             .filter(|p| kind_of(p) == Some(kind))
             .collect()
     }
+}
+
+/// 파일시스템 읽기 전용 속성(#138, 니콘 바디 프로텍트). 메타데이터를 못 읽으면 false.
+pub fn is_readonly_file(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .map(|m| m.permissions().readonly())
+        .unwrap_or(false)
 }
 
 /// 표시 우선순위에 따라 대표 파일을 고른다(이미지 > RAW, 이미지 내 PREFERRED_IMAGE 순).

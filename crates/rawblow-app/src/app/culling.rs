@@ -811,6 +811,9 @@ impl RawBlowApp {
         // 채점 대상 수(scope에 따라). 미리 계산(클로저 안에서 self 차용 회피).
         let total_items = self.items.len();
         let filtered_count = self.filtered().len();
+        // 바디 프로텍트 보기 필터(#138): 좌측 레일과 같은 상태. 칩은 보기 필터만 바꾼다.
+        let protected_on = self.protected_only;
+        let mut toggle_protected = false;
 
         let screen = ctx.screen_rect();
         egui::Area::new(egui::Id::new("aicull_dim"))
@@ -1430,6 +1433,15 @@ impl RawBlowApp {
                 ) {
                     c.scope_all = i == 0;
                 }
+                // 읽기 전용(프로텍트)만(#138): 보기 필터 토글일 뿐 — 컬링 시작·범위 계산·다른 옵션은 그대로.
+                ui.horizontal_wrapped(|ui| {
+                    if check_chip_resp(ui, tr(lang, "읽기 전용(프로텍트)만"), None, theme::ACCENT, protected_on)
+                        .on_hover_text(tr(lang, "니콘 바디 프로텍트(파일 읽기 전용)만 보여 줍니다"))
+                        .clicked()
+                    {
+                        toggle_protected = true;
+                    }
+                });
 
                                     }); // body inner Frame
                             }); // body ScrollArea
@@ -1485,6 +1497,9 @@ impl RawBlowApp {
         }
         // 편집한 설정은 매 프레임 cfg에 반영(영속화는 시작/취소 시).
         self.cfg.ai_cull = c;
+        if toggle_protected {
+            self.apply_protected_filter(!self.protected_only);
+        }
         if do_cancel {
             let _ = config::save(&self.cfg);
             self.ai_cull_open = false;
