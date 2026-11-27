@@ -206,6 +206,7 @@ impl RawBlowApp {
             counter: counter_label((self.index + 1).min(f.len().max(1)), f.len()),
             guide: tr(self.lang, self.cfg.guides.label_ko()),
             look: look_button(&self.cfg.look, self.look_compare, tier),
+            keys: TbKeys::from_map(&self.cfg.shortcuts),
         }
     }
 
@@ -234,10 +235,12 @@ impl RawBlowApp {
             })
             .unwrap_or("");
         let look = self.look_button_worst(ui, tier);
+        // 키는 저장된 단축키 그대로(바꾸면 그다음 프레임부터 그 키로 잰다).
+        let keys = TbKeys::from_map(&self.cfg.shortcuts);
         [ViewMode::Single, ViewMode::Grid]
             .into_iter()
             .map(|view| {
-                let c = TbContent { lang, view, counter: counter.clone(), guide, look: look.clone() };
+                let c = TbContent { lang, view, counter: counter.clone(), guide, look: look.clone(), keys: keys.clone() };
                 let (left, right) = toolbar_items(&c, tier);
                 let spacing = tb_spacing(ui, tier);
                 tb_extent(ui, &left, spacing) + tb_extent(ui, &right, spacing)
@@ -440,13 +443,15 @@ impl RawBlowApp {
         if ui.selectable_label(false, tr(lang, "LUT 폴더 설정…")).clicked() {
             pick = Some(LookPick::Settings);
         }
-        ui.separator();
-        // 선택 항목처럼 보이지 않는 안내 줄.
-        ui.horizontal(|ui| {
-            kbd(ui, "\\");
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new(tr(lang, "누르고 있는 동안 룩 끄기")).font(mono(9.5)).color(theme::INK4));
-        });
+        // 선택 항목처럼 보이지 않는 안내 줄. 키는 저장된 단축키(#123) — 키 없음이면 줄을 뺀다.
+        if let Some(key) = first_key_caption(&self.cfg.shortcuts, ShortcutAction::LookCompare) {
+            ui.separator();
+            ui.horizontal(|ui| {
+                kbd(ui, &key);
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(tr(lang, "누르고 있는 동안 룩 끄기")).font(mono(9.5)).color(theme::INK4));
+            });
+        }
         pick
     }
 
@@ -459,14 +464,33 @@ impl RawBlowApp {
             .resizable(false)
             .frame(egui::Frame::none().fill(theme::BG1))
             .show(ctx, |ui| {
-                section_head(ui, tr(lang, "분류"), Some("Q W E R"));
+                // 키 글자는 저장된 단축키(#123)의 첫 키. 키 없음인 줄은 비워 둔다.
+                let map = &self.cfg.shortcuts;
+                let label_keys = [
+                    first_key_caption(map, ShortcutAction::Pick).unwrap_or_default(),
+                    first_key_caption(map, ShortcutAction::Hold).unwrap_or_default(),
+                    first_key_caption(map, ShortcutAction::Reject).unwrap_or_default(),
+                    first_key_caption(map, ShortcutAction::Clear).unwrap_or_default(),
+                ];
+                let label_hint = label_keys.iter().filter(|k| !k.is_empty()).cloned().collect::<Vec<_>>().join(" ");
+                let star_hint = [
+                    keys_are_num_range(map, &STAR_ACTIONS, false).then(|| "1–5".to_string()),
+                    first_key_caption(map, ShortcutAction::StarClear),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · ");
+                let tag_hint = keys_are_num_range(map, &TAG_ACTIONS, true).then_some("⇧1–5");
+                section_head(ui, tr(lang, "분류"), (!label_hint.is_empty()).then_some(label_hint.as_str()));
                 // 레일 라벨명은 아래 필터 행(Label::name)과 동일 출처로 통일(#73): 이중 표기 제거.
                 // 대문자화로 기존 시각 스타일(PICK/HOLD/…) 유지 — 한/일은 대소문자 없어 그대로 표시.
+                let [pick_key, hold_key, reject_key, clear_key] = &label_keys;
                 let rows = [
-                    (Label::Pick, pick, "Q"),
-                    (Label::Hold, hold, "W"),
-                    (Label::Reject, reject, "E"),
-                    (Label::Unrated, unrated, "R"),
+                    (Label::Pick, pick, pick_key.as_str()),
+                    (Label::Hold, hold, hold_key.as_str()),
+                    (Label::Reject, reject, reject_key.as_str()),
+                    (Label::Unrated, unrated, clear_key.as_str()),
                 ];
                 let cur_label = self.current_real().and_then(|r| self.items.get(r)).map(|i| i.entry.label);
                 for (label, n, key) in rows {
@@ -491,7 +515,7 @@ impl RawBlowApp {
                 }
 
                 // ── Rating (별점, #23) ── 라벨과 독립. 현재 항목 별점을 1~5로 지정/해제.
-                section_head(ui, tr(lang, "별점"), Some("1–5 · `"));
+                section_head(ui, tr(lang, "별점"), (!star_hint.is_empty()).then_some(star_hint.as_str()));
                 let cur_stars = self
                     .current_real()
                     .and_then(|r| self.items.get(r))
@@ -540,7 +564,7 @@ impl RawBlowApp {
                 }
 
                 // ── Color tag (#27) ── 라벨·별점과 독립. 현재 항목에 5색 중 하나 부여/해제(⇧1~5).
-                section_head(ui, tr(lang, "색"), Some("⇧1–5"));
+                section_head(ui, tr(lang, "색"), tag_hint);
                 let cur_tag = self
                     .current_real()
                     .and_then(|r| self.items.get(r))
@@ -2026,11 +2050,50 @@ struct TbContent {
     /// 구도 버튼 이름(번역됨). 끔이면 「구도」.
     guide: &'static str,
     look: LookBtn,
+    keys: TbKeys,
+}
+
+/// 툴바 버튼에 찍는 키(#123). 저장된 단축키의 첫 키이고, 키 없음이면 None(「(키)」를 붙이지 않는다).
+#[derive(Clone, Default)]
+struct TbKeys {
+    open: Option<String>,
+    view: Option<String>,
+    fit: Option<String>,
+    orig: Option<String>,
+    full: Option<String>,
+    exif: Option<String>,
+    hist: Option<String>,
+    guides: Option<String>,
+    transfer: Option<String>,
+    jump: Option<String>,
+    bulk: Option<String>,
+}
+
+impl TbKeys {
+    fn from_map(map: &rawblow_core::shortcut::ShortcutMap) -> Self {
+        let k = |action| first_key_caption(map, action);
+        TbKeys {
+            open: k(ShortcutAction::OpenFolder),
+            view: k(ShortcutAction::ToggleView),
+            fit: k(ShortcutAction::Fit),
+            orig: k(ShortcutAction::FullRaw),
+            full: k(ShortcutAction::Fullscreen),
+            exif: k(ShortcutAction::Exif),
+            hist: k(ShortcutAction::Histogram),
+            guides: k(ShortcutAction::Guides),
+            transfer: k(ShortcutAction::Transfer),
+            jump: k(ShortcutAction::Jump),
+            bulk: k(ShortcutAction::Bulk),
+        }
+    }
 }
 
 /// 「이름 (키)」. Full이면 그대로, 아니면 라벨은 이름만이고 원래 라벨은 툴팁으로 간다.
-/// `extra`는 원래 있던 툴팁(「T 키로 전환」 등) — 함께 보인다.
-fn hinted(tier: ToolbarTier, name: &str, key: &str, extra: Option<&str>) -> (String, Option<String>) {
+/// `extra`는 원래 있던 툴팁(「T 키로 전환」 등) — 함께 보인다. 키 없음이면 라벨은 이름만, 툴팁은 `extra`만.
+fn hinted(tier: ToolbarTier, name: &str, key: Option<&str>, extra: Option<&str>) -> (String, Option<String>) {
+    let Some(key) = key else {
+        return (name.to_string(), extra.map(str::to_string));
+    };
     let full = format!("{name} ({key})");
     if tier == ToolbarTier::Full {
         (full, extra.map(str::to_string))
@@ -2046,50 +2109,55 @@ fn hinted(tier: ToolbarTier, name: &str, key: &str, extra: Option<&str>) -> (Str
 /// 툴바 위젯 목록(왼쪽, 오른쪽). 오른쪽은 right_to_left라 먼저 넣은 것이 오른쪽 끝이다.
 fn toolbar_items(c: &TbContent, tier: ToolbarTier) -> (Vec<TbItem>, Vec<TbItem>) {
     let lang = c.lang;
-    let toggle = |name: &str, key: &str, extra: Option<&str>, action: TbAction| {
-        let (label, tip) = hinted(tier, name, key, extra);
+    let k = &c.keys;
+    let toggle = |name: &str, key: &Option<String>, extra: Option<&str>, action: TbAction| {
+        let (label, tip) = hinted(tier, name, key.as_deref(), extra);
         TbItem::Toggle { label, tip, action }
     };
     // "(T)"만으로는 토글임이 드러나지 않아 툴팁으로 보완(#72).
-    let switch = tr(lang, "T 키로 전환");
+    let switch = k.view.as_deref().map(|key| trf(lang, "{} 키로 전환", &[key]));
+    let switch = switch.as_deref();
     let mut left = vec![
         TbItem::Logo,
         TbItem::Sep,
-        toggle(tr(lang, "폴더 열기"), &format!("{}O", cmd_key()), None, TbAction::OpenFolder),
+        toggle(tr(lang, "폴더 열기"), &k.open, None, TbAction::OpenFolder),
         TbItem::Sep,
-        toggle("Single", "T", Some(switch), TbAction::Single),
-        toggle("Grid", "T", Some(switch), TbAction::Grid),
+        toggle("Single", &k.view, switch, TbAction::Single),
+        toggle("Grid", &k.view, switch, TbAction::Grid),
         TbItem::Sep,
         TbItem::Arrow { glyph: "◀", action: TbAction::Prev },
         TbItem::Counter(c.counter.clone()),
         TbItem::Arrow { glyph: "▶", action: TbAction::Next },
         TbItem::Sep,
-        toggle("Fit", "Space", None, TbAction::Fit),
-        toggle("1:1", "Space", None, TbAction::OneToOne),
-        toggle("ORIG", "D", None, TbAction::Orig),
-        toggle("Full", "F11", None, TbAction::Full),
+        toggle("Fit", &k.fit, None, TbAction::Fit),
+        toggle("1:1", &k.fit, None, TbAction::OneToOne),
+        toggle("ORIG", &k.orig, None, TbAction::Orig),
+        toggle("Full", &k.full, None, TbAction::Full),
         TbItem::Sep,
-        toggle("EXIF", "I", None, TbAction::Exif),
-        toggle("Hist", "H", None, TbAction::Hist),
+        toggle("EXIF", &k.exif, None, TbAction::Exif),
+        toggle("Hist", &k.hist, None, TbAction::Hist),
     ];
     // 구도 보조선(#90)과 룩(#125)은 단일 보기 툴바에만. 그리드 썸네일에는 그리지 않는다.
     if c.view == ViewMode::Single {
-        let full = format!("{} (])", c.guide);
+        let full = match &k.guides {
+            Some(key) => format!("{} ({key})", c.guide),
+            None => c.guide.to_string(),
+        };
         let (label, tip) = match tier {
             ToolbarTier::Full => (full, None),
-            ToolbarTier::NoHints => (c.guide.to_string(), Some(full)),
+            ToolbarTier::NoHints => (c.guide.to_string(), k.guides.is_some().then_some(full)),
             ToolbarTier::Compact | ToolbarTier::Tight => (tr(lang, "구도").to_string(), Some(full)),
         };
         left.push(TbItem::Toggle { label, tip, action: TbAction::Guides });
         left.push(TbItem::Look(c.look.clone()));
     }
-    let (send, send_tip) = hinted(tier, tr(lang, "전송"), &format!("{}E", cmd_key()), None);
+    let (send, send_tip) = hinted(tier, tr(lang, "전송"), k.transfer.as_deref(), None);
     let mut right = vec![
         TbItem::Accent { label: format!(" {send} "), tip: send_tip, action: TbAction::Transfer },
-        toggle(tr(lang, "점프"), "G", None, TbAction::Jump),
+        toggle(tr(lang, "점프"), &k.jump, None, TbAction::Jump),
     ];
     if c.view == ViewMode::Grid {
-        right.push(toggle(tr(lang, "일괄"), "B", None, TbAction::Bulk));
+        right.push(toggle(tr(lang, "일괄"), &k.bulk, None, TbAction::Bulk));
     }
     // 아이콘만으로는 기능이 드러나지 않아 툴팁으로 보완(#72).
     right.push(TbItem::Toggle { label: "⚙".into(), tip: Some(tr(lang, "설정").into()), action: TbAction::Settings });
@@ -2762,36 +2830,20 @@ mod tests {
     #[test]
     fn hints_move_to_tooltips_and_compact_fixes_guide_and_lut_labels() {
         let tip = "T 키로 전환";
-        assert_eq!(hinted(ToolbarTier::Full, "Single", "T", Some(tip)), ("Single (T)".into(), Some(tip.into())));
+        assert_eq!(hinted(ToolbarTier::Full, "Single", Some("T"), Some(tip)), ("Single (T)".into(), Some(tip.into())));
         assert_eq!(
-            hinted(ToolbarTier::NoHints, "Single", "T", Some(tip)),
+            hinted(ToolbarTier::NoHints, "Single", Some("T"), Some(tip)),
             ("Single".into(), Some(format!("Single (T)\n{tip}")))
         );
-        assert_eq!(hinted(ToolbarTier::Compact, "Fit", "Space", None), ("Fit".into(), Some("Fit (Space)".into())));
-        let labels = |tier, guide: &'static str| {
-            let c = TbContent {
-                lang: Lang::Ko,
-                view: ViewMode::Single,
-                counter: counter_label(1, 3),
-                guide,
-                look: look_button(&look("Rawblow-Warm", ""), false, tier),
-            };
-            let (left, right) = toolbar_items(&c, tier);
-            left.iter()
-                .chain(&right)
-                .filter_map(|it| match it {
-                    TbItem::Toggle { label, tip, .. } | TbItem::Accent { label, tip, .. } => Some((label.clone(), tip.clone())),
-                    TbItem::Look(b) => Some((b.text.clone(), b.tip_head.clone())),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-        };
-        let full = labels(ToolbarTier::Full, "삼분할");
-        let no = labels(ToolbarTier::NoHints, "삼분할");
-        let compact = labels(ToolbarTier::Compact, "삼분할");
+        assert_eq!(hinted(ToolbarTier::Compact, "Fit", Some("Space"), None), ("Fit".into(), Some("Fit (Space)".into())));
+        let map = rawblow_core::shortcut::ShortcutMap::default();
+        let full = toolbar_labels(ToolbarTier::Full, "삼분할", ViewMode::Single, &map);
+        let no = toolbar_labels(ToolbarTier::NoHints, "삼분할", ViewMode::Single, &map);
+        let compact = toolbar_labels(ToolbarTier::Compact, "삼분할", ViewMode::Single, &map);
         let has = |v: &Vec<(String, Option<String>)>, l: &str, t: Option<&str>| {
             v.iter().any(|(a, b)| a == l && b.as_deref() == t)
         };
+        assert!(has(&full, "Single (T)", Some(tip)), "기본 맵이면 예전 툴팁 그대로");
         assert!(has(&full, "삼분할 (])", None));
         assert!(has(&full, "LUT · Rawblow-Warm", None));
         assert!(has(&no, "삼분할", Some("삼분할 (])")));
@@ -2806,6 +2858,69 @@ mod tests {
         }
         assert!(has(&no, "폴더 열기", Some(&format!("폴더 열기 ({}O)", cmd_key()))));
         assert!(has(&no, " 전송 ", Some(&format!("전송 ({}E)", cmd_key()))));
+    }
+
+    /// 툴바 위젯의 (라벨, 툴팁). 키는 `map`에서.
+    fn toolbar_labels(
+        tier: ToolbarTier,
+        guide: &'static str,
+        view: ViewMode,
+        map: &rawblow_core::shortcut::ShortcutMap,
+    ) -> Vec<(String, Option<String>)> {
+        let c = TbContent {
+            lang: Lang::Ko,
+            view,
+            counter: counter_label(1, 3),
+            guide,
+            look: look_button(&look("Rawblow-Warm", ""), false, tier),
+            keys: TbKeys::from_map(map),
+        };
+        let (left, right) = toolbar_items(&c, tier);
+        left.iter()
+            .chain(&right)
+            .filter_map(|it| match it {
+                TbItem::Toggle { label, tip, .. } | TbItem::Accent { label, tip, .. } => Some((label.clone(), tip.clone())),
+                TbItem::Look(b) => Some((b.text.clone(), b.tip_head.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 툴바의 「(키)」는 저장된 단축키(#123)를 따른다. 키 없음이면 괄호를 붙이지 않는다.
+    #[test]
+    fn toolbar_key_hints_follow_the_stored_shortcuts() {
+        use rawblow_core::shortcut::{Chord, ShortcutAction, ShortcutMap};
+        let mut map = ShortcutMap::default();
+        map.bind(ShortcutAction::Fit, Chord::plain("X")).unwrap();
+        map.bind(ShortcutAction::ToggleView, Chord::plain("V")).unwrap();
+        // 구도선 키를 점프에 주면 구도선은 G를 받는다.
+        map.bind(ShortcutAction::Jump, Chord::plain("CloseBracket")).unwrap();
+        map.bind(ShortcutAction::Bulk, Chord::new("B", false, true, false)).unwrap();
+        let has = |v: &Vec<(String, Option<String>)>, l: &str, t: Option<&str>| {
+            v.iter().any(|(a, b)| a == l && b.as_deref() == t)
+        };
+        let full = toolbar_labels(ToolbarTier::Full, "삼분할", ViewMode::Single, &map);
+        assert!(has(&full, "Fit (X)", None), "{full:?}");
+        assert!(has(&full, "1:1 (X)", None));
+        assert!(has(&full, "Single (V)", Some("V 키로 전환")));
+        assert!(has(&full, "삼분할 (G)", None));
+        assert!(has(&full, "점프 (])", None));
+        let grid = toolbar_labels(ToolbarTier::Full, "삼분할", ViewMode::Grid, &map);
+        assert!(has(&grid, "일괄 (⇧B)", None), "{grid:?}");
+
+        // 키 없음: 저장 파일에서 구도선의 기본 키 ]를 히스토그램이 쓰고 있던 경우.
+        let cfg: Config = serde_json::from_str(
+            r#"{"shortcuts":{"bindings":[{"action":"Histogram","chord":{"key":"CloseBracket","command":false,"shift":false,"alt":false}}]}}"#,
+        )
+        .unwrap();
+        assert!(cfg.shortcuts.chords(ShortcutAction::Guides).is_empty());
+        let full = toolbar_labels(ToolbarTier::Full, "삼분할", ViewMode::Single, &cfg.shortcuts);
+        assert!(has(&full, "삼분할", None), "{full:?}");
+        assert!(has(&full, "Hist (])", None));
+        let no = toolbar_labels(ToolbarTier::NoHints, "삼분할", ViewMode::Single, &cfg.shortcuts);
+        assert!(has(&no, "삼분할", None), "툴팁에 같은 이름만 되풀이하지 않는다");
+        let compact = toolbar_labels(ToolbarTier::Compact, "삼분할", ViewMode::Single, &cfg.shortcuts);
+        assert!(has(&compact, "구도", Some("삼분할")), "Compact는 라벨이 고정이라 이름을 툴팁으로");
     }
 
     // ── 상태 바 문구 · HUD 꼬리(화면) ────────────────────────────
@@ -2962,6 +3077,79 @@ mod tests {
                 assert!(r.left() - close.right() >= 8.0, "{lang:?}: 안내가 「닫기」에 닿는다 {r:?} {close:?}");
             }
         }
+    }
+
+    /// 치트시트 키는 저장된 단축키(#123)다. 키 없음인 동작은 줄을 뺀다.
+    #[test]
+    fn cheatsheet_keys_follow_the_stored_map_and_drop_unbound_rows() {
+        use rawblow_core::shortcut::{Chord, ShortcutAction};
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        app.show_help = true;
+        let help = |app: &mut RawBlowApp, ctx: &egui::Context| app.ui_help(ctx);
+        let paint = |app: &mut RawBlowApp| {
+            let mut texts = Texts::new();
+            for _ in 0..3 {
+                texts = frame(&ctx, app, vec![], help);
+            }
+            texts
+        };
+        // 설명 글자와 같은 줄의 키캡 글자.
+        let keys_of = |texts: &Texts, desc: &str| -> Vec<String> {
+            let r = *find(texts, desc).first().unwrap_or_else(|| panic!("치트시트에 {desc:?}: {}", joined(texts)));
+            texts
+                .iter()
+                .filter(|(t, k)| t != desc && (k.center().y - r.center().y).abs() < 6.0 && k.right() <= r.left() && r.left() - k.right() < 120.0)
+                .map(|(t, _)| t.clone())
+                .collect()
+        };
+        let texts = paint(&mut app);
+        assert_eq!(keys_of(&texts, "구도선"), vec!["]"]);
+        assert_eq!(keys_of(&texts, "룩 끄기"), vec!["\\"]);
+        assert_eq!(keys_of(&texts, "일괄 분류(그리드)"), vec!["B"]);
+        assert_eq!(keys_of(&texts, "폴더 열기"), vec![format!("{}O", cmd_key())]);
+
+        app.cfg.shortcuts.bind(ShortcutAction::Fit, Chord::plain("X")).unwrap();
+        app.cfg.shortcuts.bind(ShortcutAction::Jump, Chord::plain("CloseBracket")).unwrap();
+        let texts = paint(&mut app);
+        let fit = keys_of(&texts, "창맞춤↔1:1");
+        assert!(fit.contains(&"X".to_string()) && !fit.contains(&"Space".to_string()), "{fit:?}");
+        assert_eq!(keys_of(&texts, "구도선"), vec!["G"], "맞바꿈된 키");
+        assert_eq!(keys_of(&texts, "점프"), vec!["]"]);
+
+        // 구도선 키 없음(저장 파일에서 ]를 히스토그램이 쓰던 경우) → 줄이 없다.
+        let cfg: Config = serde_json::from_str(
+            r#"{"shortcuts":{"bindings":[{"action":"Histogram","chord":{"key":"CloseBracket","command":false,"shift":false,"alt":false}}]}}"#,
+        )
+        .unwrap();
+        app.cfg.shortcuts = cfg.shortcuts;
+        let texts = paint(&mut app);
+        assert!(find(&texts, "구도선").is_empty(), "키 없음인 동작은 줄을 뺀다");
+        assert_eq!(keys_of(&texts, "히스토그램"), vec!["]"]);
+    }
+
+    /// 왼쪽 레일의 라벨·별점·색 키 글자도 저장된 단축키(#123)다.
+    #[test]
+    fn left_rail_key_letters_follow_the_stored_map() {
+        use rawblow_core::shortcut::{Chord, ShortcutAction};
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        let rail = |app: &mut RawBlowApp, ctx: &egui::Context| app.ui_left_rail(ctx);
+        let texts = frame(&ctx, &mut app, vec![], rail);
+        for t in ["Q W E R", "1–5 · `", "⇧1–5"] {
+            assert!(!find(&texts, t).is_empty(), "기본 맵 {t:?}: {}", joined(&texts));
+        }
+        assert!(app.cfg.shortcuts.preset("jkl"));
+        app.cfg.shortcuts.bind(ShortcutAction::Star3, Chord::plain("Num9")).unwrap();
+        app.cfg.shortcuts.bind(ShortcutAction::Tag1, Chord::plain("Num8")).unwrap();
+        let texts = frame(&ctx, &mut app, vec![], rail);
+        assert!(!find(&texts, "J K L U").is_empty(), "{}", joined(&texts));
+        for k in ["J", "K", "L", "U"] {
+            assert!(!find(&texts, k).is_empty(), "행 키 {k}");
+        }
+        assert!(find(&texts, "Q W E R").is_empty());
+        assert!(!find(&texts, "`").is_empty(), "별점 1~5가 숫자 줄이 아니면 해제 키만");
+        assert!(find(&texts, "1–5 · `").is_empty() && find(&texts, "⇧1–5").is_empty());
     }
 
     // ── 룩 메뉴 ────────────────────────────────────────────────
@@ -3251,6 +3439,90 @@ mod tests {
         assert!(!app.fullscreen, "다음 Esc는 전체화면을 푼다");
         frame(&ctx, &mut app, vec![], keys_then_screen);
         assert!(!menu_open(&ctx), "돌아와도 메뉴가 다시 뜨지 않는다");
+    }
+
+    /// `]`(구도 보조선 #90)는 단축키 맵(#123)의 한 동작이다. 다른 동작에 주면 구도선은 그 동작의
+    /// 키를 받고(맞바꿈), 한 번 누른 키가 두 동작을 실행하지 않는다.
+    #[test]
+    fn close_bracket_guides_are_a_rebindable_shortcut() {
+        use rawblow_core::guides::GuidePreset;
+        use rawblow_core::shortcut::{Chord, ShortcutAction};
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        assert_eq!(app.cfg.guides, GuidePreset::Off);
+        frame(&ctx, &mut app, vec![key(egui::Key::CloseBracket)], |app, ctx| app.handle_keys(ctx));
+        assert_eq!(app.cfg.guides, GuidePreset::Thirds, "기본 맵의 ]는 구도선");
+
+        assert_eq!(
+            app.cfg.shortcuts.bind(ShortcutAction::Histogram, Chord::plain("CloseBracket")),
+            Ok(Some(ShortcutAction::Guides))
+        );
+        let hist = app.show_hist;
+        frame(&ctx, &mut app, vec![key(egui::Key::CloseBracket)], |app, ctx| app.handle_keys(ctx));
+        assert_eq!(app.show_hist, !hist, "]는 히스토그램만");
+        assert_eq!(app.cfg.guides, GuidePreset::Thirds, "보조선은 그대로");
+
+        frame(&ctx, &mut app, vec![key(egui::Key::H)], |app, ctx| app.handle_keys(ctx));
+        assert_ne!(app.cfg.guides, GuidePreset::Thirds, "구도선은 히스토그램이 쓰던 H로 옮겨 갔다");
+        assert_eq!(app.show_hist, !hist, "H는 이제 히스토그램이 아니다");
+    }
+
+    /// B(일괄 분류)도 맵의 한 동작(#123). 그리드에서만 열리고, 키를 다른 동작에 주면 B는 그 동작만 한다.
+    #[test]
+    fn bulk_key_opens_only_in_grid_and_follows_the_map() {
+        use rawblow_core::shortcut::{Chord, ShortcutAction};
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        frame(&ctx, &mut app, vec![key(egui::Key::B)], |app, ctx| app.handle_keys(ctx));
+        assert!(!app.bulk_open, "단일 보기에서는 열지 않는다");
+        app.view = ViewMode::Grid;
+        frame(&ctx, &mut app, vec![key(egui::Key::B)], |app, ctx| app.handle_keys(ctx));
+        assert!(app.bulk_open);
+        app.bulk_open = false;
+
+        assert_eq!(app.cfg.shortcuts.bind(ShortcutAction::Exif, Chord::plain("B")), Ok(Some(ShortcutAction::Bulk)));
+        let exif = app.show_exif;
+        frame(&ctx, &mut app, vec![key(egui::Key::B)], |app, ctx| app.handle_keys(ctx));
+        assert!(!app.bulk_open, "B는 이제 EXIF만");
+        assert_eq!(app.show_exif, !exif);
+        frame(&ctx, &mut app, vec![key(egui::Key::I)], |app, ctx| app.handle_keys(ctx));
+        assert!(app.bulk_open, "일괄 분류는 EXIF가 쓰던 I를 받았다");
+    }
+
+    /// 누르고 있는 동안 룩 끄기(#125)는 맵의 키(기본 `\`)를 수식키까지 맞춰 읽는다(#123).
+    #[test]
+    fn look_compare_reads_the_stored_key_while_held() {
+        use rawblow_core::shortcut::{Chord, ShortcutAction};
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        let release = |k: egui::Key| egui::Event::Key {
+            key: k,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let poll = |app: &mut RawBlowApp, ctx: &egui::Context| app.poll_look_compare(ctx);
+        frame(&ctx, &mut app, vec![key(egui::Key::Backslash)], poll);
+        assert!(app.look_compare, "기본 \\");
+        frame(&ctx, &mut app, vec![], poll);
+        assert!(app.look_compare, "누르고 있는 동안 계속");
+        frame(&ctx, &mut app, vec![release(egui::Key::Backslash)], poll);
+        assert!(!app.look_compare);
+
+        assert_eq!(app.cfg.shortcuts.bind(ShortcutAction::LookCompare, Chord::plain("L")), Ok(None));
+        frame(&ctx, &mut app, vec![key(egui::Key::Backslash)], poll);
+        assert!(!app.look_compare, "\\는 이제 아무 동작도 아니다");
+        frame(&ctx, &mut app, vec![release(egui::Key::Backslash), key(egui::Key::L)], poll);
+        assert!(app.look_compare, "L을 누르고 있으면 끈다");
+        // L을 누른 채 ⇧를 더 누르면 ⇧L(다른 키)이라 끄지 않는다.
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SCREEN)),
+            modifiers: egui::Modifiers::SHIFT,
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| app.poll_look_compare(ctx));
+        assert!(!app.look_compare);
     }
 
     /// 메뉴 안의 스크롤바·안내 줄을 눌러도 메뉴는 열린 채(항목을 누르면 닫힌다 — picking 테스트).

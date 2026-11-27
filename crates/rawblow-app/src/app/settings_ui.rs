@@ -17,6 +17,19 @@ pub(super) const SETTINGS_ACTION_FILL: Color32 = theme::BG3;
 pub(super) const SETTINGS_ACTION_STROKE: Color32 = theme::LINE2;
 
 const SETTINGS_COL_W: f32 = 920.0;
+
+/// 단축키 「바꾸기」를 누르고 키를 기다리는 동작(egui 임시 데이터, #123).
+const SHORTCUT_REBIND_ID: &str = "shortcut_rebind";
+/// 방금 바꾼 동작과, 그 키를 쓰다 밀려난 동작. 바꾼 행 아래 한 줄 안내에 쓴다.
+const SHORTCUT_NOTICE_ID: &str = "shortcut_notice";
+
+/// 키 대기·맞바꿈 안내를 지운다. 프리셋·초기화·기본값 복원·설정 닫기 때.
+fn clear_shortcut_edit(ctx: &egui::Context) {
+    ctx.data_mut(|d| {
+        d.remove::<ShortcutAction>(egui::Id::new(SHORTCUT_REBIND_ID));
+        d.remove::<(ShortcutAction, ShortcutAction)>(egui::Id::new(SHORTCUT_NOTICE_ID));
+    });
+}
 const SETTINGS_ROW_H: f32 = 48.0;
 const SETTINGS_TOGGLE_W: f32 = 52.0;
 const SETTINGS_TOGGLE_H: f32 = 30.0;
@@ -624,6 +637,8 @@ fn settings_tag_name_row(
 impl RawBlowApp {
     pub(super) fn ui_settings(&mut self, ctx: &egui::Context) {
         let lang = self.lang;
+        // 재지정 대기 중이면 위젯보다 먼저 키를 가져간다. Esc는 대기를 취소하고 설정은 닫지 않는다.
+        self.poll_shortcut_rebind(ctx, lang);
         // 돌아가기(버튼·Esc 공통)와 기본값 복원은 플래그로 모아 패널을 그린 뒤 한 곳에서 실행한다 —
         // 버튼과 Esc가 서로 다른 동작으로 어긋나지 않게(#69).
         let mut go_back = false;
@@ -1002,25 +1017,7 @@ impl RawBlowApp {
                         }
                     });
 
-                    // 단축키: 지금은 표시만(변경 기능 예정 자리).
-                    settings_section_panel(ui, tr(lang, "단축키"), |ui| {
-                        settings_section_note(ui, tr(lang, "셀렉 단축키입니다."));
-                        let km = &self.cfg.keymap;
-                        let keys = [
-                            (Label::Pick, &km.pick),
-                            (Label::Hold, &km.hold),
-                            (Label::Reject, &km.reject),
-                            (Label::Unrated, &km.clear),
-                        ];
-                        for (i, (lbl, key)) in keys.into_iter().enumerate() {
-                            if i > 0 {
-                                settings_inner_rule(ui);
-                            }
-                            settings_field_row(ui, SIcon::Key, lbl.name(lang), None, |ui| {
-                                kbd(ui, key);
-                            });
-                        }
-                    });
+                    self.ui_shortcut_section(ui, lang);
 
                     settings_section_panel(ui, tr(lang, "전송"), |ui| {
                         // 전송 dest 기본값(#113).
@@ -1322,13 +1319,161 @@ impl RawBlowApp {
             self.persist_cfg();
             self.schedule_cache_trim(); // 기본 상한으로 캐시 정리.
             self.toast_info(tr(self.lang, "설정을 기본값으로 되돌렸습니다").into());
+            clear_shortcut_edit(ctx);
         }
         if go_back {
+            // 키를 기다리던 중에 닫아도 다음에 열 때 대기가 남아 있지 않게.
+            clear_shortcut_edit(ctx);
             self.settings_back();
         }
         self.grid_cols = self.cfg.grid_cols.clamp(4, 12);
         self.show_exif = self.cfg.show_exif;
         self.show_hist = self.cfg.show_histogram;
+    }
+
+    fn poll_shortcut_rebind(&mut self, ctx: &egui::Context, lang: Lang) {
+        let id = egui::Id::new(SHORTCUT_REBIND_ID);
+        let Some(action) = ctx.data(|d| d.get_temp::<ShortcutAction>(id)) else {
+            return;
+        };
+        let Some((key, modifiers)) = take_shortcut_key(ctx) else {
+            return;
+        };
+        if key == egui::Key::Escape && !modifiers.command && !modifiers.shift && !modifiers.alt {
+            ctx.data_mut(|d| d.remove::<ShortcutAction>(id));
+            return;
+        }
+        let Ok(bumped) = self.cfg.shortcuts.bind(action, chord_from_key(key, modifiers)) else {
+            self.toast_info(tr(lang, "이 키는 바꿀 수 없습니다").to_string());
+            return;
+        };
+        self.persist_cfg();
+        ctx.data_mut(|d| {
+            d.remove::<ShortcutAction>(id);
+            // 다른 동작이 그 키를 쓰고 있었으면 바꾼 행 아래에 그 동작의 새 키(또는 키 없음)를 한 줄로.
+            match bumped {
+                Some(other) => d.insert_temp(egui::Id::new(SHORTCUT_NOTICE_ID), (action, other)),
+                None => d.remove::<(ShortcutAction, ShortcutAction)>(egui::Id::new(SHORTCUT_NOTICE_ID)),
+            }
+        });
+    }
+
+    fn ui_shortcut_section(&mut self, ui: &mut egui::Ui, lang: Lang) {
+        let rebind_id = egui::Id::new(SHORTCUT_REBIND_ID);
+        let pending = ui.ctx().data(|d| d.get_temp::<ShortcutAction>(rebind_id));
+        let notice = ui
+            .ctx()
+            .data(|d| d.get_temp::<(ShortcutAction, ShortcutAction)>(egui::Id::new(SHORTCUT_NOTICE_ID)));
+        let mut preset: Option<&'static str> = None;
+        let mut do_reset = false;
+        let mut arm: Option<ShortcutAction> = None;
+        let mut cancel = false;
+        settings_section_panel(ui, tr(lang, "단축키"), |ui| {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if settings_action_btn_sized(
+                    ui,
+                    "QWER",
+                    theme::INK,
+                    SETTINGS_ACTION_FILL,
+                    SETTINGS_ACTION_STROKE,
+                    Vec2::new(72.0, SETTINGS_BTN_H),
+                )
+                .clicked()
+                {
+                    preset = Some("qwer");
+                }
+                if settings_action_btn_sized(
+                    ui,
+                    "JKL",
+                    theme::INK,
+                    SETTINGS_ACTION_FILL,
+                    SETTINGS_ACTION_STROKE,
+                    Vec2::new(72.0, SETTINGS_BTN_H),
+                )
+                .clicked()
+                {
+                    preset = Some("jkl");
+                }
+                if settings_action_btn(ui, tr(lang, "단축키 초기화")).clicked() {
+                    do_reset = true;
+                }
+            });
+            ui.add_space(8.0);
+            for (i, action) in ShortcutAction::ALL.iter().copied().enumerate() {
+                if i > 0 {
+                    settings_inner_rule(ui);
+                }
+                let label = shortcut_action_label(&self.cfg, lang, action);
+                let captions: Vec<String> = self.cfg.shortcuts.chords(action).iter().map(chord_caption).collect();
+                let waiting = pending == Some(action);
+                settings_field_row(ui, SIcon::Key, &label, None, |ui| {
+                    let btn = if waiting { tr(lang, "취소") } else { tr(lang, "바꾸기") };
+                    if settings_action_btn_sized(
+                        ui,
+                        btn,
+                        theme::INK,
+                        SETTINGS_ACTION_FILL,
+                        SETTINGS_ACTION_STROKE,
+                        Vec2::new(88.0, SETTINGS_BTN_H),
+                    )
+                    .clicked()
+                    {
+                        if waiting {
+                            cancel = true;
+                        } else {
+                            arm = Some(action);
+                        }
+                    }
+                    ui.add_space(8.0);
+                    if waiting {
+                        kbd(ui, "…");
+                    } else if captions.is_empty() {
+                        ui.label(egui::RichText::new(tr(lang, "없음")).font(prop(14.0)).color(INK_HELP));
+                    } else {
+                        for cap in captions.iter().rev() {
+                            kbd(ui, cap);
+                            ui.add_space(3.0);
+                        }
+                    }
+                });
+                // 방금 바꾼 행 아래: 그 키를 쓰던 동작이 받은 키, 또는 키가 풀렸다는 한 줄.
+                if let Some(other) = notice.filter(|(changed, _)| *changed == action).map(|(_, other)| other) {
+                    let name = shortcut_action_label(&self.cfg, lang, other);
+                    let now: Vec<String> = self.cfg.shortcuts.chords(other).iter().map(chord_caption).collect();
+                    ui.horizontal(|ui| {
+                        ui.add_space(SICON + SICON_GAP);
+                        let text = if now.is_empty() {
+                            trf(lang, "{} 키가 풀렸습니다", &[&name])
+                        } else {
+                            trf(lang, "{} 키가 바뀌었습니다", &[&name])
+                        };
+                        ui.label(egui::RichText::new(text).font(prop(SETTINGS_DESC_FONT)).color(theme::WARN));
+                        for cap in &now {
+                            ui.add_space(4.0);
+                            kbd(ui, cap);
+                        }
+                    });
+                }
+            }
+        });
+        if cancel {
+            ui.ctx().data_mut(|d| d.remove::<ShortcutAction>(rebind_id));
+        }
+        if let Some(action) = arm {
+            ui.ctx().data_mut(|d| d.insert_temp(rebind_id, action));
+            ui.ctx().memory_mut(|m| m.stop_text_input());
+        }
+        if let Some(name) = preset {
+            self.cfg.shortcuts.preset(name);
+            self.persist_cfg();
+            clear_shortcut_edit(ui.ctx());
+        }
+        if do_reset {
+            self.cfg.shortcuts.reset();
+            self.persist_cfg();
+            clear_shortcut_edit(ui.ctx());
+        }
     }
 
     /// 「LUT 폴더」 행(#125 후속). 고른 폴더의 `.cube`가 툴바 LUT 목록에 빌트인 아래로 나온다.
@@ -1679,7 +1824,8 @@ mod tests {
         }
 
         fn screen() -> egui::Rect {
-            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 4200.0))
+            // 단축키 행(#123)이 길다. 캐시·초기화·정보까지 한 화면에 들어오게 뷰포트를 잡는다.
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 7200.0))
         }
 
         fn raw(&self, events: Vec<egui::Event>) -> egui::RawInput {
@@ -1742,10 +1888,14 @@ mod tests {
         }
 
         fn press_esc(&mut self) {
+            self.press_key(egui::Key::Escape);
+        }
+
+        fn press_key(&mut self, key: egui::Key) {
             self.time += 1.0 / 60.0;
             let _ = self.ctx.run(
                 self.raw(vec![egui::Event::Key {
-                    key: egui::Key::Escape,
+                    key,
                     physical_key: None,
                     pressed: true,
                     repeat: false,
@@ -1995,7 +2145,12 @@ mod tests {
         assert!(top(&texts, "광색역 표시") < top(&texts, "LUT 폴더"));
         assert!(top(&texts, "LUT 폴더") < top(&texts, "세로 선"), "구도 편집기 앞");
         top(&texts, "폴더를 고르면 안의 .cube 파일이 툴바 LUT 목록에 나옵니다");
-        assert!(!texts.iter().any(|(t, _)| t == "해제"), "미지정이면 해제 버튼 없음");
+        // 단축키 섹션(#123)에도 동작 이름 「해제」가 있어, 광색역 행부터 구도 편집기 앞까지에서만 찾는다.
+        let (from, to) = (top(&texts, "광색역 표시"), top(&texts, "세로 선"));
+        assert!(
+            !texts.iter().any(|(t, r)| t == "해제" && r.top() > from && r.top() < to),
+            "미지정이면 해제 버튼 없음"
+        );
 
         let before = RawBlowApp::settings_qa_persist_count();
         qa.app.set_lut_dir(dir.display().to_string());
@@ -2022,6 +2177,185 @@ mod tests {
         qa.app.set_lut_dir(dir.join("gone").display().to_string());
         top(&qa.paint(), "폴더를 찾을 수 없습니다");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn settings_qa_shortcut_buttons_write_the_stored_map() {
+        use rawblow_core::shortcut::{Chord, Resolve, ShortcutAction};
+        let mut qa = SettingsQa::new();
+        qa.click_exact("JKL");
+        assert_eq!(
+            qa.app.cfg.shortcuts.resolve(&Chord::plain("J")),
+            Resolve::One(ShortcutAction::Pick)
+        );
+        assert_eq!(qa.app.cfg.shortcuts.resolve(&Chord::plain("Q")), Resolve::None);
+
+        qa.click_exact("QWER");
+        assert_eq!(
+            qa.app.cfg.shortcuts.resolve(&Chord::plain("Q")),
+            Resolve::One(ShortcutAction::Pick)
+        );
+
+        qa.click_exact("단축키 초기화");
+        assert_eq!(
+            qa.app.cfg.shortcuts.resolve(&Chord::plain("Q")),
+            Resolve::One(ShortcutAction::Pick)
+        );
+
+        // 첫 「바꾸기」는 채택 행이다.
+        qa.click_exact("바꾸기");
+        qa.press_key(egui::Key::U);
+        assert_eq!(
+            qa.app.cfg.shortcuts.resolve(&Chord::plain("U")),
+            Resolve::One(ShortcutAction::Pick)
+        );
+        assert_eq!(qa.app.cfg.shortcuts.resolve(&Chord::plain("Q")), Resolve::None);
+
+        qa.click_exact("바꾸기");
+        qa.press_key(egui::Key::Escape);
+        assert_eq!(
+            qa.app.cfg.shortcuts.resolve(&Chord::plain("U")),
+            Resolve::One(ShortcutAction::Pick),
+            "고정 키(Esc)는 저장되지 않는다"
+        );
+        assert!(qa.app.show_settings, "재지정 중 Esc는 설정을 닫지 않는다");
+    }
+
+    /// 단축키 섹션에서 `label` 행의 사각형(섹션 머리 「단축키 초기화」 아래 첫 줄).
+    fn shortcut_row(texts: &[(String, egui::Rect)], label: &str) -> egui::Rect {
+        let start = texts.iter().find(|(t, _)| t == "단축키 초기화").expect("단축키 섹션").1.top();
+        texts
+            .iter()
+            .find(|(t, r)| t == label && r.top() > start)
+            .map(|(_, r)| *r)
+            .unwrap_or_else(|| panic!("단축키 행 {label:?}가 없다"))
+    }
+
+    /// 같은 줄(세로 가운데가 행 안)에 있는 글자들.
+    fn same_line(texts: &[(String, egui::Rect)], row: egui::Rect) -> Vec<&str> {
+        texts
+            .iter()
+            .filter(|(_, r)| (r.center().y - row.center().y).abs() < 12.0)
+            .map(|(t, _)| t.as_str())
+            .collect()
+    }
+
+    impl SettingsQa {
+        /// `label` 행의 「바꾸기」를 누른다.
+        fn click_change_of(&mut self, label: &str) {
+            let texts = self.paint();
+            let row = shortcut_row(&texts, label);
+            let btn = texts
+                .iter()
+                .find(|(t, r)| t == "바꾸기" && (r.center().y - row.center().y).abs() < 12.0)
+                .map(|(_, r)| *r)
+                .unwrap_or_else(|| panic!("{label:?} 행의 「바꾸기」가 없다"));
+            self.click_pos(btn.center());
+        }
+    }
+
+    /// 쓰고 있는 키를 지정하면 그 키의 동작은 바꾼 동작이 쓰던 키를 받고(맞바꿈), 바꾼 행 아래에
+    /// 한 줄로 알린다. 한 키에 동작 둘인 상태는 화면에도 맵에도 없다(#123 재검토).
+    #[test]
+    fn settings_qa_taking_a_used_key_swaps_and_says_so_under_the_row() {
+        use rawblow_core::shortcut::{Chord, Resolve, ShortcutAction};
+        let mut qa = SettingsQa::new();
+        qa.click_change_of("채택");
+        qa.press_key(egui::Key::W);
+        let map = &qa.app.cfg.shortcuts;
+        assert_eq!(map.resolve(&Chord::plain("W")), Resolve::One(ShortcutAction::Pick));
+        assert_eq!(map.resolve(&Chord::plain("Q")), Resolve::One(ShortcutAction::Hold), "보류는 채택이 쓰던 Q");
+        assert_eq!(map.chords(ShortcutAction::Hold), vec![Chord::plain("Q")]);
+
+        let texts = qa.paint();
+        let pick = shortcut_row(&texts, "채택");
+        let hold = shortcut_row(&texts, "보류");
+        let (note, note_rect) = texts
+            .iter()
+            .find(|(t, _)| t == "보류 키가 바뀌었습니다")
+            .map(|(t, r)| (t.clone(), *r))
+            .expect("맞바꿈 안내 줄");
+        assert!(pick.bottom() < note_rect.top() && note_rect.bottom() < hold.top(), "{note}는 채택 행 바로 아래");
+        assert!(same_line(&texts, note_rect).contains(&"Q"), "안내 줄에 보류의 새 키");
+        assert!(same_line(&texts, hold).contains(&"Q"), "보류 행도 바로 Q");
+        assert!(same_line(&texts, pick).contains(&"W"));
+        assert!(!texts.iter().any(|(t, _)| t.contains(" · ") && t.contains("채택") && t.contains("보류")), "충돌 목록 없음");
+
+        // 프리셋을 누르면 안내는 사라진다.
+        qa.click_exact("QWER");
+        let texts = qa.paint();
+        assert!(!texts.iter().any(|(t, _)| t == "보류 키가 바뀌었습니다"));
+    }
+
+    /// 키 없던 동작에 쓰던 키를 주면 원래 동작은 키 없음이 되고 「없음」으로 보인다.
+    #[test]
+    fn settings_qa_binding_an_unbound_action_unbinds_the_owner() {
+        use rawblow_core::shortcut::ShortcutAction;
+        let mut qa = SettingsQa::new();
+        // 구도선 기본 키 ]를 히스토그램이 쓰던 저장 파일 → 구도선은 키 없음.
+        let cfg: Config = serde_json::from_str(
+            r#"{"shortcuts":{"bindings":[{"action":"Histogram","chord":{"key":"CloseBracket","command":false,"shift":false,"alt":false}}]}}"#,
+        )
+        .unwrap();
+        qa.app.cfg.shortcuts = cfg.shortcuts;
+        let texts = qa.paint();
+        assert!(same_line(&texts, shortcut_row(&texts, "구도선")).contains(&"없음"));
+
+        qa.click_change_of("구도선");
+        qa.press_key(egui::Key::CloseBracket);
+        assert_eq!(qa.app.cfg.shortcuts.chords(ShortcutAction::Guides).len(), 1);
+        assert!(qa.app.cfg.shortcuts.chords(ShortcutAction::Histogram).is_empty());
+        let texts = qa.paint();
+        assert!(texts.iter().any(|(t, _)| t == "히스토그램 키가 풀렸습니다"), "키가 풀렸다는 한 줄");
+        assert!(same_line(&texts, shortcut_row(&texts, "히스토그램")).contains(&"없음"));
+    }
+
+    /// 고정 키(Tab·⌘C 등)는 지정하지 않고 기존 안내를 띄운 채 키를 계속 기다린다.
+    #[test]
+    fn settings_qa_fixed_keys_are_refused_while_waiting() {
+        use rawblow_core::shortcut::{Chord, Resolve, ShortcutAction};
+        let mut qa = SettingsQa::new();
+        let before = qa.app.cfg.shortcuts.clone();
+        qa.click_change_of("채택");
+        for ev in [
+            egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::Copy,
+            egui::Event::Key {
+                key: egui::Key::Minus,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            },
+        ] {
+            qa.app.toast = None;
+            qa.send(vec![ev]);
+            assert_eq!(qa.app.toast.as_ref().map(|t| t.text.as_str()), Some("이 키는 바꿀 수 없습니다"));
+            assert_eq!(qa.app.cfg.shortcuts, before);
+        }
+        // 아직 기다리는 중 — 다음 키가 지정된다.
+        qa.press_key(egui::Key::J);
+        assert_eq!(qa.app.cfg.shortcuts.resolve(&Chord::plain("J")), Resolve::One(ShortcutAction::Pick));
+    }
+
+    /// 키를 기다리다 설정을 닫으면 다시 열었을 때 기다리지 않는다.
+    #[test]
+    fn settings_qa_closing_settings_drops_the_pending_rebind() {
+        use rawblow_core::shortcut::{Chord, Resolve, ShortcutAction};
+        let mut qa = SettingsQa::new();
+        qa.click_change_of("채택");
+        qa.click_exact(&format!("← {}", "돌아가기"));
+        assert!(!qa.app.show_settings);
+        qa.app.show_settings = true;
+        qa.press_key(egui::Key::J);
+        assert_eq!(qa.app.cfg.shortcuts.resolve(&Chord::plain("J")), Resolve::None);
+        assert_eq!(qa.app.cfg.shortcuts.resolve(&Chord::plain("Q")), Resolve::One(ShortcutAction::Pick));
     }
 
     #[test]
@@ -2234,7 +2568,7 @@ mod tests {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
-                egui::vec2(1100.0, 4200.0),
+                egui::vec2(1100.0, 7200.0),
             )),
             max_texture_side: Some(4096),
             ..Default::default()

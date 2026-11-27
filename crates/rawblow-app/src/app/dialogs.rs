@@ -2,6 +2,7 @@
 //! app.rs에서 순수 이동 — 동작 변경 없음.
 
 use super::*;
+use rawblow_core::shortcut::ShortcutAction;
 
 impl RawBlowApp {
     pub(super) fn ui_jump(&mut self, ctx: &egui::Context) {
@@ -201,14 +202,19 @@ impl RawBlowApp {
                             .color(theme::INK3),
                     );
                     ui.horizontal(|ui| {
-                        for (lbl, key) in [
-                            (Label::Pick, "Q"),
-                            (Label::Hold, "W"),
-                            (Label::Reject, "E"),
-                            (Label::Unrated, "R"),
+                        // 라벨 앞 글자는 그 라벨의 저장된 단축키(#123). 키 없음이면 이름만.
+                        for (lbl, action) in [
+                            (Label::Pick, ShortcutAction::Pick),
+                            (Label::Hold, ShortcutAction::Hold),
+                            (Label::Reject, ShortcutAction::Reject),
+                            (Label::Unrated, ShortcutAction::Clear),
                         ] {
                             let active = self.bulk_target == lbl;
-                            if toggle_btn(ui, &format!("{}  {}", key, lbl.name(lang)), active).clicked() {
+                            let text = match first_key_caption(&self.cfg.shortcuts, action) {
+                                Some(key) => format!("{}  {}", key, lbl.name(lang)),
+                                None => lbl.name(lang).to_string(),
+                            };
+                            if toggle_btn(ui, &text, active).clicked() {
                                 self.bulk_target = lbl;
                             }
                         }
@@ -315,7 +321,7 @@ impl RawBlowApp {
         // 글줄 높이가 맑은 고딕보다 큰 글꼴(윈도우 Yu Gothic: 12pt 19, 10pt 16)에서는 늘어난 만큼
         // 아래 여백을 줄여 줄 간격을 맞춘다. 안 그러면 고정 높이 창의 마지막 줄이 스크롤 밖으로 밀린다.
         // 기준(12pt 17, 10pt 13) 이하인 글꼴은 그대로다.
-        fn row(ui: &mut egui::Ui, keys: &[&str], desc: &str) {
+        fn row(ui: &mut egui::Ui, keys: &[String], desc: &str) {
             let mut text_h = 0.0_f32;
             ui.horizontal(|ui| {
                 for k in keys {
@@ -326,6 +332,9 @@ impl RawBlowApp {
                 text_h = ui.label(egui::RichText::new(desc).font(prop(12.0)).color(theme::INK2)).rect.height();
             });
             ui.add_space((6.0 - (text_h - 17.0).max(0.0)).max(2.0));
+        }
+        fn ks(keys: &[&str]) -> Vec<String> {
+            keys.iter().map(|s| (*s).to_string()).collect()
         }
         // 섹션 머리(대문자 작은 라벨 — section_head와 같은 톤).
         fn head(ui: &mut egui::Ui, text: &str) {
@@ -347,7 +356,9 @@ impl RawBlowApp {
             close = true;
         }
 
-        let cmd = cmd_key();
+        // 키는 저장된 단축키(#123). 키 없음인 동작은 줄을 뺀다(예전 B·]·Ctrl/⌘O 줄과 같다).
+        let map = self.cfg.shortcuts.clone();
+        let caps = |action: ShortcutAction| -> Vec<String> { map.chords(action).iter().map(chord_caption).collect() };
         egui::Window::new("help_modal")
             .title_bar(false)
             .collapsible(false)
@@ -374,65 +385,89 @@ impl RawBlowApp {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         // 2열은 ui.columns로 나눈다(각 열 top_down, 내용에 맞춰 높이 증가).
+                        let action_row = |ui: &mut egui::Ui, action: ShortcutAction, desc: &str| {
+                            let keys = caps(action);
+                            if !keys.is_empty() {
+                                row(ui, &keys, desc);
+                            }
+                        };
                         ui.columns(2, |c| {
                             // ── 좌열: 이동 · 분류 · 별점·태그 ──
                             {
                                 let ui = &mut c[0];
                                 head(ui, tr(lang, "이동"));
-                                row(ui, &["←", "→"], tr(lang, "이전·다음"));
-                                row(ui, &["↑", "↓"], tr(lang, "그리드 줄 이동"));
-                                row(ui, &[tr(lang, "휠")], tr(lang, "사진 넘김(창맞춤일 때)"));
-                                row(ui, &["G"], tr(lang, "점프"));
-                                row(ui, &["B"], tr(lang, "일괄 분류(그리드)"));
+                                row(ui, &ks(&["←", "→"]), tr(lang, "이전·다음"));
+                                row(ui, &ks(&["↑", "↓"]), tr(lang, "그리드 줄 이동"));
+                                row(ui, &ks(&[tr(lang, "휠")]), tr(lang, "사진 넘김(창맞춤일 때)"));
+                                action_row(ui, ShortcutAction::Jump, tr(lang, "점프"));
+                                action_row(ui, ShortcutAction::Bulk, tr(lang, "일괄 분류(그리드)"));
 
                                 head(ui, tr(lang, "분류"));
-                                row(ui, &["Q"], tr(lang, "채택"));
-                                row(ui, &["W"], tr(lang, "보류"));
-                                row(ui, &["E"], tr(lang, "제외"));
-                                row(ui, &["R"], tr(lang, "해제"));
+                                action_row(ui, ShortcutAction::Pick, tr(lang, "채택"));
+                                action_row(ui, ShortcutAction::Hold, tr(lang, "보류"));
+                                action_row(ui, ShortcutAction::Reject, tr(lang, "제외"));
+                                action_row(ui, ShortcutAction::Clear, tr(lang, "해제"));
                                 ui.label(
                                     egui::RichText::new(tr(lang, "같은 키 재입력 = 해제(토글)"))
                                         .font(mono(9.5))
                                         .color(theme::INK4),
                                 );
-                                // 컬링 되돌리기(#78).
-                                row(ui, &[format!("{}Z", cmd).as_str()], tr(lang, "되돌리기"));
-                                row(ui, &[format!("{}⇧Z", cmd).as_str()], tr(lang, "다시 실행"));
+                                action_row(ui, ShortcutAction::Undo, tr(lang, "되돌리기"));
+                                action_row(ui, ShortcutAction::Redo, tr(lang, "다시 실행"));
 
                                 head(ui, tr(lang, "별점·태그"));
-                                row(ui, &["1~5"], tr(lang, "별점"));
-                                row(ui, &["`"], tr(lang, "별점 해제"));
-                                row(ui, &["⇧1~5"], tr(lang, "컬러 태그"));
-                                row(ui, &["⇧0"], tr(lang, "태그 해제"));
+                                let stars = STAR_ACTIONS;
+                                if keys_are_num_range(&map, &stars, false) {
+                                    row(ui, &ks(&["1~5"]), tr(lang, "별점"));
+                                } else {
+                                    for action in stars {
+                                        action_row(ui, action, &shortcut_action_label(&self.cfg, lang, action));
+                                    }
+                                }
+                                action_row(ui, ShortcutAction::StarClear, tr(lang, "별점 해제"));
+                                let tags = TAG_ACTIONS;
+                                if keys_are_num_range(&map, &tags, true) {
+                                    row(ui, &ks(&["⇧1~5"]), tr(lang, "컬러 태그"));
+                                } else {
+                                    for action in tags {
+                                        action_row(ui, action, &shortcut_action_label(&self.cfg, lang, action));
+                                    }
+                                }
+                                action_row(ui, ShortcutAction::TagClear, tr(lang, "태그 해제"));
                             }
                             // ── 우열: 보기 · 확대 · 파일 ──
                             {
                                 let ui = &mut c[1];
                                 head(ui, tr(lang, "보기"));
-                                row(ui, &["T"], tr(lang, "단일↔그리드"));
-                                row(ui, &["D"], tr(lang, "원본(ORIG)"));
-                                row(ui, &["I"], "EXIF");
-                                row(ui, &["H"], tr(lang, "히스토그램"));
-                                row(ui, &["\\"], tr(lang, "룩 끄기"));
-                                row(ui, &["M"], tr(lang, "촬영 위치 지도"));
-                                row(ui, &["A"], tr(lang, "AF 포인트"));
-                                row(ui, &["]"], tr(lang, "구도선"));
-                                row(ui, &["F"], tr(lang, "라벨 필터 순환"));
-                                row(ui, &["F11"], tr(lang, "전체화면"));
+                                action_row(ui, ShortcutAction::ToggleView, tr(lang, "단일↔그리드"));
+                                action_row(ui, ShortcutAction::FullRaw, tr(lang, "원본(ORIG)"));
+                                action_row(ui, ShortcutAction::Exif, "EXIF");
+                                action_row(ui, ShortcutAction::Histogram, tr(lang, "히스토그램"));
+                                // 누르고 있는 동안 룩 끄기(#125). 기본 `\`.
+                                action_row(ui, ShortcutAction::LookCompare, tr(lang, "룩 끄기"));
+                                action_row(ui, ShortcutAction::Map, tr(lang, "촬영 위치 지도"));
+                                action_row(ui, ShortcutAction::Af, tr(lang, "AF 포인트"));
+                                action_row(ui, ShortcutAction::Guides, tr(lang, "구도선"));
+                                action_row(ui, ShortcutAction::Filter, tr(lang, "라벨 필터 순환"));
+                                action_row(ui, ShortcutAction::Fullscreen, tr(lang, "전체화면"));
 
                                 head(ui, tr(lang, "확대"));
-                                row(ui, &[tr(lang, "클릭"), "Space", "Z"], tr(lang, "창맞춤↔1:1"));
+                                let mut fit_keys = ks(&[tr(lang, "클릭")]);
+                                fit_keys.extend(caps(ShortcutAction::Fit));
+                                row(ui, &fit_keys, tr(lang, "창맞춤↔1:1"));
                                 row(
                                     ui,
-                                    &[format!("Ctrl+{}", tr(lang, "휠")).as_str(), tr(lang, "핀치")],
+                                    &ks(&[format!("Ctrl+{}", tr(lang, "휠")).as_str(), tr(lang, "핀치")]),
                                     tr(lang, "연속 확대"),
                                 );
-                                row(ui, &[tr(lang, "드래그")], tr(lang, "이동(확대 중)"));
+                                row(ui, &ks(&[tr(lang, "드래그")]), tr(lang, "이동(확대 중)"));
 
                                 head(ui, tr(lang, "파일"));
-                                row(ui, &[format!("{}O", cmd).as_str()], tr(lang, "폴더 열기"));
-                                row(ui, &[format!("{}E", cmd).as_str(), "Enter"], tr(lang, "전송"));
-                                row(ui, &[tr(lang, "드래그")], tr(lang, "드래그앤드롭으로 폴더 열기"));
+                                action_row(ui, ShortcutAction::OpenFolder, tr(lang, "폴더 열기"));
+                                let mut transfer_keys = caps(ShortcutAction::Transfer);
+                                transfer_keys.push("Enter".into());
+                                row(ui, &transfer_keys, tr(lang, "전송"));
+                                row(ui, &ks(&[tr(lang, "드래그")]), tr(lang, "드래그앤드롭으로 폴더 열기"));
                             }
                         });
                     });
