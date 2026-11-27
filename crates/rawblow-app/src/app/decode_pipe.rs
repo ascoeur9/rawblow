@@ -345,14 +345,16 @@ impl RawBlowApp {
                         uploads += 1;
                     }
                 } else {
-                    // 히스토그램은 조정 전(#130). 텍스처만 조정을 입힌다. 썸네일 분기는 위쪽.
-                    self.upload_decoded_preview(
+                    // 히스토그램은 표시 조정 전(#130)·LUT 전(#125)·모니터 변환 전(#122). 텍스처만 조정과 룩을 입힌다.
+                    // 썸네일 분기는 위쪽.
+                    self.upload_look_preview(
                         ctx,
                         res.id,
                         &img.rgba,
                         img.width,
                         img.height,
                         res.full_raw,
+                        img.source_histo,
                     );
                     uploads += 1;
                     if res.full_raw {
@@ -389,9 +391,11 @@ impl RawBlowApp {
         }
     }
 
-    /// 프리뷰 RGBA를 보관하고, 지금 조정으로 만든 텍스처만 올린다(#130).
-    /// 히스토그램은 `rgba` 원본으로 계산한다. 워커에 다시 요청하지 않는다.
-    pub(super) fn upload_decoded_preview(
+    /// 프리뷰 RGBA를 보관하고, 지금 표시 조정(#130)과 룩으로 만든 텍스처만 올린다(#125).
+    /// 히스토그램은 디코더가 준 모니터 변환 전 값(#122)을 쓰고, 없으면 `rgba` 원본으로 계산한다.
+    /// 워커에 다시 요청하지 않는다.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn upload_look_preview(
         &mut self,
         ctx: &egui::Context,
         id: usize,
@@ -399,53 +403,112 @@ impl RawBlowApp {
         width: u32,
         height: u32,
         full: bool,
+        source_histo: Option<[[u32; 64]; 3]>,
     ) {
-        self.histo.insert(id, compute_histo(rgba));
-        self.preview_src.insert(
+        let histo = match source_histo {
+            Some(bins) => histo_from_bins(bins),
+            None => compute_histo(rgba),
+        };
+        self.histo.insert(id, histo);
+        self.look_src.insert(
             id,
-            PreviewSrc {
+            LookSrc {
                 rgba: rgba.to_vec(),
                 width: width as usize,
                 height: height as usize,
                 full,
-                graded: self.adjust_gen,
+                graded: self.look_gen,
             },
         );
-        let pixels = rawblow_core::adjust::display_rgba(rgba, self.cfg.adjust, self.adjust_compare);
-        let color = egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &pixels);
-        let handle = ctx.load_texture(format!("tex{id}"), color, egui::TextureOptions::LINEAR);
-        self.cache.insert(id, handle, full);
-        self.prune_preview_src();
+        self.reupload_look(ctx, id);
     }
 
-    /// 조정 슬라이더가 바뀐 뒤. 값을 범위에 맞추고 설정에만 남긴 다음, 보관 중인 버퍼로 텍스처를 다시 만든다.
+    pub(super) fn set_look_name(&mut self, name: &str, ctx: &egui::Context) {
+        self.cfg.look.name = name.to_string();
+        self.persist_cfg();
+        self.look_changed(ctx);
+    }
+
+    /// `cfg.look`을 바꾼 뒤 부른다: 캐시를 버리고 화면 텍스처를 새 룩으로 다시 칠한다.
+    /// (설정 기본값 복원처럼 set_look_name을 거치지 않고 룩을 바꾸는 곳도 쓴다.)
+    pub(super) fn look_changed(&mut self, ctx: &egui::Context) {
+        self.look_cache = None;
+        self.look_gen = self.look_gen.wrapping_add(1);
+        self.regrade_looks(ctx, 4);
+    }
+
+    /// 조정 슬라이더가 바뀐 뒤(#130). 값을 범위에 맞추고 설정에만 남긴 다음, 보관 중인 버퍼로 텍스처를 다시 만든다.
+    /// 룩 캐시는 그대로 둔다(LUT 파일을 다시 읽지 않는다).
     pub(super) fn note_adjust_changed(&mut self, ctx: &egui::Context) {
         self.cfg.adjust = self.cfg.adjust.clamped();
         self.persist_cfg();
-        self.adjust_gen = self.adjust_gen.wrapping_add(1);
-        self.regrade_budget(ctx, 4);
+        self.look_gen = self.look_gen.wrapping_add(1);
+        self.regrade_looks(ctx, 4);
     }
 
-    /// `\`를 누르는 동안 조정을 끈다. 떼면 다시 켠다. 디코드 큐는 건드리지 않는다.
-    pub(super) fn poll_adjust_compare(&mut self, ctx: &egui::Context) {
+    /// `.cube` 경로를 룩으로 둔다. 읽거나 파싱하지 못하면 이전 룩을 그대로 두고 토스트를 띄운다.
+    /// 그 경로는 저장하지 않는다.
+    pub(super) fn set_cube_path(&mut self, path: &std::path::Path, ctx: &egui::Context) -> bool {
+        let pref = rawblow_core::lut::LookPref {
+            name: "file".into(),
+            cube_path: path.display().to_string(),
+        };
+        let Some(lut) = resolve_look(&pref) else {
+            self.toast_error(tr(self.lang, "LUT를 읽지 못했습니다").into());
+            return false;
+        };
+        self.look_cache = Some((look_key(&pref), Some(lut)));
+        self.cfg.look = pref;
+        self.persist_cfg();
+        self.look_gen = self.look_gen.wrapping_add(1);
+        self.regrade_looks(ctx, 4);
+        true
+    }
+
+    /// 저장된 `.cube`를 읽지 못하면 한 번 알리고 룩을 없음으로 되돌려 저장한다.
+    /// 되돌린 뒤에는 `name`이 비어 다시 울리지 않는다.
+    fn drop_unreadable_cube(&mut self, ctx: &egui::Context) {
+        if self.cfg.look.name != "file" || self.cached_lut().is_some() {
+            return;
+        }
+        self.cfg.look = rawblow_core::lut::LookPref::default();
+        self.look_cache = None;
+        self.persist_cfg();
+        self.look_gen = self.look_gen.wrapping_add(1);
+        self.regrade_looks(ctx, 4);
+        self.toast_error(tr(self.lang, "LUT를 읽지 못했습니다").into());
+    }
+
+    pub(super) fn poll_look_compare(&mut self, ctx: &egui::Context) {
+        self.drop_unreadable_cube(ctx);
         let held = !self.has_modal()
             && !ctx.wants_keyboard_input()
             && ctx.input(|i| i.key_down(egui::Key::Backslash));
-        if held != self.adjust_compare {
-            self.adjust_compare = held;
-            self.adjust_gen = self.adjust_gen.wrapping_add(1);
-            self.regrade_budget(ctx, 4);
-        } else if self.preview_src.values().any(|s| s.graded != self.adjust_gen) {
-            self.regrade_budget(ctx, 2);
+        if held != self.look_compare {
+            self.look_compare = held;
+            self.look_gen = self.look_gen.wrapping_add(1);
+            self.regrade_looks(ctx, 4);
+        } else if self.look_src.values().any(|s| s.graded != self.look_gen) {
+            self.regrade_looks(ctx, 2);
         }
     }
 
-    fn regrade_budget(&mut self, ctx: &egui::Context, budget: usize) {
+    fn cached_lut(&mut self) -> Option<&rawblow_core::lut::Lut3d> {
+        let key = look_key(&self.cfg.look);
+        let fresh = matches!(self.look_cache.as_ref(), Some((k, _)) if k == &key);
+        if !fresh {
+            let lut = resolve_look(&self.cfg.look);
+            self.look_cache = Some((key, lut));
+        }
+        self.look_cache.as_ref().and_then(|(_, lut)| lut.as_ref())
+    }
+
+    fn regrade_looks(&mut self, ctx: &egui::Context, budget: usize) {
         let cur = self.current_real();
         let mut stale: Vec<usize> = self
-            .preview_src
+            .look_src
             .iter()
-            .filter(|(_, s)| s.graded != self.adjust_gen)
+            .filter(|(_, s)| s.graded != self.look_gen)
             .map(|(id, _)| *id)
             .collect();
         stale.sort_by_key(|id| match cur {
@@ -453,31 +516,51 @@ impl RawBlowApp {
             _ => 1,
         });
         for id in stale.into_iter().take(budget) {
-            self.reupload_preview(ctx, id);
+            self.reupload_look(ctx, id);
         }
     }
 
-    fn reupload_preview(&mut self, ctx: &egui::Context, id: usize) {
-        let Some(src) = self.preview_src.get(&id) else { return };
-        if src.graded == self.adjust_gen {
-            return;
-        }
-        let pixels = rawblow_core::adjust::display_rgba(&src.rgba, self.cfg.adjust, self.adjust_compare);
+    /// 텍스처 = 디코드 버퍼 → 표시 조정(#130) → 룩(#125). `\`를 누르는 동안은 둘 다 끈다.
+    /// 노출·색온도는 입력 보정이라 룩 앞에 둔다(룩은 보정된 사진을 받는다).
+    fn reupload_look(&mut self, ctx: &egui::Context, id: usize) {
+        let Some(src) = self.look_src.get(&id) else { return };
+        let compare = self.look_compare;
+        let rgba = rawblow_core::adjust::display_rgba(&src.rgba, self.cfg.adjust, compare);
         let w = src.width;
         let h = src.height;
         let full = src.full;
+        let lut = self.cached_lut().cloned();
+        let pixels = rawblow_core::lut::display_rgba(&rgba, lut.as_ref(), compare);
         let color = egui::ColorImage::from_rgba_unmultiplied([w, h], &pixels);
         let handle = ctx.load_texture(format!("tex{id}"), color, egui::TextureOptions::LINEAR);
         self.cache.insert(id, handle, full);
-        if let Some(s) = self.preview_src.get_mut(&id) {
-            s.graded = self.adjust_gen;
+        if let Some(s) = self.look_src.get_mut(&id) {
+            s.graded = self.look_gen;
         }
-        self.prune_preview_src();
+        self.prune_look_src();
     }
 
-    fn prune_preview_src(&mut self) {
+    fn prune_look_src(&mut self) {
         let live: std::collections::HashSet<usize> = self.cache.ids().into_iter().collect();
-        self.preview_src.retain(|id, _| live.contains(id));
+        self.look_src.retain(|id, _| live.contains(id));
+    }
+}
+
+fn look_key(pref: &rawblow_core::lut::LookPref) -> String {
+    format!("{}\n{}", pref.name, pref.cube_path)
+}
+
+fn resolve_look(pref: &rawblow_core::lut::LookPref) -> Option<rawblow_core::lut::Lut3d> {
+    if pref.name.is_empty() {
+        None
+    } else if let Some(lut) = rawblow_core::lut::builtin(&pref.name) {
+        Some(lut)
+    } else if pref.name == "file" {
+        std::fs::read_to_string(&pref.cube_path)
+            .ok()
+            .and_then(|text| rawblow_core::lut::parse_cube(&text).ok())
+    } else {
+        None
     }
 }
 
@@ -493,24 +576,110 @@ mod tests {
     }
 
     #[test]
+    fn look_change_keeps_source_histogram_and_does_not_queue_decode() {
+        let rgba = [128u8, 128, 128, 255];
+        ctx_run(|app, ctx| {
+            app.pending_preview.insert(7);
+            app.upload_look_preview(ctx, 3, &rgba, 1, 1, false, None);
+            assert_eq!(app.histo.get(&3).map(|h| h.bins[0][32]), Some(1));
+            let pending = app.pending_preview.clone();
+            app.set_look_name("Rawblow-Warm", ctx);
+            assert_eq!(app.pending_preview, pending);
+            assert!(!app.pending_preview.contains(&3));
+            assert_eq!(app.look_src.get(&3).map(|s| s.rgba.as_slice()), Some(rgba.as_slice()));
+            assert_eq!(app.cfg.look.name, "Rawblow-Warm");
+            assert!(RawBlowApp::settings_qa_persist_count() > 0);
+            // 히스토그램은 룩을 입힌 뒤에도 원본 128이다.
+            assert_eq!(app.histo.get(&3).map(|h| h.bins[0][32]), Some(1));
+        });
+    }
+
+    #[test]
+    fn bad_cube_does_not_become_a_look_and_good_cube_does() {
+        let dir = std::env::temp_dir().join(format!("rb_lut_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let bad = dir.join("bad.cube");
+        let good = dir.join("good.cube");
+        std::fs::write(&bad, "LUT_1D_SIZE 2\n0 0 0\n").unwrap();
+        std::fs::write(&good, "LUT_3D_SIZE 2\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n").unwrap();
+        ctx_run(|app, ctx| {
+            assert!(!app.set_cube_path(&bad, ctx));
+            assert!(app.toast.as_ref().is_some());
+            assert_eq!(app.cfg.look.name, "");
+            assert!(app.set_cube_path(&good, ctx));
+            assert_eq!(app.cfg.look.name, "file");
+            assert!(app.cached_lut().is_some());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bad_cube_keeps_previous_look_and_is_not_saved() {
+        let dir = std::env::temp_dir().join(format!("rb_lut_keep_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let bad = dir.join("bad.cube");
+        let good = dir.join("good.cube");
+        std::fs::write(&bad, "LUT_1D_SIZE 2\n0 0 0\n").unwrap();
+        std::fs::write(&good, "LUT_3D_SIZE 2\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n").unwrap();
+        ctx_run(|app, ctx| {
+            // 빌트인 룩에서 실패하면 빌트인이 남는다.
+            app.set_look_name("Rawblow-Warm", ctx);
+            let persisted = RawBlowApp::settings_qa_persist_count();
+            assert!(!app.set_cube_path(&bad, ctx));
+            assert_eq!(app.cfg.look.name, "Rawblow-Warm");
+            assert!(app.cfg.look.cube_path.is_empty());
+            assert_eq!(RawBlowApp::settings_qa_persist_count(), persisted);
+            assert!(app.cached_lut().is_some());
+            // 읽은 파일 룩에서 실패하면 그 파일이 남는다.
+            assert!(app.set_cube_path(&good, ctx));
+            let prev = app.cfg.look.clone();
+            assert!(!app.set_cube_path(&dir.join("missing.cube"), ctx));
+            assert_eq!(app.cfg.look, prev);
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unreadable_saved_cube_resets_to_none_once() {
+        let missing = std::env::temp_dir().join(format!("rb_lut_gone_{}.cube", std::process::id()));
+        let _ = std::fs::remove_file(&missing);
+        ctx_run(|app, ctx| {
+            app.cfg.look = rawblow_core::lut::LookPref {
+                name: "file".into(),
+                cube_path: missing.display().to_string(),
+            };
+            let persisted = RawBlowApp::settings_qa_persist_count();
+            app.poll_look_compare(ctx);
+            assert_eq!(app.cfg.look, rawblow_core::lut::LookPref::default());
+            assert!(app.toast.as_ref().is_some());
+            assert_eq!(RawBlowApp::settings_qa_persist_count(), persisted + 1);
+            // 다음 프레임에는 다시 울리지 않는다.
+            app.toast = None;
+            app.poll_look_compare(ctx);
+            assert!(app.toast.is_none());
+            assert_eq!(RawBlowApp::settings_qa_persist_count(), persisted + 1);
+        });
+    }
+
+    #[test]
     fn preview_histogram_uses_source_and_slider_does_not_queue_decode() {
         let rgba = [128u8, 128, 128, 255];
         ctx_run(|app, ctx| {
             app.cfg.adjust.exposure = 1.0;
             app.pending_preview.insert(7);
-            app.upload_decoded_preview(ctx, 3, &rgba, 1, 1, false);
+            app.upload_look_preview(ctx, 3, &rgba, 1, 1, false, None);
             assert_eq!(app.histo.get(&3).map(|h| h.bins[0][32]), Some(1), "히스토그램은 조정 전 128");
             assert_eq!(app.histo.get(&3).map(|h| h.bins[0][63]), Some(0), "255로 올린 뒤의 통이 아니어야 한다");
             assert!(app.pending_preview.contains(&7));
             assert!(!app.pending_preview.contains(&3), "프리뷰 업로드가 디코드를 다시 걸면 안 된다");
-            assert_eq!(app.preview_src.get(&3).map(|s| s.rgba.as_slice()), Some(rgba.as_slice()));
+            assert_eq!(app.look_src.get(&3).map(|s| s.rgba.as_slice()), Some(rgba.as_slice()));
             let pending = app.pending_preview.clone();
             let thumb_pending = app.pending_thumb.clone();
             app.cfg.adjust.exposure = 0.0;
             app.note_adjust_changed(ctx);
             assert_eq!(app.pending_preview, pending);
             assert_eq!(app.pending_thumb, thumb_pending);
-            assert_eq!(app.preview_src.get(&3).map(|s| s.rgba.as_slice()), Some(rgba.as_slice()));
+            assert_eq!(app.look_src.get(&3).map(|s| s.rgba.as_slice()), Some(rgba.as_slice()));
             assert!(app.cfg.adjust.is_neutral());
             assert!(RawBlowApp::settings_qa_persist_count() > 0, "마지막 조정은 앱 설정에 남긴다");
         });
@@ -527,5 +696,47 @@ mod tests {
             assert_eq!(app.cfg.adjust.temperature, -1.0);
             assert_eq!(app.cfg.adjust.grain, 0.0);
         });
+    }
+
+    /// 텍스처는 표시 조정(#130) 다음 룩(#125)이고, `\`를 누르는 동안은 둘 다 꺼진다.
+    #[test]
+    fn texture_is_adjust_then_look_and_backslash_turns_both_off() {
+        let dir = std::env::temp_dir().join(format!("rb_adjust_look_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let red = dir.join("red.cube");
+        // 어떤 입력이든 (1, 0, 0)으로 보내는 LUT.
+        std::fs::write(&red, "LUT_3D_SIZE 2\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n1 0 0\n").unwrap();
+        RawBlowApp::settings_qa_begin();
+        let mut app = RawBlowApp::for_settings_qa();
+        app.show_settings = false;
+        let ctx = egui::Context::default();
+        let rgba = [128u8, 128, 128, 255];
+        let pixel = |out: &egui::FullOutput| -> Option<[u8; 3]> {
+            out.textures_delta.set.iter().rev().find_map(|(_, d)| match &d.image {
+                egui::ImageData::Color(img) => img.pixels.first().map(|c| [c.r(), c.g(), c.b()]),
+                _ => None,
+            })
+        };
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            assert!(app.set_cube_path(&red, ctx));
+            app.cfg.adjust.exposure = -1.0;
+            app.upload_look_preview(ctx, 3, &rgba, 1, 1, false, None);
+        });
+        // 조정을 룩 뒤에 두면 빨강의 절반(128, 0, 0)이 된다.
+        assert_eq!(pixel(&out), Some([255, 0, 0]), "조정 다음 룩");
+        let held = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Backslash,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+        let out = ctx.run(held, |ctx| app.poll_look_compare(ctx));
+        assert!(app.look_compare);
+        assert_eq!(pixel(&out), Some([128, 128, 128]), "누르는 동안 조정과 룩을 둘 다 끈다");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

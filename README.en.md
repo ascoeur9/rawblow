@@ -148,7 +148,7 @@ For a clean release build for distribution (standalone, with build paths and use
 
 ## Supported formats and verified cameras
 
-RawBlow reads `.ARW` `.CR2` `.CR3` `.NEF` `.ORF` `.RW2` `.RAF` `.DNG` `.PEF` `.SRW` `.RAW` for RAW, and `.JPG` `.JPEG` `.PNG` `.WEBP` `.HEIC` `.HEIF` `.TIF` `.TIFF` for regular images.
+RawBlow reads `.ARW` `.CR2` `.CR3` `.NEF` `.ORF` `.RW2` `.RAF` `.DNG` `.PEF` `.SRW` `.RAW` `.X3F` for RAW, and `.JPG` `.JPEG` `.PNG` `.WEBP` `.HEIC` `.HEIF` `.TIF` `.TIFF` for regular images. `.X3F` is shown from its embedded JPEG preview; full Foveon develop is not done.
 
 **OS.** Officially released for Windows 11 and macOS (Apple Silicon). Linux is supported in code but ships no prebuilt binary, so build from source.
 
@@ -185,7 +185,7 @@ If the app crashes, a `rawblow_crash.log` file is created on your desktop automa
 
 ## Known limitations
 
-- Color management goes from the embedded ICC profile to sRGB. The monitor's ICC profile is not consulted; sRGB is assumed.
+- The default converts an embedded ICC profile to sRGB. With wide-gamut display on, macOS uses Display P3, Windows uses the monitor ICC of that window, and Linux stays on sRGB.
 - There is no screen for rebinding shortcuts. The defaults are fixed.
 - Some formats such as HEIC rely on the platform decoder.
 - Original view displays within the GPU texture limit (roughly 8192 px on the long edge).
