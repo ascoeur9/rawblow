@@ -2060,8 +2060,9 @@ impl RawBlowApp {
         // 다른 팝업(콤보 등)까지 Esc·휠을 막을 이유는 없다.
         let look_menu_open = ctx.memory(|m| m.is_popup_open(egui::Id::new(views::LOOK_MENU_ID)));
         let (modifiers, scroll) = ctx.input(|i| (i.modifiers, i.raw_scroll_delta.y));
-        let lang = self.lang;
 
+        // 키로 실행되는 동작은 고정 키(아래 화살표·Esc와 루프 밖 Enter·?·F1) 아니면 저장된 맵 하나다(#123).
+        // 맵은 한 키에 동작 하나라 겹쳐 실행되거나 둘 다 막히는 키가 없다.
         ctx.input(|i| {
             use egui::Key;
             for ev in &i.events {
@@ -2069,40 +2070,17 @@ impl RawBlowApp {
                     continue;
                 };
                 match key {
-                    // 화살표·Esc는 재지정하지 않는다(#123).
                     // 그리드: ←/→ = ±1, ↑/↓ = ±한 행(cols). 단일뷰: 모두 ±1.
                     Key::ArrowRight => self.nav(1),
                     Key::ArrowLeft => self.nav(-1),
                     Key::ArrowDown => self.nav(self.row_step()),
                     Key::ArrowUp => self.nav(-self.row_step()),
                     Key::Escape if !look_menu_open => self.fullscreen = false,
-                    // Enter·?·F1은 루프 아래에서 소비한다. 여기선 저장된 맵으로 넘기지 않는다.
+                    // Enter·?·F1은 루프 아래에서 소비한다. Tab·화면 배율 키는 egui가 쓴다.
                     _ if shortcut_key_locked(*key, *modifiers) => {}
                     _ => {
-                        let chord = chord_from_key(*key, *modifiers);
-                        match self.cfg.shortcuts.resolve(&chord) {
-                            Resolve::One(action) => self.apply_shortcut(action),
-                            Resolve::Conflict(actions) => {
-                                let text = actions
-                                    .iter()
-                                    .map(|a| shortcut_action_label(&self.cfg, lang, *a))
-                                    .collect::<Vec<_>>()
-                                    .join(" · ");
-                                self.toast_info(text);
-                            }
-                            Resolve::None => {
-                                // B(그리드 일괄)·Ctrl/⌘O(폴더)·](구도 보조선 #90)는 그 키를 저장된 맵이 쓰지 않을 때만.
-                                if *key == Key::B && self.view == ViewMode::Grid {
-                                    self.bulk_open = true;
-                                    self.bulk_searched = false;
-                                    self.bulk_hits.clear();
-                                } else if *key == Key::O && modifiers.command {
-                                    self.pick_folder();
-                                } else if *key == Key::CloseBracket && !modifiers.command && !modifiers.shift {
-                                    // 단일 보기에서만 그려지고, 선택은 앱 설정에 남는다.
-                                    self.cycle_guides();
-                                }
-                            }
+                        if let Resolve::One(action) = self.cfg.shortcuts.resolve(&chord_from_key(*key, *modifiers)) {
+                            self.apply_shortcut(action);
                         }
                     }
                 }
@@ -2186,7 +2164,20 @@ impl RawBlowApp {
                 self.apply_label_filter(next);
             }
             ShortcutAction::Transfer => self.open_transfer(),
+            ShortcutAction::OpenFolder => self.pick_folder(),
             ShortcutAction::Jump => self.jump_open = true,
+            // 그리드 보기에서만 연다(툴바 「일괄」 버튼도 그리드에만 있다).
+            ShortcutAction::Bulk => {
+                if self.view == ViewMode::Grid {
+                    self.bulk_open = true;
+                    self.bulk_searched = false;
+                    self.bulk_hits.clear();
+                }
+            }
+            // 구도 보조선(#90). 단일 보기에서만 그려지고, 선택은 앱 설정에 남는다.
+            ShortcutAction::Guides => self.cycle_guides(),
+            // 누르고 있는 동안만이라 눌림이 아니라 poll_look_compare가 매 프레임 읽는다.
+            ShortcutAction::LookCompare => {}
             ShortcutAction::Fullscreen => self.fullscreen = !self.fullscreen,
             // GPS 미니 지도(#38) / AF 포인트(#37): 토글 즉시 저장.
             ShortcutAction::Map => {
@@ -2241,9 +2232,14 @@ impl RawBlowApp {
                             .color(theme::INK3),
                     );
                     ui.add_space(28.0);
+                    // 키는 저장된 단축키(#123). 키 없음이면 이름만.
+                    let open_label = match first_key_caption(&self.cfg.shortcuts, ShortcutAction::OpenFolder) {
+                        Some(key) => format!("  {}  {}  ", tr(lang, "폴더 열기"), key),
+                        None => format!("  {}  ", tr(lang, "폴더 열기")),
+                    };
                     if ui
                         .add(egui::Button::new(
-                            egui::RichText::new(format!("  {}  {}O  ", tr(lang, "폴더 열기"), cmd_key())).color(Color32::from_rgb(0x0a, 0x14, 0x20)),
+                            egui::RichText::new(open_label).color(Color32::from_rgb(0x0a, 0x14, 0x20)),
                         ).fill(theme::ACCENT))
                         .clicked()
                     {

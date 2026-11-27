@@ -481,9 +481,18 @@ impl RawBlowApp {
 
     pub(super) fn poll_look_compare(&mut self, ctx: &egui::Context) {
         self.drop_unreadable_cube(ctx);
+        // 키는 저장된 단축키(#123, 기본 `\`). 수식키까지 같아야 한다 — ⇧\ 같은 다른 동작과 겹치지 않게.
+        let keys = self.cfg.shortcuts.chords(ShortcutAction::LookCompare);
         let held = !self.has_modal()
             && !ctx.wants_keyboard_input()
-            && ctx.input(|i| i.key_down(egui::Key::Backslash));
+            && ctx.input(|i| {
+                keys.iter().any(|c| {
+                    egui_key(&c.key).is_some_and(|k| i.key_down(k))
+                        && i.modifiers.command == c.command
+                        && i.modifiers.shift == c.shift
+                        && i.modifiers.alt == c.alt
+                })
+            });
         if held != self.look_compare {
             self.look_compare = held;
             self.look_gen = self.look_gen.wrapping_add(1);
