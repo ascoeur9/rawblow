@@ -24,6 +24,7 @@ pub mod object_detect;
 pub mod organize;
 pub mod quality;
 pub mod scan;
+pub mod shortcut;
 pub mod sidecar;
 pub mod text;
 pub mod transfer;

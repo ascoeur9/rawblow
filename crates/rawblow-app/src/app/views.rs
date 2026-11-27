@@ -3288,6 +3288,24 @@ mod tests {
         assert!(!menu_open(&ctx), "돌아와도 메뉴가 다시 뜨지 않는다");
     }
 
+    /// `]`(구도 보조선 #90)는 저장된 단축키(#123)가 그 키를 쓰지 않을 때만 보조선을 바꾼다(B·Ctrl/⌘O와 같다).
+    #[test]
+    fn close_bracket_cycles_guides_unless_the_stored_map_uses_it() {
+        use rawblow_core::guides::GuidePreset;
+        use rawblow_core::shortcut::{Chord, ShortcutAction};
+        let ctx = ko_ctx();
+        let mut app = hud_app(3);
+        assert_eq!(app.cfg.guides, GuidePreset::Off);
+        frame(&ctx, &mut app, vec![key(egui::Key::CloseBracket)], |app, ctx| app.handle_keys(ctx));
+        assert_eq!(app.cfg.guides, GuidePreset::Thirds, "기본 맵에는 ]가 없어 보조선이 바뀐다");
+
+        app.cfg.shortcuts.bind(ShortcutAction::Histogram, Chord::plain("CloseBracket"));
+        let hist = app.show_hist;
+        frame(&ctx, &mut app, vec![key(egui::Key::CloseBracket)], |app, ctx| app.handle_keys(ctx));
+        assert_eq!(app.show_hist, !hist, "]를 맵에 넣으면 그 동작이 실행된다");
+        assert_eq!(app.cfg.guides, GuidePreset::Thirds, "그때는 보조선을 바꾸지 않는다");
+    }
+
     /// 메뉴 안의 스크롤바·안내 줄을 눌러도 메뉴는 열린 채(항목을 누르면 닫힌다 — picking 테스트).
     #[test]
     fn clicking_inside_the_menu_off_items_keeps_it_open() {
