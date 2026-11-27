@@ -2,7 +2,7 @@
 //! ([`Chord::is_fixed`])뿐이다.
 //!
 //! 한 키는 언제나 동작 하나에만 묶인다. 같은 동작에 키가 둘인 것은 괜찮다
-//! (창맞춤 Space·Z, 다시 실행 Ctrl+Shift+Z·Ctrl+Y).
+//! (다시 실행 Ctrl+Shift+Z·Ctrl+Y).
 //! - [`ShortcutMap::bind`]는 그 동작의 키를 새 키 하나로 바꾼다. 새 키를 다른 동작이 쓰고 있었으면
 //!   그 동작은 그 키를 잃는다. 그래서 키가 하나도 안 남으면, 바꾼 동작이 직전까지 쓰던 첫 키를
 //!   받는다(맞바꿈). 바꾼 동작에 키가 없었으면 그 동작은 키 없음이 된다.
@@ -204,7 +204,6 @@ fn default_bindings() -> Vec<Binding> {
     put(ShortcutAction::TagClear, "Num0", false, true);
     put(ShortcutAction::ToggleView, "T", false, false);
     put(ShortcutAction::Fit, "Space", false, false);
-    put(ShortcutAction::Fit, "Z", false, false);
     put(ShortcutAction::FullRaw, "D", false, false);
     put(ShortcutAction::Exif, "I", false, false);
     put(ShortcutAction::Histogram, "H", false, false);
@@ -369,9 +368,9 @@ mod tests {
     #[test]
     fn an_action_that_keeps_another_key_only_loses_the_taken_one() {
         let mut map = ShortcutMap::default();
-        // 창맞춤은 Space·Z. Z를 가져가면 Space만 남고, 채택이 쓰던 Q는 비게 된다.
-        assert_eq!(map.bind(ShortcutAction::Pick, Chord::plain("Z")), Ok(Some(ShortcutAction::Fit)));
-        assert_eq!(keys(&map, ShortcutAction::Fit), vec![Chord::plain("Space")]);
+        // 다시 실행은 Ctrl+Shift+Z·Ctrl+Y. Ctrl+Y를 가져가면 Ctrl+Shift+Z만 남고, 채택이 쓰던 Q는 비게 된다.
+        assert_eq!(map.bind(ShortcutAction::Pick, Chord::new("Y", true, false, false)), Ok(Some(ShortcutAction::Redo)));
+        assert_eq!(keys(&map, ShortcutAction::Redo), vec![Chord::new("Z", true, true, false)]);
         assert_eq!(map.resolve(&Chord::plain("Q")), Resolve::None);
         assert!(duplicated(&map).is_empty());
     }
@@ -379,10 +378,10 @@ mod tests {
     #[test]
     fn an_action_with_two_keys_hands_over_its_first_key() {
         let mut map = ShortcutMap::default();
-        assert_eq!(map.bind(ShortcutAction::Fit, Chord::plain("Q")), Ok(Some(ShortcutAction::Pick)));
-        assert_eq!(keys(&map, ShortcutAction::Fit), vec![Chord::plain("Q")]);
-        assert_eq!(keys(&map, ShortcutAction::Pick), vec![Chord::plain("Space")]);
-        assert_eq!(map.resolve(&Chord::plain("Z")), Resolve::None, "창맞춤의 둘째 키는 풀린다");
+        assert_eq!(map.bind(ShortcutAction::Redo, Chord::plain("Q")), Ok(Some(ShortcutAction::Pick)));
+        assert_eq!(keys(&map, ShortcutAction::Redo), vec![Chord::plain("Q")]);
+        assert_eq!(keys(&map, ShortcutAction::Pick), vec![Chord::new("Z", true, true, false)]);
+        assert_eq!(map.resolve(&Chord::new("Y", true, false, false)), Resolve::None, "다시 실행의 둘째 키는 풀린다");
     }
 
     #[test]
@@ -404,9 +403,9 @@ mod tests {
     #[test]
     fn rebinding_to_its_own_key_changes_nobody_else() {
         let mut map = ShortcutMap::default();
-        assert_eq!(map.bind(ShortcutAction::Fit, Chord::plain("Z")), Ok(None));
-        assert_eq!(keys(&map, ShortcutAction::Fit), vec![Chord::plain("Z")]);
-        assert_eq!(map.resolve(&Chord::plain("Space")), Resolve::None);
+        assert_eq!(map.bind(ShortcutAction::Redo, Chord::new("Y", true, false, false)), Ok(None));
+        assert_eq!(keys(&map, ShortcutAction::Redo), vec![Chord::new("Y", true, false, false)]);
+        assert_eq!(map.resolve(&Chord::new("Z", true, true, false)), Resolve::None);
     }
 
     #[test]
