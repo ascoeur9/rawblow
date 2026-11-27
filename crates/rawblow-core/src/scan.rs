@@ -64,7 +64,10 @@ pub fn scan_folder(folder: &Path, recursive: bool, sort: SortOrder) -> Vec<Entry
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_string();
-            Entry::from_members(stem, members)
+            let mut e = Entry::from_members(stem, members);
+            // 바디 프로텍트(#138): 스캔 시 1회만 읽기 전용 비트를 기록한다.
+            e.refresh_protected();
+            e
         })
         .collect();
 
@@ -236,4 +239,70 @@ fn take_digits(it: &mut std::iter::Peekable<std::str::Chars>) -> String {
         }
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::is_readonly_file;
+    use std::fs;
+
+    #[cfg(unix)]
+    fn set_mode(p: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(p, fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[cfg(not(unix))]
+    fn set_mode(p: &Path, mode: u32) {
+        let mut perm = fs::metadata(p).unwrap().permissions();
+        perm.set_readonly(mode & 0o200 == 0);
+        fs::set_permissions(p, perm).unwrap();
+    }
+
+    /// 테스트 종료 시 tempdir 삭제가 막히지 않도록 쓰기 권한을 되돌린다.
+    fn restore_writable(dir: &Path) {
+        for e in fs::read_dir(dir).unwrap().flatten() {
+            set_mode(&e.path(), 0o644);
+        }
+    }
+
+    #[test]
+    fn is_protected_reads_readonly_bit() {
+        let dir = tempfile::tempdir().unwrap();
+        let rw = dir.path().join("DSC_0001.NEF");
+        let ro = dir.path().join("DSC_0002.NEF");
+        fs::write(&rw, b"x").unwrap();
+        fs::write(&ro, b"x").unwrap();
+        set_mode(&rw, 0o644);
+        set_mode(&ro, 0o444);
+        assert!(!is_readonly_file(&rw), "0o644는 프로텍트 아님");
+        assert!(is_readonly_file(&ro), "0o444는 프로텍트");
+        assert!(!is_readonly_file(&dir.path().join("missing.NEF")), "없는 파일은 false");
+        restore_writable(dir.path());
+    }
+
+    #[test]
+    fn is_protected_set_at_scan_from_members() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        // A: RAW+JPG 중 JPG만 읽기 전용 → 항목 전체가 프로텍트.
+        // B: 모두 쓰기 가능 → 프로텍트 아님.
+        // C: 멤버는 쓰기 가능, 비멤버 사이드카(.xmp)만 읽기 전용 → 프로텍트 아님.
+        for f in ["A.NEF", "A.JPG", "B.NEF", "C.NEF", "C.xmp"] {
+            fs::write(d.join(f), b"x").unwrap();
+            set_mode(&d.join(f), 0o644);
+        }
+        set_mode(&d.join("A.JPG"), 0o444);
+        set_mode(&d.join("C.xmp"), 0o444);
+
+        let entries = scan_folder(d, false, SortOrder::Name);
+        let get = |stem: &str| entries.iter().find(|e| e.stem == stem).unwrap();
+        assert_eq!(get("A").members.len(), 2);
+        assert!(get("A").protected, "멤버 하나라도 읽기 전용이면 프로텍트");
+        assert!(!get("B").protected);
+        assert!(!get("C").protected, "비멤버 사이드카는 세지 않음");
+        assert_eq!(get("C").members.len(), 1, "xmp는 멤버가 아님");
+        restore_writable(d);
+    }
 }
