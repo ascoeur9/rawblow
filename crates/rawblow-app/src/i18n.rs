@@ -132,6 +132,11 @@ fn fmt_lookup(ko: &str) -> Option<(&'static str, &'static str)> {
             "Failed to save selections for previous folder ({}) — recent changes may be lost",
             "前のフォルダ（{}）のセレクト保存に失敗 — 直近の変更が失われた可能性があります",
         ),
+        // #72 툴바 Single/Grid 툴팁. 키는 저장된 단축키(#123).
+        "{} 키로 전환" => ("Press {} to switch", "{}キーで切替"),
+        // #123 설정 단축키: 바꾼 키를 쓰던 동작이 받은 키(뒤에 키캡) / 키가 없어짐.
+        "{} 키가 바뀌었습니다" => ("{} now uses", "{}のキーが変わりました"),
+        "{} 키가 풀렸습니다" => ("{} now has no key", "{}のキーが解除されました"),
         _ => return None,
     })
 }
@@ -697,8 +702,7 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "핀치" => ("Pinch", "ピンチ"),
         "드래그" => ("Drag", "ドラッグ"),
         "열기" => ("Open", "開く"),
-        // #72 툴바 툴팁 보완(Single/Grid 토글·⚙ 설정 버튼).
-        "T 키로 전환" => ("Press T to switch", "Tキーで切替"),
+        // #72 툴바 툴팁 보완(⚙ 설정 버튼). Single/Grid 토글은 서식 「{} 키로 전환」.
         "설정" => ("Settings", "設定"),
         // #75 디코드 실패 고착 회복 — ⚠ 상태에서 수동 재시도 안내.
         "클릭하여 재시도" => ("Click to retry", "クリックで再試行"),
@@ -920,7 +924,6 @@ mod tests {
             "이 폴더에 표시할 사진이 없습니다",
             "필터와 일치하는 사진이 없습니다",
             "필터 초기화",
-            "T 키로 전환",
             // #69 설정 다듬기 키(대표 2개 스팟체크).
             "기본값 복원",
             "새 버전 자동 확인",
@@ -1047,6 +1050,16 @@ mod tests {
             assert_ne!(tr(Lang::En, ko), ko, "En 번역 누락: {ko}");
             assert_ne!(tr(Lang::Ja, ko), ko, "Ja 번역 누락: {ko}");
         }
+        // 설정 단축키 맞바꿈 안내·툴바 보기 전환 툴팁(#123). 서식이라 fmt_lookup 쪽에서 본다.
+        for ko in ["{} 키로 전환", "{} 키가 바뀌었습니다", "{} 키가 풀렸습니다"] {
+            let (en, ja) = super::fmt_lookup(ko).unwrap_or_else(|| panic!("번역 누락: {ko}"));
+            assert_ne!(en, ko);
+            assert_ne!(ja, ko);
+            assert_eq!(en.matches("{}").count(), 1, "{ko}");
+            assert_eq!(ja.matches("{}").count(), 1, "{ko}");
+        }
+        assert_eq!(trf(Lang::En, "{} 키로 전환", &["T"]), "Press T to switch");
+        assert_eq!(trf(Lang::Ja, "{} 키로 전환", &["T"]), "Tキーで切替");
         assert_eq!(trf(Lang::En, ".cube {}개", &["3"]), ".cube files: 3");
         assert_eq!(trf(Lang::Ja, ".cube {}개", &["3"]), ".cube 3個");
         assert_eq!(trf(Lang::En, ".cube {}개 중 앞 {}개", &["812", "500"]), ".cube files: 812 (showing the first 500)");

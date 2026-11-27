@@ -375,29 +375,67 @@ pub(super) fn chord_from_key(key: egui::Key, modifiers: egui::Modifiers) -> rawb
     }
 }
 
-/// 화살표·Esc·Enter·?·F1은 재지정하지 않는다. `⇧/`도 `?`와 같다.
+/// 바꿀 수 없는 고정 키(화살표·Esc·Enter·?·F1·Tab·화면 배율·복사/붙여넣기 등). 목록은 코어
+/// [`rawblow_core::shortcut::Chord::is_fixed`] 하나다.
 pub(super) fn shortcut_key_locked(key: egui::Key, modifiers: egui::Modifiers) -> bool {
-    matches!(
-        key,
-        egui::Key::ArrowLeft
-            | egui::Key::ArrowRight
-            | egui::Key::ArrowUp
-            | egui::Key::ArrowDown
-            | egui::Key::Escape
-            | egui::Key::Enter
-            | egui::Key::F1
-            | egui::Key::Questionmark
-    ) || (key == egui::Key::Slash && modifiers.shift)
+    chord_from_key(key, modifiers).is_fixed()
+}
+
+/// 저장된 키 이름(`Chord.key`)의 egui 키. 누르고 있는 동안 동작하는 키(#125 `\`)를 읽을 때 쓴다.
+pub(super) fn egui_key(name: &str) -> Option<egui::Key> {
+    egui::Key::ALL.iter().copied().find(|k| key_id(*k) == name)
+}
+
+/// 동작의 첫 키(툴바·레일·안내에 찍는 키). 키 없음이면 None.
+pub(super) fn first_key_caption(map: &rawblow_core::shortcut::ShortcutMap, action: ShortcutAction) -> Option<String> {
+    map.chords(action).first().map(chord_caption)
+}
+
+pub(super) const STAR_ACTIONS: [ShortcutAction; 5] = [
+    ShortcutAction::Star1,
+    ShortcutAction::Star2,
+    ShortcutAction::Star3,
+    ShortcutAction::Star4,
+    ShortcutAction::Star5,
+];
+pub(super) const TAG_ACTIONS: [ShortcutAction; 5] = [
+    ShortcutAction::Tag1,
+    ShortcutAction::Tag2,
+    ShortcutAction::Tag3,
+    ShortcutAction::Tag4,
+    ShortcutAction::Tag5,
+];
+
+/// 별점 1~5(또는 태그 1~5)가 숫자 1~5 하나씩(`shift`면 ⇧숫자)인지 — 「1~5」로 줄여 찍어도 되는지.
+pub(super) fn keys_are_num_range(
+    map: &rawblow_core::shortcut::ShortcutMap,
+    actions: &[ShortcutAction; 5],
+    shift: bool,
+) -> bool {
+    actions.iter().enumerate().all(|(i, action)| {
+        map.chords(*action) == vec![rawblow_core::shortcut::Chord::new(format!("Num{}", i + 1), false, shift, false)]
+    })
 }
 
 /// 재지정 대기 중 이번 프레임의 키 눌림 하나를 이벤트 목록에서 빼 온다. 반복 입력은 무시.
+/// 복사·잘라내기·붙여넣기는 키가 아니라 Copy·Cut·Paste 이벤트로 오므로 그 키(⌘C·⌘X·⌘V)로 돌려준다 —
+/// 고정 키라 「바꿀 수 없습니다」 안내가 나간다.
 pub(super) fn take_shortcut_key(ctx: &egui::Context) -> Option<(egui::Key, egui::Modifiers)> {
     ctx.input_mut(|i| {
         let pos = i.events.iter().position(|ev| {
-            matches!(ev, egui::Event::Key { pressed: true, repeat: false, .. })
+            matches!(
+                ev,
+                egui::Event::Key { pressed: true, repeat: false, .. }
+                    | egui::Event::Copy
+                    | egui::Event::Cut
+                    | egui::Event::Paste(_)
+            )
         })?;
         match i.events.remove(pos) {
             egui::Event::Key { key, modifiers, .. } => Some((key, modifiers)),
+            egui::Event::Copy => Some((egui::Key::C, egui::Modifiers::COMMAND)),
+            egui::Event::Cut => Some((egui::Key::X, egui::Modifiers::COMMAND)),
+            egui::Event::Paste(_) => Some((egui::Key::V, egui::Modifiers::COMMAND)),
             _ => None,
         }
     })
@@ -439,7 +477,7 @@ fn key_glyph(key: &str) -> String {
     }
 }
 
-/// 설정·충돌 토스트·치트시트가 같이 쓰는 동작 이름.
+/// 설정 단축키 목록·맞바꿈 안내가 같이 쓰는 동작 이름.
 pub(super) fn shortcut_action_label(cfg: &Config, lang: Lang, action: ShortcutAction) -> String {
     use rawblow_core::shortcut::ShortcutAction::*;
     let key = match action {
@@ -466,12 +504,16 @@ pub(super) fn shortcut_action_label(cfg: &Config, lang: Lang, action: ShortcutAc
         FullRaw => "원본(ORIG)",
         Exif => "EXIF",
         Histogram => "히스토그램",
+        LookCompare => "룩 끄기",
         Map => "촬영 위치 지도",
         Af => "AF 포인트",
+        Guides => "구도선",
         Filter => "라벨 필터 순환",
         Fullscreen => "전체화면",
         Jump => "점프",
+        Bulk => "일괄 분류(그리드)",
         Transfer => "전송",
+        OpenFolder => "폴더 열기",
     };
     tr(lang, key).to_string()
 }
