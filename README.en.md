@@ -101,7 +101,7 @@ Press them right over the photo. There is no text field, so they respond instant
 | Set / clear color tag | `⇧1` – `⇧5` / `⇧0` |
 | Undo / redo | `⌘/Ctrl+Z` / `⌘/Ctrl+⇧Z` · `⌘/Ctrl+Y` |
 | Single view ↔ grid | `T` |
-| Fit to window ↔ 1:1 | click the photo · `Space` · `Z` |
+| Fit to window ↔ 1:1 | click the photo · `Space` |
 | Zoom in / out | `Ctrl`+wheel · touchpad pinch |
 | Pan while zoomed in | drag the photo |
 | Original view (ORIG) | `D` · toolbar **ORIG** |
@@ -186,7 +186,6 @@ If the app crashes, a `rawblow_crash.log` file is created on your desktop automa
 ## Known limitations
 
 - The default converts an embedded ICC profile to sRGB. With wide-gamut display on, macOS uses Display P3, Windows uses the monitor ICC of that window, and Linux stays on sRGB.
-- There is no screen for rebinding shortcuts. The defaults are fixed.
 - Some formats such as HEIC rely on the platform decoder.
 - Original view displays within the GPU texture limit (roughly 8192 px on the long edge).
 - Pentax files record no lens name anywhere, so the lens field stays empty.
