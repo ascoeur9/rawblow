@@ -459,8 +459,10 @@ impl RawBlowApp {
                                 action_row(ui, ShortcutAction::FullRaw, tr(lang, "원본(ORIG)"));
                                 action_row(ui, ShortcutAction::Exif, "EXIF");
                                 action_row(ui, ShortcutAction::Histogram, tr(lang, "히스토그램"));
-                                // `\`(누르는 동안 룩 끄기 #125)는 저장된 맵과 따로 읽는다(poll_look_compare).
-                                row(ui, &ks(&["\\"]), tr(lang, "룩 끄기"));
+                                // `\`(누르는 동안 룩 #125·표시 조정 #130 끄기)는 저장된 맵과 따로 읽는다(poll_look_compare).
+                                // 고정 높이 창이라 한 줄에 둔다.
+                                let compare_off = format!("{} · {}", tr(lang, "룩 끄기"), tr(lang, "조정 끄기"));
+                                row(ui, &ks(&["\\"]), &compare_off);
                                 action_row(ui, ShortcutAction::Map, tr(lang, "촬영 위치 지도"));
                                 action_row(ui, ShortcutAction::Af, tr(lang, "AF 포인트"));
                                 // `]`(구도 보조선 #90)는 B·Ctrl/⌘O처럼 저장된 맵이 그 키를 쓰지 않을 때만.

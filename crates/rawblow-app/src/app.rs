@@ -224,12 +224,12 @@ pub struct RawBlowApp {
     // 항목(real)별 디코딩 누적 실패 횟수(#64). decode_dead()가 3 이상을 영구 손상으로 간주.
     decode_fails: std::collections::HashMap<usize, u8>,
     histo: std::collections::HashMap<usize, Histo>,
-    /// 단일 보기 프리뷰의 디코드 RGBA(#125). 룩을 바꿔도 다시 디코드하지 않으려고 둔다.
+    /// 단일 보기 프리뷰의 디코드 RGBA(#125). 룩이나 표시 조정(#130)을 바꿔도 다시 디코드하지 않으려고 둔다.
     /// 썸네일은 넣지 않는다.
     look_src: std::collections::HashMap<usize, LookSrc>,
-    /// 룩이나 `\` 비교가 바뀐 세대.
+    /// 룩·표시 조정(#130)이나 `\` 비교가 바뀐 세대.
     look_gen: u64,
-    /// `\`를 누르고 있는 동안 룩을 끈다(#125).
+    /// `\`를 누르고 있는 동안 룩과 표시 조정(#130)을 끈다(#125).
     look_compare: bool,
     /// `(이름\n경로, 파싱된 LUT)`. 키가 같으면 파일을 다시 읽지 않는다.
     look_cache: Option<(String, Option<rawblow_core::lut::Lut3d>)>,

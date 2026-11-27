@@ -712,6 +712,10 @@ pub struct Config {
     /// 마지막 사용자 지정 하나(#90). 이름 붙인 프리셋은 저장하지 않는다.
     #[serde(default)]
     pub guide_custom: crate::guides::GuideCustom,
+    /// 폴더 공통 표시 조정(#130). 누락되면 전부 0이라 픽셀이 바뀌지 않는다.
+    /// 사진별 값은 `session.json`에 두지 않는다.
+    #[serde(default)]
+    pub adjust: crate::adjust::Adjust,
 }
 
 impl Default for Config {
@@ -748,6 +752,7 @@ impl Default for Config {
             lut_dir: String::new(),           // LUT 폴더. 기본은 미지정.
             guides: crate::guides::GuidePreset::Off,
             guide_custom: crate::guides::GuideCustom::default(),
+            adjust: crate::adjust::Adjust::default(), // 표시 조정(#130). 기본은 픽셀 불변.
         }
     }
 }
