@@ -639,6 +639,10 @@ pub struct Config {
     pub last_folder: Option<String>,
     pub recent_folders: Vec<String>,
     pub keymap: KeyMap,
+    /// 실제로 실행되는 단축키(#123). 누락되면 `ShortcutMap::default()`(QWER).
+    /// 필드 `Default`와 `Config::default()`가 같은 맵이라, 어느 쪽으로 채워져도 QWER이다.
+    #[serde(default)]
+    pub shortcuts: crate::shortcut::ShortcutMap,
     /// 썸네일 디스크 캐시 상한(MB). 초과 시 오래된 것부터 자동 삭제. 0 = 무제한(#22).
     pub cache_limit_mb: u64,
     /// UI 언어(#30). `None` = OS 언어 자동. 설정에서 변경하면 저장된다.
@@ -708,6 +712,10 @@ pub struct Config {
     /// 마지막 사용자 지정 하나(#90). 이름 붙인 프리셋은 저장하지 않는다.
     #[serde(default)]
     pub guide_custom: crate::guides::GuideCustom,
+    /// 폴더 공통 표시 조정(#130). 누락되면 전부 0이라 픽셀이 바뀌지 않는다.
+    /// 사진별 값은 `session.json`에 두지 않는다.
+    #[serde(default)]
+    pub adjust: crate::adjust::Adjust,
 }
 
 impl Default for Config {
@@ -722,6 +730,7 @@ impl Default for Config {
             last_folder: None,
             recent_folders: Vec::new(),
             keymap: KeyMap::default(),
+            shortcuts: crate::shortcut::ShortcutMap::default(),
             cache_limit_mb: 1024, // 기본 1GB. 0이면 무제한.
             lang: None,           // OS 언어 자동(#30).
             tag_names: Default::default(), // 5색 모두 빈 이름(기본 색 이름 표시)(#27).
@@ -743,6 +752,7 @@ impl Default for Config {
             lut_dir: String::new(),           // LUT 폴더. 기본은 미지정.
             guides: crate::guides::GuidePreset::Off,
             guide_custom: crate::guides::GuideCustom::default(),
+            adjust: crate::adjust::Adjust::default(), // 표시 조정(#130). 기본은 픽셀 불변.
         }
     }
 }

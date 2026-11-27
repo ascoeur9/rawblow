@@ -361,6 +361,164 @@ pub(super) fn format_capture_datetime(dt: &str) -> String {
     }
 }
 
+/// egui `Key`의 Debug 이름. 코어 `Chord.key`와 캡처·실행이 같은 문자열을 쓰게 이 함수만 거친다(#123).
+pub(super) fn key_id(key: egui::Key) -> String {
+    format!("{key:?}")
+}
+
+pub(super) fn chord_from_key(key: egui::Key, modifiers: egui::Modifiers) -> rawblow_core::shortcut::Chord {
+    rawblow_core::shortcut::Chord {
+        key: key_id(key),
+        command: modifiers.command,
+        shift: modifiers.shift,
+        alt: modifiers.alt,
+    }
+}
+
+/// 바꿀 수 없는 고정 키(화살표·Esc·Enter·?·F1·Tab·화면 배율·복사/붙여넣기 등). 목록은 코어
+/// [`rawblow_core::shortcut::Chord::is_fixed`] 하나다.
+pub(super) fn shortcut_key_locked(key: egui::Key, modifiers: egui::Modifiers) -> bool {
+    chord_from_key(key, modifiers).is_fixed()
+}
+
+/// 저장된 키 이름(`Chord.key`)의 egui 키. 누르고 있는 동안 동작하는 키(#125 `\`)를 읽을 때 쓴다.
+pub(super) fn egui_key(name: &str) -> Option<egui::Key> {
+    egui::Key::ALL.iter().copied().find(|k| key_id(*k) == name)
+}
+
+/// 동작의 첫 키(툴바·레일·안내에 찍는 키). 키 없음이면 None.
+pub(super) fn first_key_caption(map: &rawblow_core::shortcut::ShortcutMap, action: ShortcutAction) -> Option<String> {
+    map.chords(action).first().map(chord_caption)
+}
+
+pub(super) const STAR_ACTIONS: [ShortcutAction; 5] = [
+    ShortcutAction::Star1,
+    ShortcutAction::Star2,
+    ShortcutAction::Star3,
+    ShortcutAction::Star4,
+    ShortcutAction::Star5,
+];
+pub(super) const TAG_ACTIONS: [ShortcutAction; 5] = [
+    ShortcutAction::Tag1,
+    ShortcutAction::Tag2,
+    ShortcutAction::Tag3,
+    ShortcutAction::Tag4,
+    ShortcutAction::Tag5,
+];
+
+/// 별점 1~5(또는 태그 1~5)가 숫자 1~5 하나씩(`shift`면 ⇧숫자)인지 — 「1~5」로 줄여 찍어도 되는지.
+pub(super) fn keys_are_num_range(
+    map: &rawblow_core::shortcut::ShortcutMap,
+    actions: &[ShortcutAction; 5],
+    shift: bool,
+) -> bool {
+    actions.iter().enumerate().all(|(i, action)| {
+        map.chords(*action) == vec![rawblow_core::shortcut::Chord::new(format!("Num{}", i + 1), false, shift, false)]
+    })
+}
+
+/// 재지정 대기 중 이번 프레임의 키 눌림 하나를 이벤트 목록에서 빼 온다. 반복 입력은 무시.
+/// 복사·잘라내기·붙여넣기는 키가 아니라 Copy·Cut·Paste 이벤트로 오므로 그 키(⌘C·⌘X·⌘V)로 돌려준다 —
+/// 고정 키라 「바꿀 수 없습니다」 안내가 나간다.
+pub(super) fn take_shortcut_key(ctx: &egui::Context) -> Option<(egui::Key, egui::Modifiers)> {
+    ctx.input_mut(|i| {
+        let pos = i.events.iter().position(|ev| {
+            matches!(
+                ev,
+                egui::Event::Key { pressed: true, repeat: false, .. }
+                    | egui::Event::Copy
+                    | egui::Event::Cut
+                    | egui::Event::Paste(_)
+            )
+        })?;
+        match i.events.remove(pos) {
+            egui::Event::Key { key, modifiers, .. } => Some((key, modifiers)),
+            egui::Event::Copy => Some((egui::Key::C, egui::Modifiers::COMMAND)),
+            egui::Event::Cut => Some((egui::Key::X, egui::Modifiers::COMMAND)),
+            egui::Event::Paste(_) => Some((egui::Key::V, egui::Modifiers::COMMAND)),
+            _ => None,
+        }
+    })
+}
+
+/// 키캡에 찍을 문자열. command는 `cmd_key()`, shift는 `⇧`.
+pub(super) fn chord_caption(c: &rawblow_core::shortcut::Chord) -> String {
+    let mut s = String::new();
+    if c.command {
+        s.push_str(cmd_key());
+    }
+    if c.alt {
+        s.push_str(if cfg!(target_os = "macos") { "⌥" } else { "Alt+" });
+    }
+    if c.shift {
+        s.push('⇧');
+    }
+    s.push_str(&key_glyph(&c.key));
+    s
+}
+
+fn key_glyph(key: &str) -> String {
+    match key {
+        "Space" => "Space".into(),
+        "Backtick" => "`".into(),
+        "Minus" => "-".into(),
+        "Equals" => "=".into(),
+        "Backslash" => "\\".into(),
+        "Slash" => "/".into(),
+        "Comma" => ",".into(),
+        "Period" => ".".into(),
+        "Semicolon" => ";".into(),
+        "OpenBracket" => "[".into(),
+        "CloseBracket" => "]".into(),
+        "Num0" | "Num1" | "Num2" | "Num3" | "Num4" | "Num5" | "Num6" | "Num7" | "Num8" | "Num9" => {
+            key[3..].to_string()
+        }
+        other => other.to_string(),
+    }
+}
+
+/// 설정 단축키 목록·맞바꿈 안내(와 치트시트의 룩·조정 끄기 줄)가 같이 쓰는 동작 이름.
+pub(super) fn shortcut_action_label(cfg: &Config, lang: Lang, action: ShortcutAction) -> String {
+    use rawblow_core::shortcut::ShortcutAction::*;
+    let key = match action {
+        Pick => "채택",
+        Hold => "보류",
+        Reject => "제외",
+        Clear => "해제",
+        Undo => "되돌리기",
+        Redo => "다시 실행",
+        Star1 => "별점 1",
+        Star2 => "별점 2",
+        Star3 => "별점 3",
+        Star4 => "별점 4",
+        Star5 => "별점 5",
+        StarClear => "별점 해제",
+        Tag1 => return cfg.tag_label(ColorTag::Orange, lang),
+        Tag2 => return cfg.tag_label(ColorTag::Pink, lang),
+        Tag3 => return cfg.tag_label(ColorTag::Teal, lang),
+        Tag4 => return cfg.tag_label(ColorTag::Blue, lang),
+        Tag5 => return cfg.tag_label(ColorTag::Purple, lang),
+        TagClear => "태그 해제",
+        ToggleView => "단일↔그리드",
+        Fit => "창맞춤↔1:1",
+        FullRaw => "원본(ORIG)",
+        Exif => "EXIF",
+        Histogram => "히스토그램",
+        // 누르는 동안 룩(#125)과 표시 조정(#130)을 함께 끈다 — 치트시트 줄과 같은 이름.
+        LookCompare => return format!("{} · {}", tr(lang, "룩 끄기"), tr(lang, "조정 끄기")),
+        Map => "촬영 위치 지도",
+        Af => "AF 포인트",
+        Guides => "구도선",
+        Filter => "라벨 필터 순환",
+        Fullscreen => "전체화면",
+        Jump => "점프",
+        Bulk => "일괄 분류(그리드)",
+        Transfer => "전송",
+        OpenFolder => "폴더 열기",
+    };
+    tr(lang, key).to_string()
+}
+
 /// 플랫폼별 Command/Ctrl 표기(#32). macOS는 `⌘`, 그 외(Windows/Linux)는 `Ctrl+`.
 /// Windows에서 `⌘` 글리프가 폴백 폰트로 그려지며 세로로 떠 보이는 문제 + 실제 키도 Ctrl이라
 /// 텍스트로 대체한다(예: `{cmd}O` → mac "⌘O", win "Ctrl+O").
@@ -1046,5 +1204,18 @@ mod tests {
         // GB 경계(1GiB)와 소수 2자리.
         assert_eq!(fmt_bytes(1_073_741_824), "1.00 GB");
         assert_eq!(fmt_bytes(1_610_612_736), "1.50 GB"); // 1.5 * 1GiB
+    }
+
+    #[test]
+    fn egui_key_debug_matches_shortcut_ids() {
+        // 코어 Chord.key는 이 문자열이다. Debug 표기가 바뀌면 저장된 키가 어긋난다.
+        assert_eq!(super::key_id(egui::Key::Q), "Q");
+        assert_eq!(super::key_id(egui::Key::Num1), "Num1");
+        assert_eq!(super::key_id(egui::Key::Num0), "Num0");
+        assert_eq!(super::key_id(egui::Key::Space), "Space");
+        assert_eq!(super::key_id(egui::Key::F11), "F11");
+        assert_eq!(super::key_id(egui::Key::Backtick), "Backtick");
+        assert_eq!(super::key_id(egui::Key::Z), "Z");
+        assert_eq!(super::key_id(egui::Key::Y), "Y");
     }
 }

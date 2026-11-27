@@ -132,6 +132,11 @@ fn fmt_lookup(ko: &str) -> Option<(&'static str, &'static str)> {
             "Failed to save selections for previous folder ({}) — recent changes may be lost",
             "前のフォルダ（{}）のセレクト保存に失敗 — 直近の変更が失われた可能性があります",
         ),
+        // #72 툴바 Single/Grid 툴팁. 키는 저장된 단축키(#123).
+        "{} 키로 전환" => ("Press {} to switch", "{}キーで切替"),
+        // #123 설정 단축키: 바꾼 키를 쓰던 동작이 받은 키(뒤에 키캡) / 키가 없어짐.
+        "{} 키가 바뀌었습니다" => ("{} now uses", "{}のキーが変わりました"),
+        "{} 키가 풀렸습니다" => ("{} now has no key", "{}のキーが解除されました"),
         _ => return None,
     })
 }
@@ -327,10 +332,14 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
             "\"Keep current view\" loads ORIG even at fit-to-window — slower moves and more memory. A newly opened folder starts in preview either way.",
             "「現在の表示を維持」はウィンドウ合わせでもORIGを読み込み続けます — 送りが遅くなりメモリも増えます。新しいフォルダはどちらの方式でもプレビューで始まります。",
         ),
-        "단축키 재바인딩 UI는 v1.1 예정 — 현재 기본값 QWER 고정 표시" => (
-            "Shortcut rebinding UI is planned for v1.1 — currently fixed to default QWER",
-            "ショートカット再割り当てUIはv1.1予定 — 現在はデフォルトのQWER固定",
-        ),
+        "별점 1" => ("Star 1", "星1"),
+        "별점 2" => ("Star 2", "星2"),
+        "별점 3" => ("Star 3", "星3"),
+        "별점 4" => ("Star 4", "星4"),
+        "별점 5" => ("Star 5", "星5"),
+        "바꾸기" => ("Change", "変更"),
+        "단축키 초기화" => ("Reset Shortcuts", "ショートカット初期化"),
+        "이 키는 바꿀 수 없습니다" => ("This key can't be changed.", "このキーは変更できません。"),
         "별점 1~5 지정 · ` (백틱)으로 해제 — 라벨(QWER)과 독립으로 동시에 매겨집니다" => (
             "Set rating 1–5 · clear with ` (backtick) — applied independently alongside labels (QWER)",
             "評価1～5を指定 · ` (バッククォート)で解除 — ラベル(QWER)とは独立して同時に付けられます",
@@ -458,6 +467,10 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         ),
         "초점(선명도)" => ("Focus (Sharpness)", "フォーカス（シャープネス）"),
         "노출" => ("Exposure", "露出"),
+        "색온도" => ("Temperature", "色温度"),
+        "대비" => ("Contrast", "コントラスト"),
+        "그레인" => ("Grain", "グレイン"),
+        "조정 끄기" => ("Adjustment off", "調整オフ"),
         "없음" => ("None", "なし"),
         "룩 끄기" => ("Look off", "ルックオフ"),
         "LUT를 읽지 못했습니다" => ("Couldn't read the LUT", "LUTを読めませんでした"),
@@ -693,8 +706,7 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "핀치" => ("Pinch", "ピンチ"),
         "드래그" => ("Drag", "ドラッグ"),
         "열기" => ("Open", "開く"),
-        // #72 툴바 툴팁 보완(Single/Grid 토글·⚙ 설정 버튼).
-        "T 키로 전환" => ("Press T to switch", "Tキーで切替"),
+        // #72 툴바 툴팁 보완(⚙ 설정 버튼). Single/Grid 토글은 서식 「{} 키로 전환」.
         "설정" => ("Settings", "設定"),
         // #75 디코드 실패 고착 회복 — ⚠ 상태에서 수동 재시도 안내.
         "클릭하여 재시도" => ("Click to retry", "クリックで再試行"),
@@ -749,6 +761,13 @@ fn lookup(ko: &str) -> Option<(&'static str, &'static str)> {
         "보기 필터" => ("Filter View", "表示フィルタ"),
         "별점 필터" => ("Filter Stars", "評価フィルタ"),
         "색 필터" => ("Filter Color", "色フィルタ"),
+        // ── #138 바디 프로텍트(파일 읽기 전용) 보기 필터 — 좌측 레일·AI 컬링 창 공용 ──
+        // 좌측 레일 폭(188px)에 들어가게 En/Ja는 짧게 — "읽기 전용" 뜻은 툴팁이 맡는다.
+        "읽기 전용(프로텍트)만" => ("Protected Only", "プロテクトのみ"),
+        "니콘 바디 프로텍트(파일 읽기 전용)만 보여 줍니다" => (
+            "Shows only files protected in-camera (read-only)",
+            "カメラ本体でプロテクトした(読み取り専用)ファイルだけを表示します",
+        ),
         // ── 설정 섹션 캡션. 제목 "설정"(Settings)은 #72 키 재사용 ──
         "일반" => ("GENERAL", "一般"),
         "사진 배경" => ("PHOTO BACKGROUND", "写真の背景"),
@@ -916,7 +935,8 @@ mod tests {
             "이 폴더에 표시할 사진이 없습니다",
             "필터와 일치하는 사진이 없습니다",
             "필터 초기화",
-            "T 키로 전환",
+            "읽기 전용(프로텍트)만",
+            "니콘 바디 프로텍트(파일 읽기 전용)만 보여 줍니다",
             // #69 설정 다듬기 키(대표 2개 스팟체크).
             "기본값 복원",
             "새 버전 자동 확인",
@@ -1016,6 +1036,16 @@ mod tests {
             "히스토그램",
             "컬러 태그",
             "휠",
+            // 설정 단축키 변경(#123).
+            "바꾸기",
+            "별점 1",
+            "단축키 초기화",
+            "이 키는 바꿀 수 없습니다",
+            // 표시 조정(#130).
+            "조정 끄기",
+            "색온도",
+            "대비",
+            "그레인",
             "없음",
             "룩 끄기",
             "LUT를 읽지 못했습니다",
@@ -1038,6 +1068,16 @@ mod tests {
             assert_ne!(tr(Lang::En, ko), ko, "En 번역 누락: {ko}");
             assert_ne!(tr(Lang::Ja, ko), ko, "Ja 번역 누락: {ko}");
         }
+        // 설정 단축키 맞바꿈 안내·툴바 보기 전환 툴팁(#123). 서식이라 fmt_lookup 쪽에서 본다.
+        for ko in ["{} 키로 전환", "{} 키가 바뀌었습니다", "{} 키가 풀렸습니다"] {
+            let (en, ja) = super::fmt_lookup(ko).unwrap_or_else(|| panic!("번역 누락: {ko}"));
+            assert_ne!(en, ko);
+            assert_ne!(ja, ko);
+            assert_eq!(en.matches("{}").count(), 1, "{ko}");
+            assert_eq!(ja.matches("{}").count(), 1, "{ko}");
+        }
+        assert_eq!(trf(Lang::En, "{} 키로 전환", &["T"]), "Press T to switch");
+        assert_eq!(trf(Lang::Ja, "{} 키로 전환", &["T"]), "Tキーで切替");
         assert_eq!(trf(Lang::En, ".cube {}개", &["3"]), ".cube files: 3");
         assert_eq!(trf(Lang::Ja, ".cube {}개", &["3"]), ".cube 3個");
         assert_eq!(trf(Lang::En, ".cube {}개 중 앞 {}개", &["812", "500"]), ".cube files: 812 (showing the first 500)");
