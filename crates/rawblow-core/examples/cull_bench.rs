@@ -21,7 +21,7 @@ fn synth(w: u32, h: u32) -> DecodedImage {
         px[2] = v.wrapping_add(80);
         px[3] = 255;
     }
-    DecodedImage { width: w, height: h, rgba, color_managed: false, full_raw: false }
+    DecodedImage { width: w, height: h, rgba, color_managed: false, full_raw: false, source_histo: None }
 }
 
 fn main() {

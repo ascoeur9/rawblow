@@ -9,6 +9,7 @@ use egui::{Align, Align2, Color32, Layout, Pos2, Rect, Rounding, Sense, Stroke, 
 use rawblow_core::cache;
 use rawblow_core::config::{self, AiCullTarget, ClipIqaBackbone, Config, Lang, TransferDestMode, ViewCarry};
 use rawblow_core::shortcut::{Resolve, ShortcutAction};
+use rawblow_core::guides::GuidePreset;
 use rawblow_core::quality::Verdict;
 use rawblow_core::meta::{read_exif, ExifInfo};
 use rawblow_core::organize::{self, OrganizeKey, OrganizeRequest};
@@ -222,7 +223,40 @@ pub struct RawBlowApp {
     // 항목(real)별 디코딩 누적 실패 횟수(#64). decode_dead()가 3 이상을 영구 손상으로 간주.
     decode_fails: std::collections::HashMap<usize, u8>,
     histo: std::collections::HashMap<usize, Histo>,
+    /// 단일 보기 프리뷰의 디코드 RGBA(#125). 룩을 바꿔도 다시 디코드하지 않으려고 둔다.
+    /// 썸네일은 넣지 않는다.
+    look_src: std::collections::HashMap<usize, LookSrc>,
+    /// 룩이나 `\` 비교가 바뀐 세대.
+    look_gen: u64,
+    /// `\`를 누르고 있는 동안 룩을 끈다(#125).
+    look_compare: bool,
+    /// `(이름\n경로, 파싱된 LUT)`. 키가 같으면 파일을 다시 읽지 않는다.
+    look_cache: Option<(String, Option<rawblow_core::lut::Lut3d>)>,
+    /// 설정 「LUT 폴더」의 `.cube` 목록. 시작·폴더 변경·LUT 메뉴를 열 때 다시 읽는다.
+    lut_files: Vec<PathBuf>,
+    /// 위 목록을 읽은 결과(미지정·없음·비어 있음·N개). 메뉴 캡션과 설정 설명이 쓴다.
+    lut_dir_status: rawblow_core::lut::CubeDir,
+    /// 이번 프레임에 누를 수 있는 툴바 LUT 버튼을 그렸는지. 아니면 열린 룩 메뉴를 닫는다(ui_screen).
+    look_button_drawn: bool,
+    /// LUT 폴더를 다시 읽을 때마다 올린다(툴바 단계 계산의 LUT 라벨 캐시 키).
+    lut_gen: u64,
+    /// 툴바 단계 계산에 쓰는 가장 넓은 LUT 버튼 글자. 폴더 파일이 많아도 프레임마다 다시 재지 않게
+    /// (언어, lut_gen, 룩 경로)가 바뀔 때만 다시 고르고, 룩 메뉴가 열려 있는 동안은 그대로 둔다.
+    look_worst: Option<views::LookWorst>,
+    /// 이번 세션에 룩 경로로 본 가장 넓은 파일 라벨. 폴더 밖 파일 룩에서 빌트인으로 바꿔도
+    /// 툴바 단계가 바뀌지 않게 줄이지 않는다.
+    look_label_floor: Option<String>,
+    /// 룩 메뉴의 「LUT 폴더 설정…」으로 설정을 열었으면 「LUT 폴더」 행까지 한 번 스크롤한다.
+    settings_focus_lut: bool,
     generation: u64,
+    /// 워커에 적용한 출력 캐시 태그. None이면 아직 한 프레임도 적용하지 않음(#122).
+    color_tag: Option<u64>,
+    /// 이 창에서 조사한 OS 색. 설정 행의 출력 문구가 읽는다.
+    os_color: rawblow_core::color::OsColor,
+    /// Windows 모니터 프로파일 파일 이름. 없으면 빈 문자열.
+    monitor_name: String,
+    /// 광색역이 켜진 채 sRGB로 떨어진 상태를 한 번만 로그한다.
+    color_fallback_logged: bool,
 
     sidecar_dirty: bool,
     // 지금 items를 만든 스캔이 재귀였는지. 설정(cfg.recursive)은 재스캔 없이 바뀔 수 있어
@@ -329,6 +363,15 @@ pub struct RawBlowApp {
 }
 
 
+/// 디코드된 프리뷰 한 장(#125). `graded`는 이 버퍼로 텍스처를 만든 `look_gen`.
+struct LookSrc {
+    rgba: Vec<u8>,
+    width: usize,
+    height: usize,
+    full: bool,
+    graded: u64,
+}
+
 /// 백그라운드 메타 로더 결과. 요청 시점에 없던 조각(exif/af)만 채워 보낸다.
 struct MetaResult {
     generation: u64,
@@ -350,6 +393,33 @@ struct MapState {
     rx: Option<crossbeam_channel::Receiver<Option<crate::map::MapImage>>>,
     tex: Option<egui::TextureHandle>,
     failed: bool,
+}
+
+fn initial_os_color() -> rawblow_core::color::OsColor {
+    #[cfg(target_os = "macos")]
+    {
+        rawblow_core::color::OsColor::MacOs { layer_ok: false }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        rawblow_core::color::OsColor::Windows { icc: None, acm_or_hdr: false }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        rawblow_core::color::OsColor::Linux
+    }
+}
+
+/// 출력 종류의 짧은 이름. 단일 보기 배지 꼬리와 「현재 출력」(모니터 이름을 모를 때)에 같이 쓴다.
+/// sRGB·Display P3는 고유명사라 번역하지 않는다.
+pub(super) fn output_short(lang: Lang, kind: rawblow_core::color::OutputKind) -> &'static str {
+    use rawblow_core::color::OutputKind;
+    match kind {
+        OutputKind::Srgb => "sRGB",
+        OutputKind::SrgbFallback => tr(lang, "sRGB(폴백)"),
+        OutputKind::DisplayP3 => "Display P3",
+        OutputKind::MonitorIcc => tr(lang, "모니터 ICC"),
+    }
 }
 
 impl RawBlowApp {
@@ -427,7 +497,22 @@ impl RawBlowApp {
             orig_fallback: std::collections::HashSet::new(),
             decode_fails: std::collections::HashMap::new(),
             histo: std::collections::HashMap::new(),
+            look_src: std::collections::HashMap::new(),
+            look_gen: 0,
+            look_compare: false,
+            look_cache: None,
+            lut_files: Vec::new(),
+            lut_dir_status: rawblow_core::lut::CubeDir::Unset,
+            look_button_drawn: false,
+            lut_gen: 0,
+            look_worst: None,
+            look_label_floor: None,
+            settings_focus_lut: false,
             generation: 0,
+            color_tag: None,
+            os_color: initial_os_color(),
+            monitor_name: String::new(),
+            color_fallback_logged: false,
             sidecar_dirty: false,
             scan_recursive: false,
             last_save: Instant::now(),
@@ -483,6 +568,8 @@ impl RawBlowApp {
             cfg,
         };
 
+        // 툴바 LUT 목록(설정 「LUT 폴더」).
+        app.reload_lut_files();
         // 마지막 폴더 자동 복원.
         if let Some(last) = app.cfg.last_folder.clone() {
             let p = PathBuf::from(last);
@@ -499,6 +586,60 @@ impl RawBlowApp {
     }
 
     /// 설정 화면·정렬 변경이 쓰는 즉시 저장. 테스트에서는 사용자 config.json을 건드리지 않는다.
+    /// 설정과 OS 상태를 표시 색으로 접어 워커에 넣는다. 태그가 바뀌면 텍스처를 버리고 다시 디코드한다.
+    fn apply_display_color(&mut self, frame: &eframe::Frame) {
+        let (os, name) = crate::display_color::probe(frame, self.cfg.wide_gamut, self.lang);
+        self.os_color = os;
+        self.monitor_name = name;
+        let out = rawblow_core::color::effective_output(self.cfg.wide_gamut, &self.os_color);
+        let fallback = self.cfg.wide_gamut && matches!(out, rawblow_core::color::OutputColor::Srgb);
+        if fallback && !self.color_fallback_logged {
+            log::info!("wide gamut display fell back to sRGB");
+            self.color_fallback_logged = true;
+        } else if !fallback {
+            self.color_fallback_logged = false;
+        }
+        let tag = out.cache_tag();
+        if self.color_tag == Some(tag) {
+            return;
+        }
+        let first = self.color_tag.is_none();
+        self.color_tag = Some(tag);
+        self.worker.set_output(out);
+        if first {
+            return;
+        }
+        self.cache.retire_all();
+        self.thumbs.retire_all();
+        self.generation = self.generation.wrapping_add(1);
+        self.worker.set_generation(self.generation);
+        self.pending_preview.clear();
+        self.pending_thumb.clear();
+        self.pending_thumb_prio.clear();
+        self.pending_prefetch.clear();
+        self.histo.clear();
+        self.look_src.clear();
+    }
+
+    /// 단일 보기 배지와 설정 「현재 출력」이 함께 쓰는 판정. 이번 프레임 apply_display_color가 채운 값을 읽는다.
+    fn output_kind(&self) -> rawblow_core::color::OutputKind {
+        rawblow_core::color::output_kind(self.cfg.wide_gamut, &self.os_color)
+    }
+
+    /// 표시 섹션의 광색역 행에 붙는 현재 출력. 모니터 이름을 알면 `현재 출력: <모니터> · Display P3`
+    /// 또는 `현재 출력: <모니터> · <프로파일>`, 모르면 배지와 같은 짧은 이름이다.
+    fn wide_gamut_status(&self) -> String {
+        use rawblow_core::color::OutputKind;
+        let kind = self.output_kind();
+        let prefix = tr(self.lang, "현재 출력: ");
+        let name = &self.monitor_name;
+        match kind {
+            OutputKind::DisplayP3 if !name.is_empty() => format!("{prefix}{name} · Display P3"),
+            OutputKind::MonitorIcc if !name.is_empty() => format!("{prefix}{name}"),
+            _ => format!("{prefix}{}", output_short(self.lang, kind)),
+        }
+    }
+
     fn persist_cfg(&self) {
         #[cfg(test)]
         {
@@ -580,7 +721,22 @@ impl RawBlowApp {
             orig_fallback: std::collections::HashSet::new(),
             decode_fails: std::collections::HashMap::new(),
             histo: std::collections::HashMap::new(),
+            look_src: std::collections::HashMap::new(),
+            look_gen: 0,
+            look_compare: false,
+            look_cache: None,
+            lut_files: Vec::new(),
+            lut_dir_status: rawblow_core::lut::CubeDir::Unset,
+            look_button_drawn: false,
+            lut_gen: 0,
+            look_worst: None,
+            look_label_floor: None,
+            settings_focus_lut: false,
             generation: 0,
+            color_tag: None,
+            os_color: initial_os_color(),
+            monitor_name: String::new(),
+            color_fallback_logged: false,
             sidecar_dirty: false,
             scan_recursive: false,
             last_save: Instant::now(),
@@ -696,6 +852,7 @@ impl RawBlowApp {
         self.undo_stack.clear(); // real 인덱스 재배정 → 되돌리기 스냅샷도 무효(#78).
         self.redo_stack.clear();
         self.histo.clear();
+        self.look_src.clear();
         self.selected.clear();
         self.sel_anchor = None;
         self.grid_scroll_to = None;
@@ -942,6 +1099,7 @@ impl RawBlowApp {
             }
         }
         self.histo.clear();
+        self.look_src.clear();
         self.selected = self.selected.iter().filter_map(|&r| inv.get(r).copied()).collect();
         self.grid_scroll_to = None;
         self.grid_visible_rows = 0..0;
@@ -1568,11 +1726,12 @@ impl RawBlowApp {
 }
 
 impl eframe::App for RawBlowApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // 프레임 시간 측정.
         let now = Instant::now();
         self.frame_ms = now.duration_since(self.last_frame).as_secs_f32() * 1000.0;
         self.last_frame = now;
+        self.apply_display_color(frame);
 
         // [개발 전용] 벤치 모드: env RB_BENCH 설정 시 그리드를 자동 스크롤하며 썸네일 채움을 기록.
         // 디버그 빌드에만 포함(릴리즈 바이너리에는 들어가지 않음).
@@ -1587,6 +1746,8 @@ impl eframe::App for RawBlowApp {
 
         self.drain_results(ctx);
         self.drain_folder_scan(ctx);
+        // `\` 비교와, 지난 프레임에 못 올린 이웃 프리뷰(#125). 디코드 요청은 만들지 않는다.
+        self.poll_look_compare(ctx);
 
         // AI 컬링(#50)은 백그라운드 비차단 — 모달과 무관하게 매 프레임 진행률을 펌프하고
         // 완료 시 결과를 적용한다(좌측 레일 버튼이 프로그레스바로 표시).
@@ -1650,18 +1811,7 @@ impl eframe::App for RawBlowApp {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
 
-        // 화면 분기.
-        if self.folder.is_none() {
-            self.ui_open(ctx);
-        } else if self.licenses.is_some() {
-            self.ui_licenses(ctx);
-        } else if self.show_settings {
-            self.ui_settings(ctx);
-        } else if self.fullscreen {
-            self.ui_fullscreen(ctx);
-        } else {
-            self.ui_shell(ctx);
-        }
+        self.ui_screen(ctx);
 
         // 모달. 진행 중 작업(전송/정리)이 있으면 그 프로그레스바가 최우선 — 다른 모달을 가린다.
         #[cfg(feature = "model-download")]
@@ -1755,6 +1905,69 @@ impl eframe::App for RawBlowApp {
 }
 
 impl RawBlowApp {
+    /// 화면 분기. 누를 수 있는 툴바 LUT 버튼을 그리지 않은 프레임에는 열린 룩 메뉴를 닫는다.
+    /// egui 0.29의 팝업은 그리지 않아도 memory에 열린 채 남아, T로 그리드에 갔다가(또는 F11·설정·
+    /// 모달 뒤에) 단일 보기로 돌아오면 메뉴가 다시 뜬다.
+    fn ui_screen(&mut self, ctx: &egui::Context) {
+        self.look_button_drawn = false;
+        if self.folder.is_none() {
+            self.ui_open(ctx);
+        } else if self.licenses.is_some() {
+            self.ui_licenses(ctx);
+        } else if self.show_settings {
+            self.ui_settings(ctx);
+        } else if self.fullscreen {
+            self.ui_fullscreen(ctx);
+        } else {
+            self.ui_shell(ctx);
+        }
+        let id = egui::Id::new(views::LOOK_MENU_ID);
+        if !self.look_button_drawn && ctx.memory(|m| m.is_popup_open(id)) {
+            ctx.memory_mut(|m| m.close_popup());
+        }
+    }
+
+    /// 설정 「LUT 폴더」를 바꾼다. 같은 값이면 아무것도 하지 않는다.
+    /// 지금 룩이 그 폴더의 파일이어도 룩은 그대로 둔다(경로가 절대 경로라 계속 동작).
+    pub(super) fn set_lut_dir(&mut self, dir: String) {
+        if self.cfg.lut_dir == dir {
+            return;
+        }
+        self.cfg.lut_dir = dir;
+        self.persist_cfg();
+        self.reload_lut_files();
+    }
+
+    /// 설정 「LUT 폴더」 입력칸에서 글자를 칠 때: 값과 저장만 한다. 폴더는 입력을 마칠 때
+    /// (포커스를 잃을 때·설정을 닫을 때) 읽는다 — 입력 도중 경로마다 디스크를 읽지 않게.
+    pub(super) fn type_lut_dir(&mut self, dir: String) {
+        if self.cfg.lut_dir != dir {
+            self.cfg.lut_dir = dir;
+            self.persist_cfg();
+        }
+    }
+
+    /// LUT 폴더를 다시 읽는다. 화면에는 NFC로 적어 두므로 디스크의 실제 이름으로 되돌려 읽는다.
+    pub(super) fn reload_lut_files(&mut self) {
+        let dir = self.cfg.lut_dir.trim();
+        let real = (!dir.is_empty()).then(|| real_dest_path(dir));
+        let (files, status) = rawblow_core::lut::scan_cube_dir(real.as_deref());
+        if files != self.lut_files {
+            self.lut_gen = self.lut_gen.wrapping_add(1);
+        }
+        self.lut_files = files;
+        self.lut_dir_status = status;
+    }
+
+    /// 설정 화면을 연다(⚙ 버튼·LUT 메뉴 「LUT 폴더 설정…」 공통).
+    pub(super) fn open_settings(&mut self) {
+        self.show_settings = true;
+        self.cache_size = None; // 설정 열 때 캐시 용량 새로 계산.
+        self.bg_hex = hex_str(self.photo_bg_rgb()); // 배경 HEX 입력 버퍼 동기화(#36).
+        self.settings_reset_armed = false; // '기본값 복원' 확인 arm 해제(#69).
+        self.reload_lut_files(); // 「LUT 폴더」 설명(.cube N개)이 지금 폴더 내용을 따르게.
+    }
+
     fn has_modal(&self) -> bool {
         // show_settings 포함: 설정 화면이 떠 있을 때 1~5/QWER/백틱 등 단축키가 뒤의 '현재 항목'을
         // 몰래 바꾸거나 설정의 DragValue 입력과 충돌하지 않게 키 처리를 막는다.
@@ -1822,7 +2035,16 @@ impl RawBlowApp {
         }
     }
 
+    fn cycle_guides(&mut self) {
+        self.cfg.guides = self.cfg.guides.cycle();
+        self.persist_cfg();
+    }
+
     fn handle_keys(&mut self, ctx: &egui::Context) {
+        // 룩 메뉴가 열려 있으면 Esc는 메뉴만 닫고(팝업이 직접 받는다) 휠로 사진을 넘기지 않는다.
+        // input 클로저 안에서 memory를 읽지 않으려고 먼저 읽는다. any_popup_open은 쓰지 않는다 —
+        // 다른 팝업(콤보 등)까지 Esc·휠을 막을 이유는 없다.
+        let look_menu_open = ctx.memory(|m| m.is_popup_open(egui::Id::new(views::LOOK_MENU_ID)));
         let (modifiers, scroll) = ctx.input(|i| (i.modifiers, i.raw_scroll_delta.y));
         let lang = self.lang;
 
@@ -1839,7 +2061,7 @@ impl RawBlowApp {
                     Key::ArrowLeft => self.nav(-1),
                     Key::ArrowDown => self.nav(self.row_step()),
                     Key::ArrowUp => self.nav(-self.row_step()),
-                    Key::Escape => self.fullscreen = false,
+                    Key::Escape if !look_menu_open => self.fullscreen = false,
                     // Enter·?·F1은 루프 아래에서 소비한다. 여기선 저장된 맵으로 넘기지 않는다.
                     _ if shortcut_key_locked(*key, *modifiers) => {}
                     _ => {
@@ -1855,13 +2077,16 @@ impl RawBlowApp {
                                 self.toast_info(text);
                             }
                             Resolve::None => {
-                                // B(그리드 일괄)·Ctrl/⌘O(폴더)는 그 키를 저장된 맵이 쓰지 않을 때만.
+                                // B(그리드 일괄)·Ctrl/⌘O(폴더)·](구도 보조선 #90)는 그 키를 저장된 맵이 쓰지 않을 때만.
                                 if *key == Key::B && self.view == ViewMode::Grid {
                                     self.bulk_open = true;
                                     self.bulk_searched = false;
                                     self.bulk_hits.clear();
                                 } else if *key == Key::O && modifiers.command {
                                     self.pick_folder();
+                                } else if *key == Key::CloseBracket && !modifiers.command && !modifiers.shift {
+                                    // 단일 보기에서만 그려지고, 선택은 앱 설정에 남는다.
+                                    self.cycle_guides();
                                 }
                             }
                         }
@@ -1892,7 +2117,7 @@ impl RawBlowApp {
 
         // 마우스 휠 이동(단일 뷰): 창맞춤 상태에서 Ctrl 없이 휠 → 사진 넘김.
         // (확대 상태이거나 Ctrl 휠은 photo_view에서 줌으로 처리.)
-        if self.view == ViewMode::Single && self.fit && !modifiers.ctrl && !modifiers.command {
+        if self.view == ViewMode::Single && self.fit && !modifiers.ctrl && !modifiers.command && !look_menu_open {
             if scroll < -1.0 {
                 self.advance(1);
             } else if scroll > 1.0 {
@@ -2103,6 +2328,72 @@ fn visible_subset(selected: &std::collections::HashSet<usize>, filtered: &[usize
 #[cfg(test)]
 mod tests {
     use super::index_after_rate;
+    use rawblow_core::guides::GuidePreset;
+
+    #[test]
+    fn wide_gamut_status_shows_monitor_and_profile() {
+        use rawblow_core::color::OsColor;
+        super::RawBlowApp::settings_qa_begin();
+        let mut app = super::RawBlowApp::for_settings_qa();
+        app.cfg.wide_gamut = true;
+        app.os_color = OsColor::Windows { icc: Some(vec![1, 2, 3]), acm_or_hdr: false };
+        app.monitor_name = "DELL U2723QE · U2723QE".into();
+        assert_eq!(app.wide_gamut_status(), "현재 출력: DELL U2723QE · U2723QE");
+        app.os_color = OsColor::MacOs { layer_ok: true };
+        app.monitor_name = "Studio Display".into();
+        assert_eq!(app.wide_gamut_status(), "현재 출력: Studio Display · Display P3");
+        app.monitor_name.clear();
+        assert_eq!(app.wide_gamut_status(), "현재 출력: Display P3");
+        app.os_color = OsColor::Windows { icc: None, acm_or_hdr: true };
+        assert_eq!(app.wide_gamut_status(), "현재 출력: sRGB(폴백)");
+        // ICC는 적용됐는데 이름을 못 얻은 경우. 예전에는 「sRGB(폴백)」으로 잘못 나왔다.
+        app.os_color = OsColor::Windows { icc: Some(vec![1, 2, 3]), acm_or_hdr: false };
+        app.monitor_name.clear();
+        assert_eq!(app.wide_gamut_status(), "현재 출력: 모니터 ICC");
+        app.cfg.wide_gamut = false;
+        assert_eq!(app.wide_gamut_status(), "현재 출력: sRGB");
+        // 앱 언어를 따른다(맥 내장 화면 이름은 macos_color가 tr(lang, "내장 디스플레이")로 넘긴다).
+        use rawblow_core::config::Lang;
+        app.cfg.wide_gamut = true;
+        app.os_color = OsColor::MacOs { layer_ok: true };
+        for (lang, want) in [
+            (Lang::Ko, "현재 출력: 내장 디스플레이 · Display P3"),
+            (Lang::En, "Output: Built-in display · Display P3"),
+            (Lang::Ja, "現在の出力: 内蔵ディスプレイ · Display P3"),
+        ] {
+            app.lang = lang;
+            app.monitor_name = crate::i18n::tr(lang, "내장 디스플레이").into();
+            assert_eq!(app.wide_gamut_status(), want);
+        }
+        for (lang, want) in [
+            (Lang::Ko, "현재 출력: sRGB(폴백)"),
+            (Lang::En, "Output: sRGB (fallback)"),
+            (Lang::Ja, "現在の出力: sRGB（フォールバック）"),
+        ] {
+            app.lang = lang;
+            app.os_color = OsColor::MacOs { layer_ok: false };
+            assert_eq!(app.wide_gamut_status(), want, "예전 문구와 바이트까지 같다");
+        }
+    }
+
+    #[test]
+    fn cycle_guides_saves_the_next_preset() {
+        super::RawBlowApp::settings_qa_begin();
+        let mut app = super::RawBlowApp::for_settings_qa();
+        assert_eq!(app.cfg.guides, GuidePreset::Off);
+        let before = super::RawBlowApp::settings_qa_persist_count();
+        app.cycle_guides();
+        assert_eq!(app.cfg.guides, GuidePreset::Thirds);
+        app.cycle_guides();
+        assert_eq!(app.cfg.guides, GuidePreset::CenterCross);
+        app.cycle_guides();
+        assert_eq!(app.cfg.guides, GuidePreset::Square);
+        app.cycle_guides();
+        assert_eq!(app.cfg.guides, GuidePreset::Custom);
+        app.cycle_guides();
+        assert_eq!(app.cfg.guides, GuidePreset::Off);
+        assert!(super::RawBlowApp::settings_qa_persist_count() > before);
+    }
 
     #[test]
     fn index_after_filter_keeps_current_photo_or_goes_to_start() {
@@ -2113,7 +2404,7 @@ mod tests {
         assert_eq!(index_after_filter(&[3, 9], None), 0);
     }
 
-    fn filter_app(n: usize) -> super::RawBlowApp {
+    pub(super) fn filter_app(n: usize) -> super::RawBlowApp {
         let mut app = super::RawBlowApp::for_settings_qa();
         app.items = (0..n)
             .map(|i| {
@@ -2242,6 +2533,8 @@ mod tests {
             height: None,
             orientation: 1,
             gps: Some(rawblow_core::meta::GpsCoord { lat, lon, alt: None }),
+            color_space: None,
+            interop_index: None,
         });
     }
 

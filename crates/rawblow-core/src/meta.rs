@@ -27,6 +27,10 @@ pub struct ExifInfo {
     pub orientation: u16,
     /// 촬영 위치(#38). 표준 EXIF GPS IFD에서 추출. 없으면 None(대부분의 RAW).
     pub gps: Option<GpsCoord>,
+    /// EXIF ColorSpace(0xA001). 1=sRGB, 0xFFFF=미보정. 광색역 입력 판정(#122).
+    pub color_space: Option<u16>,
+    /// InteroperabilityIndex. `R03`이면 Adobe RGB(#122).
+    pub interop_index: Option<String>,
 }
 
 /// GPS 좌표(#38). 위경도는 십진수(deg), 남위/서경은 음수.
@@ -56,6 +60,8 @@ impl Default for ExifInfo {
             height: None,
             orientation: 1,
             gps: None,
+            color_space: None,
+            interop_index: None,
         }
     }
 }
@@ -428,6 +434,30 @@ fn build(exif: &Exif) -> ExifInfo {
             .filter(|v| (1..=8).contains(v))
             .unwrap_or(1),
         gps: gps_coord(exif),
+        color_space: uint(exif, Tag::ColorSpace).map(|v| v as u16),
+        interop_index: interop_index(exif),
+    }
+}
+
+/// 광색역 입력 판정에 쓰는 ColorSpace와 InteroperabilityIndex(#122).
+/// 렌즈 MakerNote는 읽지 않는다.
+pub fn color_hint(path: &Path) -> (Option<u16>, Option<String>) {
+    match read_exif_inner(path) {
+        Some(info) => (info.color_space, info.interop_index),
+        None => (None, None),
+    }
+}
+
+fn interop_index(exif: &Exif) -> Option<String> {
+    let field = exif.fields().find(|f| f.tag == Tag::InteroperabilityIndex)?;
+    if let Value::Ascii(parts) = &field.value {
+        let s = parts
+            .first()
+            .map(|p| String::from_utf8_lossy(p).trim_end_matches('\0').trim().to_string())
+            .unwrap_or_default();
+        if s.is_empty() { None } else { Some(s) }
+    } else {
+        None
     }
 }
 

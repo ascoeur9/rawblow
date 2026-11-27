@@ -148,7 +148,7 @@ Rust 1.80 以降と C リンカ（MSVC Build Tools / gcc / clang）が必要で�
 
 ## 対応フォーマットと確認済みカメラ
 
-RAW は `.ARW` `.CR2` `.CR3` `.NEF` `.ORF` `.RW2` `.RAF` `.DNG` `.PEF` `.SRW` `.RAW`、通常の画像は `.JPG` `.JPEG` `.PNG` `.WEBP` `.HEIC` `.HEIF` `.TIF` `.TIFF` を読み込みます。
+RAW は `.ARW` `.CR2` `.CR3` `.NEF` `.ORF` `.RW2` `.RAF` `.DNG` `.PEF` `.SRW` `.RAW` `.X3F`、通常の画像は `.JPG` `.JPEG` `.PNG` `.WEBP` `.HEIC` `.HEIF` `.TIF` `.TIFF` を読み込みます。`.X3F` は埋め込み JPEG プレビューで表示し、Foveon のフル現像はしません。
 
 **OS。** Windows 11 と macOS（Apple Silicon）向けに正式配布しています。Linux はコード上サポートしていますが、ビルド済みバイナリは提供していないのでソースからビルドしてください。
 
@@ -185,7 +185,7 @@ RAW は `.ARW` `.CR2` `.CR3` `.NEF` `.ORF` `.RW2` `.RAF` `.DNG` `.PEF` `.SRW` `.
 
 ## 既知の制限
 
-- カラーマネジメントは埋め込み ICC から sRGB までです。モニターの ICC プロファイルは参照せず、sRGB を想定しています。
+- 既定は埋め込み ICC を sRGB に変換して表示します。広色域表示をオンにすると、macOS は Display P3、Windows はそのウィンドウのモニター ICC、Linux は sRGB のままです。
 - ショートカットを再割り当てする画面はありません。デフォルト固定です。
 - HEIC など一部のフォーマットはプラットフォームのデコーダに依存します。
 - 原寸表示は GPU テクスチャの上限（長辺およそ 8192px）の範囲内で表示します。

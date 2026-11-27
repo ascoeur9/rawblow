@@ -4,7 +4,9 @@
 
 ## 지원 포맷
 
-RAW: `.ARW` `.CR2` `.CR3` `.NEF` `.ORF` `.RW2` `.RAF` `.DNG` `.PEF` `.SRW` `.RAW`
+RAW: `.ARW` `.CR2` `.CR3` `.NEF` `.ORF` `.RW2` `.RAF` `.DNG` `.PEF` `.SRW` `.RAW` `.X3F`
+
+`.X3F`(Sigma)는 파일 안 JPEG 프리뷰로 봅니다. Foveon 센서 데이터를 풀로 현상하지는 않습니다.
 
 일반 이미지: `.JPG` `.JPEG` `.PNG` `.WEBP` `.HEIC` `.HEIF` `.TIF` `.TIFF`
 
@@ -28,7 +30,7 @@ HEIC 등 일부 포맷은 OS 디코더에 기댑니다. Windows에서 HEIC가 �
 
 ## 알려진 한계
 
-- 컬러 매니지먼트는 임베디드 ICC에서 sRGB까지입니다. 모니터 ICC는 조회하지 않고 sRGB로 가정합니다.
+- 기본은 임베디드 ICC를 sRGB로 표시합니다. 광색역 표시를 켜면 macOS는 Display P3, Windows는 그 창의 모니터 ICC, Linux는 sRGB입니다. 지금 쓰는 출력은 단일뷰 하단 상태바 오른쪽(배율 앞, 예: `FIT · Display P3`)과 설정 **광색역 표시** 아래 「현재 출력」에 나옵니다. 켰는데 sRGB(폴백)이면 macOS는 Metal 레이어를 못 쓴 경우, Windows는 ACM·HDR이 켜졌거나 모니터 프로파일이 없거나 읽지 못한 경우입니다. Linux는 지원하지 않아 늘 sRGB(폴백)입니다. Windows에서 모니터 프로파일을 해석하지 못하면(손상되었거나 지원하지 않는 ICC) 표시가 「모니터 ICC」여도 sRGB로 그립니다.
 - 단축키를 다시 지정하는 화면이 없습니다.
 - 원본 보기(ORIG)는 GPU 텍스처 한계(긴 변 약 8192픽셀) 안에서 표시합니다.
 - AI 컬링 중 모델이 판정하는 항목은 테스트 단계입니다. 원본은 삭제하지 않습니다.
