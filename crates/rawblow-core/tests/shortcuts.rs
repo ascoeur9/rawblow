@@ -37,7 +37,7 @@ fn default_map_matches_current_keys() {
     assert_eq!(map.resolve(&Chord::plain("R")), one(ShortcutAction::Clear));
     assert_eq!(map.resolve(&Chord::new("E", true, false, false)), one(ShortcutAction::Transfer));
     assert_eq!(map.resolve(&Chord::plain("Space")), one(ShortcutAction::Fit));
-    assert_eq!(map.resolve(&Chord::plain("Z")), one(ShortcutAction::Fit));
+    assert_eq!(map.resolve(&Chord::plain("Z")), Resolve::None, "창맞춤은 Space 하나");
     assert_eq!(map.resolve(&Chord::new("Z", true, false, false)), one(ShortcutAction::Undo));
     assert_eq!(map.resolve(&Chord::new("Z", true, true, false)), one(ShortcutAction::Redo));
     assert_eq!(map.resolve(&Chord::new("Y", true, false, false)), one(ShortcutAction::Redo));
@@ -51,16 +51,16 @@ fn default_map_matches_current_keys() {
     assert_eq!(map.resolve(&Chord::new("O", true, false, false)), one(ShortcutAction::OpenFolder));
     assert_eq!(map.resolve(&Chord::plain("Backslash")), one(ShortcutAction::LookCompare));
     assert_eq!(map.resolve(&Chord::plain("J")), Resolve::None);
-    assert_eq!(map.chords(ShortcutAction::Fit).len(), 2);
+    assert_eq!(map.chords(ShortcutAction::Fit), vec![Chord::plain("Space")]);
 }
 
 #[test]
 fn binding_a_used_key_swaps_instead_of_sharing_it() {
     let mut map = ShortcutMap::default();
-    assert_eq!(map.bind(ShortcutAction::Fit, Chord::plain("X")), Ok(None));
-    assert_eq!(map.chords(ShortcutAction::Fit), vec![Chord::plain("X")]);
-    assert_eq!(map.resolve(&Chord::plain("Space")), Resolve::None);
-    assert_eq!(map.resolve(&Chord::plain("Z")), Resolve::None);
+    assert_eq!(map.bind(ShortcutAction::Redo, Chord::plain("X")), Ok(None));
+    assert_eq!(map.chords(ShortcutAction::Redo), vec![Chord::plain("X")]);
+    assert_eq!(map.resolve(&Chord::new("Z", true, true, false)), Resolve::None);
+    assert_eq!(map.resolve(&Chord::new("Y", true, false, false)), Resolve::None);
 
     // 채택에 보류의 W → 보류는 채택이 쓰던 Q를 받는다. W는 채택만 실행한다.
     assert_eq!(map.bind(ShortcutAction::Pick, Chord::plain("W")), Ok(Some(ShortcutAction::Hold)));
