@@ -413,7 +413,9 @@ impl RawBlowApp {
                                 row(ui, &["D"], tr(lang, "원본(ORIG)"));
                                 row(ui, &["I"], "EXIF");
                                 row(ui, &["H"], tr(lang, "히스토그램"));
-                                row(ui, &["\\"], tr(lang, "룩 끄기"));
+                                // `\` 하나가 룩(#125)과 표시 조정(#130)을 같이 끈다. 고정 높이 창이라 한 줄에 둔다.
+                                let compare_off = format!("{} · {}", tr(lang, "룩 끄기"), tr(lang, "조정 끄기"));
+                                row(ui, &["\\"], &compare_off);
                                 row(ui, &["M"], tr(lang, "촬영 위치 지도"));
                                 row(ui, &["A"], tr(lang, "AF 포인트"));
                                 row(ui, &["]"], tr(lang, "구도선"));

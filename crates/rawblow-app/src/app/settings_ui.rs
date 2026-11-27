@@ -1290,6 +1290,7 @@ impl RawBlowApp {
             let organize_defaults = self.cfg.organize_defaults.clone();
             let prev_lang = self.lang;
             let prev_look = self.cfg.look.clone();
+            let prev_adjust = self.cfg.adjust;
             self.cfg = Config::default();
             self.cfg.last_folder = last_folder;
             self.cfg.recent_folders = recent_folders;
@@ -1298,8 +1299,12 @@ impl RawBlowApp {
             // LUT 폴더도 기본(미지정)으로 — 툴바 LUT 목록을 다시 읽는다.
             self.reload_lut_files();
             // 룩도 기본(없음)이 됐으면 화면 텍스처를 다시 칠한다(안 하면 이전 룩이 남은 채 버튼만 꺼져 보인다).
+            // 표시 조정(#130)만 0이 됐어도 같다 — 안 하면 다음 슬라이더 조작·새 디코드 전까지 이전 조정이 보인다.
+            // 룩이 바뀐 경우는 look_changed가 새 조정 값으로 같이 다시 칠한다.
             if self.cfg.look != prev_look {
                 self.look_changed(ctx);
+            } else if self.cfg.adjust != prev_adjust {
+                self.note_adjust_changed(ctx);
             }
             // 라이브 미러 재동기화(설정 컨트롤이 하던 것과 동일하게).
             self.show_exif = self.cfg.show_exif;
@@ -1913,6 +1918,54 @@ mod tests {
         assert_eq!(qa.app.lut_dir_status, rawblow_core::lut::CubeDir::Unset, "목록도 다시 읽는다");
         assert_eq!(qa.app.cfg.look.name, "", "룩도 기본(없음)");
         assert_ne!(qa.app.look_gen, look_gen, "룩이 바뀌었으니 화면 텍스처를 다시 칠한다");
+    }
+
+    /// 기본값 복원 직후 화면은 조정 없는 텍스처다(#130). 룩은 처음부터 없음이라 조정만 바뀐 경우.
+    #[test]
+    fn settings_qa_reset_redraws_the_photo_without_the_previous_adjust() {
+        let mut qa = SettingsQa::new();
+        let gray = [128u8, 128, 128, 255];
+        let pixel = |out: &egui::FullOutput| -> Option<[u8; 3]> {
+            out.textures_delta.set.iter().rev().find_map(|(_, d)| match &d.image {
+                egui::ImageData::Color(img) => img.pixels.first().map(|c| [c.r(), c.g(), c.b()]),
+                _ => None,
+            })
+        };
+        qa.app.cfg.adjust.exposure = -1.0;
+        let input = qa.raw(Vec::new());
+        let out = qa.ctx.run(input, |ctx| qa.app.upload_look_preview(ctx, 3, &gray, 1, 1, false, None));
+        let dimmed = pixel(&out).expect("조정한 텍스처");
+        assert_ne!(dimmed, [128, 128, 128], "조정이 걸려 있다");
+        assert_eq!(qa.app.cfg.look.name, "", "룩은 없음 — 조정만 바뀌는 경우를 본다");
+
+        qa.click_exact("복원");
+        assert!(qa.app.settings_reset_armed);
+        let texts = qa.paint();
+        let at = texts.iter().find(|(t, _)| t == "복원").map(|(_, r)| r.center()).expect("복원");
+        // click_pos와 같은 세 프레임(이동·누름·뗌). 복원은 뗀 프레임에 실행된다.
+        let mut last = None;
+        for events in [
+            vec![egui::Event::PointerMoved(at)],
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::default() },
+            ],
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::default() },
+            ],
+        ] {
+            qa.time += 1.0 / 60.0;
+            let input = qa.raw(events);
+            let out = qa.ctx.run(input, |ctx| qa.app.ui_settings(ctx));
+            if let Some(p) = pixel(&out) {
+                last = Some(p);
+            }
+        }
+        assert!(!qa.app.settings_reset_armed, "복원이 실행됐다");
+        assert!(qa.app.cfg.adjust.is_neutral());
+        assert_eq!(last, Some([128, 128, 128]), "복원한 그 프레임에 조정 없는 텍스처로 다시 올린다");
+        assert_eq!(qa.app.look_src.get(&3).map(|s| s.graded), Some(qa.app.look_gen));
     }
 
     /// 「LUT 폴더」 입력칸: 글자마다 저장은 하지만 폴더는 입력을 마칠 때(Enter) 읽는다.

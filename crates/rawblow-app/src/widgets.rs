@@ -354,7 +354,7 @@ impl TexCache {
         self.map.contains_key(&id)
     }
 
-    /// 지금 캐시에 남아 있는 항목. 프리뷰 원본 버퍼를 이 집합에 맞춘다(#125).
+    /// 지금 캐시에 남아 있는 항목. 프리뷰 원본 버퍼를 이 집합에 맞춘다(#125·#130).
     pub fn ids(&self) -> Vec<usize> {
         self.map.keys().copied().collect()
     }
