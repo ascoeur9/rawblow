@@ -159,6 +159,7 @@ pub struct RawBlowApp {
     filter: Filter,
     star_filter: StarFilter, // 별점 필터(라벨 필터와 독립 AND).
     tag_filter: TagFilter,   // 컬러 태그 필터(라벨·별점 필터와 독립 AND)(#27).
+    protected_only: bool,    // 읽기 전용(바디 프로텍트)만 보기(#138). 다른 필터와 독립 AND.
     show_exif: bool,
     show_hist: bool,
     full_raw: bool, // ORIG(원본 보기): 풀 RAW/최대 임베디드를 원본 크기로 디코딩
@@ -455,6 +456,7 @@ impl RawBlowApp {
             filter: Filter::All,
             star_filter: StarFilter::Any,
             tag_filter: TagFilter::Any,
+            protected_only: false,
             show_exif: cfg.show_exif,
             show_hist: cfg.show_histogram,
             full_raw: false,
@@ -679,6 +681,7 @@ impl RawBlowApp {
             filter: Filter::All,
             star_filter: StarFilter::Any,
             tag_filter: TagFilter::Any,
+            protected_only: false,
             show_exif: cfg.show_exif,
             show_hist: cfg.show_histogram,
             full_raw: false,
@@ -1214,6 +1217,7 @@ impl RawBlowApp {
                 self.filter.accepts(it.entry.label)
                     && self.star_filter.accepts(it.entry.stars)
                     && self.tag_filter.accepts(it.entry.tag)
+                    && (!self.protected_only || it.entry.protected)
             })
             .map(|(i, _)| i)
             .collect()
@@ -1225,6 +1229,7 @@ impl RawBlowApp {
         self.filter != Filter::All
             || self.star_filter != StarFilter::Any
             || self.tag_filter != TagFilter::Any
+            || self.protected_only
     }
 
     /// 라벨 필터를 바꾸고, 인덱스를 새 목록 안에 두며 안 보이는 그리드 선택을 뺀다(#102).
@@ -1248,12 +1253,20 @@ impl RawBlowApp {
         self.relocate_after_filter(keep);
     }
 
-    /// 필터 세 축을 모두 기본값으로 되돌린다(#67). 보던 사진 위치는 유지한다(#102).
+    /// 읽기 전용(프로텍트)만 보기 켜기/끄기(#138). 좌측 레일과 AI 컬링 창이 같은 값을 쓴다.
+    fn apply_protected_filter(&mut self, on: bool) {
+        let keep = self.filter_keep();
+        self.protected_only = on;
+        self.relocate_after_filter(keep);
+    }
+
+    /// 필터 축(라벨·별점·태그·프로텍트)을 모두 기본값으로 되돌린다(#67·#138). 보던 사진 위치는 유지한다(#102).
     fn reset_filters(&mut self) {
         let keep = self.filter_keep();
         self.filter = Filter::All;
         self.star_filter = StarFilter::Any;
         self.tag_filter = TagFilter::Any;
+        self.protected_only = false;
         self.relocate_after_filter(keep);
     }
 
@@ -1546,6 +1559,7 @@ impl RawBlowApp {
             self.filter.accepts(it.entry.label)
                 && self.star_filter.accepts(it.entry.stars)
                 && self.tag_filter.accepts(it.entry.tag)
+                && (!self.protected_only || it.entry.protected)
         });
         if let Some(next) = index_after_rate(self.index, still_visible, self.filtered().len()) {
             self.index = next;
@@ -2426,6 +2440,25 @@ mod tests {
         app.view = super::ViewMode::Grid;
         app.grid_cols = 4;
         app
+    }
+
+    #[test]
+    fn protected_filter_ands_with_label_and_resets() {
+        use rawblow_core::model::Filter;
+        // 4장마다 프로텍트 → [0,4,8]. 라벨 Pick은 [0,3,6,9]. 둘 다 = [0].
+        let mut app = filter_app(10);
+        for (i, it) in app.items.iter_mut().enumerate() {
+            it.entry.protected = i % 4 == 0;
+        }
+        assert!(!app.any_filter_active());
+        app.apply_protected_filter(true);
+        assert!(app.any_filter_active());
+        assert_eq!(app.filtered(), vec![0, 4, 8]);
+        app.apply_label_filter(Filter::Pick);
+        assert_eq!(app.filtered(), vec![0], "라벨 필터와 독립 AND");
+        app.reset_filters();
+        assert!(!app.protected_only, "필터 초기화가 프로텍트도 끈다");
+        assert_eq!(app.filtered().len(), 10);
     }
 
     #[test]

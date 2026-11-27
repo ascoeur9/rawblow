@@ -736,6 +736,41 @@ impl RawBlowApp {
                     self.apply_tag_filter(tf);
                 }
 
+                // 바디 프로텍트(#138): 파일 읽기 전용 항목만. 라벨·별점·태그와 독립 AND.
+                // AI 컬링 창의 같은 칩과 한 상태(protected_only)를 공유한다.
+                ui.add_space(4.0);
+                {
+                    let on = self.protected_only;
+                    let resp = ui
+                        .allocate_response(Vec2::new(RAIL_W - 16.0, 24.0), Sense::click())
+                        .on_hover_text(tr(lang, "니콘 바디 프로텍트(파일 읽기 전용)만 보여 줍니다"));
+                    let rect = resp.rect;
+                    let p = ui.painter();
+                    if on {
+                        p.rect_filled(rect, Rounding::same(4.0), theme::BG3);
+                    }
+                    let bx = Rect::from_center_size(Pos2::new(rect.left() + 18.0, rect.center().y), Vec2::splat(12.0));
+                    p.rect(
+                        bx,
+                        Rounding::same(3.0),
+                        if on { theme::ACCENT } else { Color32::TRANSPARENT },
+                        Stroke::new(1.5_f32, if on { theme::ACCENT } else { theme::LINE3 }),
+                    );
+                    p.text(
+                        Pos2::new(rect.left() + 30.0, rect.center().y),
+                        Align2::LEFT_CENTER,
+                        tr(lang, "읽기 전용(프로텍트)만"),
+                        prop(11.5),
+                        if on { theme::INK } else { theme::INK2 },
+                    );
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if resp.clicked() {
+                        self.apply_protected_filter(!on);
+                    }
+                }
+
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                     // 폴더 자동 분류(#34): 툴바에서 레일 하단으로 이동(테스트 피드백). 풀폭 버튼.
                     // 자동저장(saved/SESSION) 상태표시는 하단 상태바로 이동 — 여기선 제거.
