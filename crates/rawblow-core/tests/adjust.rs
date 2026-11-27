@@ -19,16 +19,14 @@ fn zero_adjustment_keeps_every_byte() {
 #[test]
 fn compare_hold_ignores_a_nonzero_adjustment() {
     let src = px([128, 128, 128], 200);
-    let mut adj = Adjust::default();
-    adj.exposure = 1.0;
+    let adj = Adjust { exposure: 1.0, ..Default::default() };
     assert_eq!(display_rgba(&src, adj, true), src);
 }
 
 #[test]
 fn exposure_plus_one_stops_lifts_mid_gray_to_white() {
     let src = px([128, 128, 128], 200);
-    let mut adj = Adjust::default();
-    adj.exposure = 1.0;
+    let adj = Adjust { exposure: 1.0, ..Default::default() };
     let out = display_rgba(&src, adj, false);
     assert_eq!(&out[..3], &[255, 255, 255]);
     assert_eq!(out[3], 200, "알파는 그대로");
@@ -37,37 +35,31 @@ fn exposure_plus_one_stops_lifts_mid_gray_to_white() {
 #[test]
 fn exposure_above_the_slider_matches_plus_two() {
     let src = px([128, 40, 20], 255);
-    let mut hi = Adjust::default();
-    hi.exposure = 9.0;
-    let mut cap = Adjust::default();
-    cap.exposure = 2.0;
+    let hi = Adjust { exposure: 9.0, ..Default::default() };
+    let cap = Adjust { exposure: 2.0, ..Default::default() };
     assert_eq!(display_rgba(&src, hi, false), display_rgba(&src, cap, false));
 }
 
 #[test]
 fn temperature_warms_by_raising_red_and_lowering_blue() {
     let src = px([128, 128, 128], 255);
-    let mut adj = Adjust::default();
-    adj.temperature = 1.0;
+    let adj = Adjust { temperature: 1.0, ..Default::default() };
     let out = display_rgba(&src, adj, false);
     assert_eq!(out[0], 160, "R");
     assert_eq!(out[1], 128, "G는 그대로");
     assert_eq!(out[2], 96, "B");
-    let mut cold = Adjust::default();
-    cold.temperature = -1.0;
+    let cold = Adjust { temperature: -1.0, ..Default::default() };
     let c = display_rgba(&src, cold, false);
     assert!(c[0] < 128 && c[2] > 128, "음수는 차갑게");
 }
 
 #[test]
 fn contrast_pivots_around_mid_gray() {
-    let mut adj = Adjust::default();
-    adj.contrast = 1.0;
+    let adj = Adjust { contrast: 1.0, ..Default::default() };
     let dark = display_rgba(&px([64, 64, 64], 1), adj, false);
     assert_eq!(dark[0], 1, "어두운 픽셀은 더 어두워진다");
     assert_eq!(dark[3], 1);
-    let mut flat = Adjust::default();
-    flat.contrast = -1.0;
+    let flat = Adjust { contrast: -1.0, ..Default::default() };
     let mid = display_rgba(&px([10, 200, 40], 9), flat, false);
     assert_eq!(&mid[..3], &[128, 128, 128]);
     assert_eq!(mid[3], 9);
@@ -76,13 +68,12 @@ fn contrast_pivots_around_mid_gray() {
 #[test]
 fn grain_is_deterministic_and_leaves_alpha() {
     let src = vec![128u8; 64];
-    let mut adj = Adjust::default();
-    adj.grain = 1.0;
+    let mut adj = Adjust { grain: 1.0, ..Default::default() };
     let a = display_rgba(&src, adj, false);
     let b = display_rgba(&src, adj, false);
     assert_eq!(a, b);
     assert_ne!(a, src, "그레인 1은 중간의 회색을 움직인다");
-    for px in a.chunks_exact(4) {
+    for px in a.as_chunks::<4>().0 {
         assert_eq!(px[3], 128);
     }
     adj.grain = 0.0;
